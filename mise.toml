@@ -1,0 +1,6 @@
+[tools]
+# actionlint: static analysis for GitHub Actions workflows.
+# Used to validate .github/workflows/ before push, since act has known
+# compatibility issues with erlef/setup-beam on the Medium runner image.
+# Runtime validation of the workflow happens on GitHub Actions itself.
+"aqua:rhysd/actionlint" = "1.7.12"

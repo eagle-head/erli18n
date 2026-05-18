@@ -17,7 +17,13 @@ permissions:
 jobs:
   lint:
     name: lint (fast quality gate)
-    runs-on: ubuntu-latest
+    # Pinned per GitHub Actions docs recommendation
+    # (https://docs.github.com/en/actions/using-jobs/choosing-the-runner-for-a-job):
+    # explicit version avoids `ubuntu-latest` drift when GitHub flips
+    # the alias. Also required for accurate ImageOS resolution under
+    # `act` (nektos/act derives ImageOS from the platform key via
+    # `ubuntu-(\d+\.\d+)` regex; `ubuntu-latest` does not match).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -41,18 +47,26 @@ jobs:
         run: bin/quality-gate.sh --fast
 
   test:
-    name: test (OTP ${{ matrix.otp }})
-    runs-on: ubuntu-latest
+    name: test (OTP ${{ matrix.otp }} on ${{ matrix.os }})
+    # Runner OS is pinned per-matrix-entry because the `erlef/setup-beam`
+    # compatibility matrix (https://github.com/erlef/setup-beam#compatibility-between-operating-system-and-erlangotp)
+    # ties OTP binary availability to the runner's libssl ABI:
+    #   * OTP 25.3 — Ubuntu 22.04 (libssl3), not available for 24.04.
+    #   * OTP 27/28 — Ubuntu 24.04 (libssl3t64).
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - otp: '25.3'
             rebar3: '3.22'
+            os: 'ubuntu-22.04'
           - otp: '27'
             rebar3: '3.24'
+            os: 'ubuntu-24.04'
           - otp: '28'
             rebar3: '3.24'
+            os: 'ubuntu-24.04'
     steps:
       - uses: actions/checkout@v4
 
@@ -94,7 +108,7 @@ jobs:
 
   dialyzer:
     name: dialyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

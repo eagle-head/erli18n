@@ -1,0 +1,55 @@
+# Local CI runner infrastructure for `act`.
+#
+# This file is NOT meant to be `up`d — `act` (host binary) owns the
+# container lifecycle per workflow job. The declarations here exist to:
+#   * build the local-only `erli18n/act-runner:24.04` image, which
+#     extends the upstream GitHub runner mirror with ELP for full
+#     `bin/quality-gate.sh` coverage (`elp lint`, `eqwalize-all`)
+#   * own the `act-toolcache` named volume (which `act` mounts at
+#     /opt/hostedtoolcache for tool caching across runs)
+#   * provide a one-shot `init` profile that fixes volume ownership
+#
+# Why the toolcache volume init is necessary: act mounts the
+# `act-toolcache` Docker volume over the runner image's
+# /opt/hostedtoolcache (mode 0777, owned by `runner` in the image).
+# New Docker volumes are root-owned by default, so the mount masks the
+# image's permissions and setup-beam (running as uid 1001) gets EACCES
+# on mkdir. See nektos/act#2188.
+#
+# Why a custom runner image: GitHub-hosted runners do not preinstall
+# ELP, so the workflow leaves `elp lint` / `eqwalize-all` as graceful
+# `[SKIP]` in real CI. To get the same coverage locally we extend the
+# catthehacker image with ELP (see Dockerfile.act-runner). The workflow
+# YAML is unchanged — only `~/.config/act/actrc` is pointed at the
+# custom image. Real CI stays on the vanilla GitHub-hosted runner.
+#
+# Bootstrap (run once after pulling, or after volume reset):
+#   docker compose --profile init up --abort-on-container-exit
+#   docker compose build act-runner
+#
+# Subsequent invocations:
+#   mise exec -- act -j lint
+
+services:
+  act-runner:
+    image: erli18n/act-runner:24.04
+    build:
+      context: .
+      dockerfile: Dockerfile.act-runner
+    profiles: ["runner-image"]
+
+  act-toolcache-init:
+    # Fixes ownership of the `act-toolcache` volume to uid 1001 (the
+    # `runner` user inside the catthehacker images) so act-managed exec
+    # steps can write to /opt/hostedtoolcache without EACCES.
+    image: alpine:latest
+    profiles: ["init"]
+    volumes:
+      - act-toolcache:/cache
+    command: ["chown", "-R", "1001:1001", "/cache"]
+
+volumes:
+  act-toolcache:
+    # `name:` overrides Compose's default `<project>_<volume>` naming so
+    # the volume matches what `act` mounts (literal name `act-toolcache`).
+    name: act-toolcache
