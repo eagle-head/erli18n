@@ -1,0 +1,6 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=SHIFT_JIS\n"
+
+msgid "Hello"
+msgstr "Konnichiwa"

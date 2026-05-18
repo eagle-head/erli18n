@@ -1,0 +1,10 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=3; plural=0;\n"
+
+msgid "Tree"
+msgid_plural "Trees"
+msgstr[0] "a"
+msgstr[1] "b"
+msgstr[3] "d"

@@ -1,0 +1,24 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: fr\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# Two entries sharing the same msgid but distinguished by context — a
+# canonical pgettext use case. The context-less entry returns one
+# translation; the menu-context entry returns another. A lookup for an
+# unknown context (e.g. "toolbar") must NOT fall back to the
+# context-less variant — it must fall back to the source msgid.
+msgid "File"
+msgstr "Fichier"
+
+msgctxt "menu"
+msgid "File"
+msgstr "Menu Fichier"
+
+# Plural in a context.
+msgctxt "menu"
+msgid "tree"
+msgid_plural "trees"
+msgstr[0] "Menu arbre"
+msgstr[1] "Menu arbres"

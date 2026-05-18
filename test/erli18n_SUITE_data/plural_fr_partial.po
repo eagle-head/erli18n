@@ -1,0 +1,13 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: fr\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# PSD-003: plural with empty form 1 — the parser drops form 1, so a
+# lookup for N != 1 misses for that form and falls back to msgid_plural.
+# Form 0 (singular) IS present, so N == 1 returns the translation.
+msgid "leaf"
+msgid_plural "leaves"
+msgstr[0] "feuille"
+msgstr[1] ""

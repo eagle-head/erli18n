@@ -1,0 +1,757 @@
+-module(erli18n_plural_SUITE).
+
+%% Common Test suite for erli18n_plural — the recursive-descent evaluator
+%% for the GNU gettext `Plural-Forms:` header expression.
+%%
+%% Each test case carries the source-of-truth design citation in its
+%% docstring so failures point straight at the spec that motivated the
+%% behaviour (PSD-004, PSD-008, BR-DESCARTAR-003, paradigm §E3).
+
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1
+]).
+
+-export([
+    compile_english_n_neq_1/1,
+    evaluate_english_n_eq_0/1,
+    evaluate_english_n_eq_1/1,
+    evaluate_english_n_eq_2/1,
+    compile_french_n_gt_1/1,
+    compile_russian_complex/1,
+    compile_japanese_degenerate/1,
+    bignum_arithmetic/1,
+    bignum_huge/1,
+    fallback_rule_returns_c_default/1,
+    cldr_rule_known_locales/1,
+    cldr_rule_unknown_locale/1,
+    cldr_rule_with_region/1,
+    cldr_rule_with_region_fallback/1,
+    validate_against_cldr_ok/1,
+    validate_against_cldr_divergence/1,
+    syntax_error_unclosed_paren/1,
+    syntax_error_invalid_op/1,
+    missing_nplurals/1,
+    missing_plural_expr/1,
+    nplurals_out_of_range/1,
+    plural_by_po_header_convenience/1,
+    operator_precedence_arithmetic/1,
+    operator_associativity/1,
+    ternary_nested/1,
+    bool_short_circuit_or/1,
+    bool_short_circuit_and/1,
+    not_operator/1,
+    relational_ops/1,
+    modulo_c_semantics/1,
+    arabic_six_forms/1,
+    polish_three_forms/1,
+    whitespace_tolerance/1,
+    form_out_of_range_crashes/1,
+    %% Coverage additions — header malformed paths
+    empty_nplurals_value/1,
+    empty_plural_value/1,
+    no_trailing_semicolon/1,
+    header_with_newline_terminator/1,
+    field_without_equals_then_real_field/1,
+    field_with_non_delim_after_name/1,
+    field_at_end_of_input/1,
+    header_tab_delim/1,
+    header_newline_delim/1,
+    header_cr_delim/1,
+    header_semicolon_delim_no_space/1,
+    %% Coverage additions — parser syntax errors
+    ternary_missing_colon/1,
+    unknown_identifier_after_n/1,
+    unexpected_char_at_primary/1,
+    unexpected_eof_at_primary/1,
+    not_followed_by_neq/1,
+    peek2_with_single_byte_remaining/1,
+    relational_lt_single_byte/1,
+    relational_gt_single_byte/1,
+    %% Coverage additions — CLDR + validation paths
+    validate_against_unknown_locale_is_ok/1,
+    validate_against_cldr_with_bad_header/1,
+    cldr_rule_hyphen_region_unknown/1
+]).
+
+all() ->
+    [
+        compile_english_n_neq_1,
+        evaluate_english_n_eq_0,
+        evaluate_english_n_eq_1,
+        evaluate_english_n_eq_2,
+        compile_french_n_gt_1,
+        compile_russian_complex,
+        compile_japanese_degenerate,
+        bignum_arithmetic,
+        bignum_huge,
+        fallback_rule_returns_c_default,
+        cldr_rule_known_locales,
+        cldr_rule_unknown_locale,
+        cldr_rule_with_region,
+        cldr_rule_with_region_fallback,
+        validate_against_cldr_ok,
+        validate_against_cldr_divergence,
+        syntax_error_unclosed_paren,
+        syntax_error_invalid_op,
+        missing_nplurals,
+        missing_plural_expr,
+        nplurals_out_of_range,
+        plural_by_po_header_convenience,
+        operator_precedence_arithmetic,
+        operator_associativity,
+        ternary_nested,
+        bool_short_circuit_or,
+        bool_short_circuit_and,
+        not_operator,
+        relational_ops,
+        modulo_c_semantics,
+        arabic_six_forms,
+        polish_three_forms,
+        whitespace_tolerance,
+        form_out_of_range_crashes,
+        %% Coverage additions
+        empty_nplurals_value,
+        empty_plural_value,
+        no_trailing_semicolon,
+        header_with_newline_terminator,
+        field_without_equals_then_real_field,
+        field_with_non_delim_after_name,
+        field_at_end_of_input,
+        header_tab_delim,
+        header_newline_delim,
+        header_cr_delim,
+        header_semicolon_delim_no_space,
+        ternary_missing_colon,
+        unknown_identifier_after_n,
+        unexpected_char_at_primary,
+        unexpected_eof_at_primary,
+        not_followed_by_neq,
+        peek2_with_single_byte_remaining,
+        relational_lt_single_byte,
+        relational_gt_single_byte,
+        validate_against_unknown_locale_is_ok,
+        validate_against_cldr_with_bad_header,
+        cldr_rule_hyphen_region_unknown
+    ].
+
+init_per_suite(Config) -> Config.
+end_per_suite(_Config) -> ok.
+
+%% =========================
+%% Helpers
+%% =========================
+
+eng() -> <<"nplurals=2; plural=n != 1;">>.
+fre() -> <<"nplurals=2; plural=n > 1;">>.
+ja() -> <<"nplurals=1; plural=0;">>.
+ru() ->
+    <<
+        "nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
+        "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;"
+    >>.
+ar() ->
+    <<
+        "nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : "
+        "n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;"
+    >>.
+pl() ->
+    <<
+        "nplurals=3; plural=n==1 ? 0 : "
+        "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;"
+    >>.
+
+compile_ok(Header) ->
+    {ok, Compiled} = erli18n_plural:compile(Header),
+    Compiled.
+
+%% =========================
+%% Compile / evaluate basics (English)
+%% =========================
+
+%% English `n != 1` parses to a single `{binop, '!=', n, 1}` AST node.
+compile_english_n_neq_1(_Config) ->
+    Compiled = compile_ok(eng()),
+    ?assertEqual(2, maps:get(nplurals, Compiled)),
+    ?assertEqual({binop, '!=', n, 1}, maps:get(expr, Compiled)),
+    ?assertEqual(eng(), maps:get(raw, Compiled)).
+
+evaluate_english_n_eq_0(_Config) ->
+    %% N=0 → "0 != 1" → true → form 1 (plural)
+    ?assertEqual(1, erli18n_plural:evaluate(compile_ok(eng()), 0)).
+
+evaluate_english_n_eq_1(_Config) ->
+    %% N=1 → "1 != 1" → false → form 0 (singular)
+    ?assertEqual(0, erli18n_plural:evaluate(compile_ok(eng()), 1)).
+
+evaluate_english_n_eq_2(_Config) ->
+    ?assertEqual(1, erli18n_plural:evaluate(compile_ok(eng()), 2)),
+    ?assertEqual(1, erli18n_plural:evaluate(compile_ok(eng()), 100)).
+
+%% =========================
+%% French and Slavic
+%% =========================
+
+%% French treats 0 and 1 as singular, 2+ plural.
+compile_french_n_gt_1(_Config) ->
+    C = compile_ok(fre()),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 50)).
+
+%% Russian: 3 plural forms, complex modulo-based rule.
+%% Known oracle values from glibc + Unicode CLDR vetting set:
+%%   N=1   → 0 (one)
+%%   N=2   → 1 (few)
+%%   N=5   → 2 (many)
+%%   N=11  → 2 (many — special case for teens)
+%%   N=21  → 0 (one — ends in 1 but not 11)
+%%   N=22  → 1 (few)
+%%   N=25  → 2 (many)
+%%   N=101 → 0 (one)
+compile_russian_complex(_Config) ->
+    C = compile_ok(ru()),
+    ?assertEqual(3, maps:get(nplurals, C)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 5)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 11)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 21)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 22)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 25)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 101)).
+
+%% PSD-008: degenerate plural (`nplurals=1; plural=0;`) — used by
+%% ja/zh/ko/vi/th — must round-trip and return 0 for any N.
+compile_japanese_degenerate(_Config) ->
+    C = compile_ok(ja()),
+    ?assertEqual(1, maps:get(nplurals, C)),
+    %% the literal 0
+    ?assertEqual(0, maps:get(expr, C)),
+    [
+        ?assertEqual(0, erli18n_plural:evaluate(C, N))
+     || N <- [0, 1, 2, 5, 100, 1000, 1 bsl 32]
+    ].
+
+%% =========================
+%% Bignum support (cenário 7 do 09-edge-cases.feature)
+%% =========================
+
+%% N = 2^31 (just past int32 boundary).
+bignum_arithmetic(_Config) ->
+    C = compile_ok(ru()),
+    %% 2147483648
+    N = 1 bsl 31,
+    %% N=2147483648, N%10=8, N%100=48 → not 1 form, not 1..4 form → 2 (many)
+    ?assertEqual(2, erli18n_plural:evaluate(C, N)).
+
+%% N = 10^13 — bignum well beyond any native integer width.
+bignum_huge(_Config) ->
+    C = compile_ok(ru()),
+    N = 9999999999999,
+    %% N%10=9, N%100=99 → falls to form 2 (many)
+    ?assertEqual(2, erli18n_plural:evaluate(C, N)),
+    %% Larger still
+    ?assertEqual(2, erli18n_plural:evaluate(C, 1 bsl 100)).
+
+%% =========================
+%% Fallback rule
+%% =========================
+
+%% PSD-004 / GNU manual: when a .po has no Plural-Forms header at all,
+%% the C/English Germanic default applies.
+fallback_rule_returns_c_default(_Config) ->
+    ?assertEqual(
+        <<"nplurals=2; plural=n != 1;">>,
+        erli18n_plural:fallback_rule()
+    ),
+    %% And it must itself round-trip through compile/evaluate.
+    C = compile_ok(erli18n_plural:fallback_rule()),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
+
+%% =========================
+%% CLDR data table lookups
+%% =========================
+
+cldr_rule_known_locales(_Config) ->
+    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"en">>)),
+    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"fr">>)),
+    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"ja">>)),
+    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"ru">>)),
+    {ok, JaExpr} = erli18n_plural:cldr_rule(<<"ja">>),
+    ?assertEqual(<<"0">>, JaExpr).
+
+cldr_rule_unknown_locale(_Config) ->
+    %% A locale guaranteed not to be in the v0.1 table.
+    ?assertEqual(undefined, erli18n_plural:cldr_rule(<<"xx">>)),
+    ?assertEqual(undefined, erli18n_plural:cldr_rule(<<"zz_QQ">>)).
+
+cldr_rule_with_region(_Config) ->
+    %% pt_BR is explicitly listed in the table.
+    ?assertMatch(
+        {ok, <<"n > 1">>},
+        erli18n_plural:cldr_rule(<<"pt_BR">>)
+    ).
+
+%% Decision: when the region tag is unknown, fall back to the base
+%% language tag. fr_BE is not in the table but fr is — return the fr
+%% rule. Documented in src/erli18n_plural.erl on `cldr_rule/1`.
+cldr_rule_with_region_fallback(_Config) ->
+    {ok, BaseExpr} = erli18n_plural:cldr_rule(<<"fr">>),
+    ?assertMatch(
+        {ok, BaseExpr},
+        erli18n_plural:cldr_rule(<<"fr_BE">>)
+    ),
+    %% Also for hyphen-separated BCP47 region tags.
+    ?assertMatch(
+        {ok, BaseExpr},
+        erli18n_plural:cldr_rule(<<"fr-BE">>)
+    ).
+
+%% =========================
+%% CLDR divergence
+%% =========================
+
+%% Header that matches CLDR canonical English rule should be ok.
+validate_against_cldr_ok(_Config) ->
+    ?assertEqual(
+        ok,
+        erli18n_plural:validate_against_cldr(<<"en">>, eng())
+    ),
+    %% The French header `n > 1` matches CLDR fr.
+    ?assertEqual(
+        ok,
+        erli18n_plural:validate_against_cldr(<<"fr">>, fre())
+    ),
+    %% Whitespace differences must not trigger a warning.
+    ?assertEqual(
+        ok,
+        erli18n_plural:validate_against_cldr(
+            <<"en">>, <<"nplurals=2;  plural= n != 1 ;">>
+        )
+    ).
+
+%% English `n != 1` declared for French (CLDR says `n > 1`) is a real
+%% divergence — must produce a warning, not an error.
+validate_against_cldr_divergence(_Config) ->
+    Result = erli18n_plural:validate_against_cldr(<<"fr">>, eng()),
+    ?assertMatch({warning, {plural_divergence, <<"fr">>, _, _}}, Result),
+    {warning, {plural_divergence, _Locale, Hdr, Cldr}} = Result,
+    ?assertEqual(eng(), Hdr),
+    ?assert(is_binary(Cldr)).
+
+%% =========================
+%% Error reporting
+%% =========================
+
+syntax_error_unclosed_paren(_Config) ->
+    Bad = <<"nplurals=2; plural=(n != 1;">>,
+    ?assertMatch(
+        {error, {syntax_error, _, _}},
+        erli18n_plural:compile(Bad)
+    ).
+
+syntax_error_invalid_op(_Config) ->
+    Bad = <<"nplurals=2; plural=n @ 1;">>,
+    ?assertMatch(
+        {error, _},
+        erli18n_plural:compile(Bad)
+    ).
+
+missing_nplurals(_Config) ->
+    Bad = <<"plural=n != 1;">>,
+    ?assertMatch(
+        {error, {missing_nplurals, _}},
+        erli18n_plural:compile(Bad)
+    ).
+
+missing_plural_expr(_Config) ->
+    Bad = <<"nplurals=2;">>,
+    ?assertMatch(
+        {error, {missing_plural_expr, _}},
+        erli18n_plural:compile(Bad)
+    ).
+
+nplurals_out_of_range(_Config) ->
+    Bad = <<"nplurals=10000; plural=0;">>,
+    ?assertMatch(
+        {error, {nplurals_out_of_range, 10000}},
+        erli18n_plural:compile(Bad)
+    ).
+
+%% =========================
+%% Convenience entry point
+%% =========================
+
+plural_by_po_header_convenience(_Config) ->
+    ?assertEqual(
+        {ok, 1},
+        erli18n_plural:plural_by_po_header(eng(), 5)
+    ),
+    ?assertEqual(
+        {ok, 0},
+        erli18n_plural:plural_by_po_header(eng(), 1)
+    ),
+    %% Error path also propagates.
+    ?assertMatch(
+        {error, _},
+        erli18n_plural:plural_by_po_header(
+            <<"nplurals=2; plural=(n;">>, 0
+        )
+    ).
+
+%% =========================
+%% Operator semantics
+%% =========================
+
+%% Custom valid header exercising arithmetic precedence:
+%%   (2 + 3) * 4 = 20  vs.  2 + 3 * 4 = 14
+operator_precedence_arithmetic(_Config) ->
+    C1 = compile_ok(<<"nplurals=21; plural=(2 + 3) * 4;">>),
+    ?assertEqual(20, erli18n_plural:evaluate(C1, 0)),
+    C2 = compile_ok(<<"nplurals=15; plural=2 + 3 * 4;">>),
+    ?assertEqual(14, erli18n_plural:evaluate(C2, 0)).
+
+%% Left-associativity for `-`: 1 - 2 - 3 must be -4 not 2.
+%% (NPlurals must be > result; we declare 1000 which is the cap.)
+operator_associativity(_Config) ->
+    %% Use small calculation that produces a non-negative form index.
+    %% 10 - 5 - 2 = 3 (left-assoc) vs 7 (right-assoc).
+    C = compile_ok(<<"nplurals=10; plural=10 - 5 - 2;">>),
+    ?assertEqual(3, erli18n_plural:evaluate(C, 0)).
+
+%% Nested ternary: right-associative per C.
+%% `n==0 ? 0 : n==1 ? 1 : 2`
+ternary_nested(_Config) ->
+    C = compile_ok(<<"nplurals=3; plural=n==0 ? 0 : n==1 ? 1 : 2;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 2)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 5)).
+
+%% Short-circuit OR: when the left side is truthy, the right side
+%% (which would crash) must not be evaluated.
+bool_short_circuit_or(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=n==0 || (10/n) > 1;">>),
+    %% N=0 → left is true → right not evaluated, no division by zero.
+    ?assertEqual(1, erli18n_plural:evaluate(C, 0)).
+
+%% Short-circuit AND: when the left side is false, the right side
+%% (which would crash) must not be evaluated.
+bool_short_circuit_and(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=n!=0 && (10/n) > 1;">>),
+    %% N=0 → left is false → right not evaluated, no division by zero.
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    %% N=5 → left true, right also true (10/5 = 2 > 1) → 1.
+    ?assertEqual(1, erli18n_plural:evaluate(C, 5)),
+    %% N=20 → left true, right false (10/20 = 0, not > 1) → 0.
+    ?assertEqual(0, erli18n_plural:evaluate(C, 20)).
+
+%% !N inverts truthiness: !0 = 1, !1 = 0, !5 = 0.
+not_operator(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=!n;">>),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 0)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 5)).
+
+%% Relational operators each return 0/1.
+relational_ops(_Config) ->
+    [
+        begin
+            Bin = <<"nplurals=2; plural=", Expr/binary, ";">>,
+            ?assertEqual(
+                Expected,
+                erli18n_plural:evaluate(compile_ok(Bin), N)
+            )
+        end
+     || {Expr, N, Expected} <-
+            [
+                {<<"n < 5">>, 3, 1},
+                {<<"n < 5">>, 5, 0},
+                {<<"n > 5">>, 7, 1},
+                {<<"n > 5">>, 3, 0},
+                {<<"n <= 5">>, 5, 1},
+                {<<"n >= 5">>, 5, 1},
+                {<<"n == 0">>, 0, 1},
+                {<<"n == 0">>, 1, 0},
+                {<<"n != 0">>, 1, 1}
+            ]
+    ].
+
+%% Modulo follows C semantics (truncation toward zero, matches Erlang rem).
+modulo_c_semantics(_Config) ->
+    C = compile_ok(<<"nplurals=10; plural=n % 10;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    ?assertEqual(3, erli18n_plural:evaluate(C, 13)),
+    ?assertEqual(9, erli18n_plural:evaluate(C, 99)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 100)).
+
+%% Arabic has 6 plural forms. CLDR vetting set:
+%%   N=0   → 0 (zero)
+%%   N=1   → 1 (one)
+%%   N=2   → 2 (two)
+%%   N=3   → 3 (few)
+%%   N=11  → 4 (many)
+%%   N=100 → 5 (other)
+arabic_six_forms(_Config) ->
+    C = compile_ok(ar()),
+    ?assertEqual(6, maps:get(nplurals, C)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 2)),
+    ?assertEqual(3, erli18n_plural:evaluate(C, 3)),
+    ?assertEqual(3, erli18n_plural:evaluate(C, 10)),
+    ?assertEqual(4, erli18n_plural:evaluate(C, 11)),
+    ?assertEqual(5, erli18n_plural:evaluate(C, 100)).
+
+%% Polish: similar to Russian but special-cases N=1.
+polish_three_forms(_Config) ->
+    C = compile_ok(pl()),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 3)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 4)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 5)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 11)),
+    ?assertEqual(2, erli18n_plural:evaluate(C, 12)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 22)).
+
+%% Tolerate generous whitespace in both header and expression body.
+whitespace_tolerance(_Config) ->
+    Header = <<"  nplurals  =  2  ;  plural  =  n != 1  ;  ">>,
+    C = compile_ok(Header),
+    ?assertEqual(2, maps:get(nplurals, C)),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
+
+%% A malformed .po that produces a form index outside [0, NPlurals)
+%% crashes loud — the loader gets a clear error rather than silently
+%% returning a stale msgstr from a different index.
+form_out_of_range_crashes(_Config) ->
+    %% Header declares 2 forms but the expression always returns 5.
+    C = compile_ok(<<"nplurals=2; plural=5;">>),
+    ?assertError(
+        {plural_form_out_of_range, 5, 2},
+        erli18n_plural:evaluate(C, 0)
+    ).
+
+%% =========================
+%% Header malformed paths (parser tokenizer)
+%% =========================
+
+%% `nplurals=` with no digits is treated as missing, not as `0`.
+%% Exercises the empty-digits branch in extract_nplurals/1.
+empty_nplurals_value(_Config) ->
+    ?assertMatch(
+        {error, {missing_nplurals, _}},
+        erli18n_plural:compile(<<"nplurals=; plural=n != 1;">>)
+    ).
+
+%% `plural=` followed by only whitespace / nothing trims to empty and
+%% reports missing_plural_expr (distinct from "no plural= at all").
+%% Also exercises trim_trailing reaching its base case N=0.
+empty_plural_value(_Config) ->
+    ?assertMatch(
+        {error, {missing_plural_expr, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=;">>)
+    ),
+    %% Whitespace-only body also trims to empty.
+    ?assertMatch(
+        {error, {missing_plural_expr, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=   ;">>)
+    ).
+
+%% Headers without a trailing `;` after the plural expression are
+%% accepted (lenient per GNU gettext practice) — exercises the
+%% take_until_semicolon_or_end "end of binary" branch.
+no_trailing_semicolon(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=n != 1">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
+
+%% A `\n` in the body terminates the plural expression (line
+%% terminator inside multi-line PO headers).
+header_with_newline_terminator(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=n != 1\nignored after newline">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 5)).
+
+%% First occurrence of `nplurals` is a bare word with no `=` after it;
+%% parser must skip past and find the real `nplurals=` later in the
+%% header. Exercises the not_found branch of skip_to_equals (re-iterates
+%% the search) plus the `;` boundary predicate.
+field_without_equals_then_real_field(_Config) ->
+    Header = <<"nplurals foo;nplurals=2;plural=n != 1;">>,
+    C = compile_ok(Header),
+    ?assertEqual(2, maps:get(nplurals, C)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 0)).
+
+%% A non-`=`, non-whitespace char immediately after the field name is
+%% rejected by skip_to_equals/1 (exercises its `_` clause).
+field_with_non_delim_after_name(_Config) ->
+    %% `nplurals!2` does not equal-bind nplurals; the parser keeps
+    %% scanning, finds no real `nplurals=`, reports missing.
+    ?assertMatch(
+        {error, {missing_nplurals, _}},
+        erli18n_plural:compile(<<"nplurals!2; plural=0;">>)
+    ).
+
+%% Header ends exactly at the field name with no `=` (empty tail) —
+%% exercises skip_to_equals(<<>>) -> not_found.
+field_at_end_of_input(_Config) ->
+    ?assertMatch(
+        {error, {missing_nplurals, _}},
+        erli18n_plural:compile(<<"nplurals">>)
+    ).
+
+%% A literal `\t` to the left of `plural` qualifies as a field
+%% boundary. Exercises is_header_delim($\t).
+header_tab_delim(_Config) ->
+    C = compile_ok(<<"nplurals=2;\tplural=n != 1;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 3)).
+
+%% Newline boundary between fields (real-world multi-line PO header).
+header_newline_delim(_Config) ->
+    C = compile_ok(<<"nplurals=2;\nplural=n != 1;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 7)).
+
+%% Carriage-return boundary (Windows-style line endings in PO files).
+header_cr_delim(_Config) ->
+    C = compile_ok(<<"nplurals=2;\rplural=n != 1;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
+
+%% `;` directly preceding the field name (no whitespace) — exercises
+%% is_header_delim($;) explicitly via the field boundary check.
+header_semicolon_delim_no_space(_Config) ->
+    C = compile_ok(<<"nplurals=2;plural=n != 1;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 8)).
+
+%% =========================
+%% Parser syntax errors
+%% =========================
+
+%% Ternary `?` without matching `:` must produce a syntax_error
+%% mentioning the expected colon.
+ternary_missing_colon(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, {expected, $:, _}, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n ? 1;">>)
+    ).
+
+%% `n` is a single-char identifier; any further identifier char (here,
+%% `x`) makes the lexeme illegal.
+unknown_identifier_after_n(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, {unknown_identifier_after_n, $x}, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=nx;">>)
+    ),
+    %% Underscore also qualifies as an identifier char.
+    ?assertMatch(
+        {error, {syntax_error, {unknown_identifier_after_n, _}, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n_;">>)
+    ).
+
+%% A character that is neither digit, `n`, `(`, nor a recognised
+%% operator triggers the unexpected_char branch of parse_primary.
+unexpected_char_at_primary(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, {unexpected_char, $@}, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=@;">>)
+    ).
+
+%% An incomplete expression where the parser runs out of input while
+%% looking for a primary produces unexpected_eof.
+unexpected_eof_at_primary(_Config) ->
+    %% `n +` parses `n`, expects multiplicative after `+`, hits EOF.
+    ?assertMatch(
+        {error, {syntax_error, unexpected_eof, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n +">>)
+    ),
+    %% Lone `!` is unary without an operand.
+    ?assertMatch(
+        {error, {syntax_error, unexpected_eof, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=!">>)
+    ).
+
+%% `!=` in the unary slot (no left operand) — parse_unary peeks `!`,
+%% sees `!=` ahead, and falls through to parse_primary which then
+%% surfaces the syntax error on `=`.
+not_followed_by_neq(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, _, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=!=n;">>)
+    ).
+
+%% Expression with exactly one byte remaining at a point where
+%% the parser calls peek2 — exercises the `<<_>>` clause of peek2.
+%% Wrapping `n != 1` in parens leaves a single `)` byte at the point
+%% inner parser tails call peek2, while the outer paren consumer sees
+%% it as the closer.
+peek2_with_single_byte_remaining(_Config) ->
+    C = compile_ok(<<"nplurals=2; plural=(n != 1);">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
+    ?assertEqual(1, erli18n_plural:evaluate(C, 5)).
+
+%% A bare `<` at end-of-input forces parse_relational_tail's fallback
+%% peek_byte branch (since peek2 returns eof) before parse_additive
+%% throws unexpected_eof.
+relational_lt_single_byte(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, _, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n<">>)
+    ).
+
+%% Same for `>` — exercises the parse_relational_tail `>` fallback.
+relational_gt_single_byte(_Config) ->
+    ?assertMatch(
+        {error, {syntax_error, _, _}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n>">>)
+    ).
+
+%% =========================
+%% CLDR + validation paths
+%% =========================
+
+%% A locale with no CLDR entry yields `ok` from validate_against_cldr
+%% (we cannot validate, so we do not warn).
+validate_against_unknown_locale_is_ok(_Config) ->
+    ?assertEqual(
+        ok,
+        erli18n_plural:validate_against_cldr(
+            <<"qq_QQ">>, eng()
+        )
+    ),
+    %% Also when the header itself is malformed — the early-return on
+    %% unknown locale wins.
+    ?assertEqual(
+        ok,
+        erli18n_plural:validate_against_cldr(
+            <<"unknown_zz">>, <<"garbage header">>
+        )
+    ).
+
+%% A known locale paired with an unparseable header makes split_rule
+%% return error and ast_equivalent fall through to its `false` arm;
+%% the caller sees `{warning, ...}` rather than crashing.
+validate_against_cldr_with_bad_header(_Config) ->
+    Result = erli18n_plural:validate_against_cldr(
+        <<"en">>, <<"bogus garbage no equals">>
+    ),
+    ?assertMatch({warning, {plural_divergence, <<"en">>, _, _}}, Result).
+
+%% A locale whose base language is also absent from the CLDR table
+%% returns `undefined`, exercising the second `lookup_locale` arm
+%% inside cldr_rule/1.
+cldr_rule_hyphen_region_unknown(_Config) ->
+    ?assertEqual(undefined, erli18n_plural:cldr_rule(<<"qq-QQ">>)),
+    ?assertEqual(undefined, erli18n_plural:cldr_rule(<<"zz_ZZ">>)).

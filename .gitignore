@@ -1,0 +1,13 @@
+.rebar3
+_build/
+*.beam
+*.plt
+.eunit/
+erl_crash.dump
+.erlang.cookie
+ebin/
+log/
+logs/
+*.swp
+*~
+.DS_Store

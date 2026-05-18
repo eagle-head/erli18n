@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (fast quality gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24'
+
+      - name: Cache rebar3 build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp28-lint-${{ hashFiles('rebar.lock', 'rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-otp28-lint-
+
+      - name: Run quality gate (fast)
+        run: bin/quality-gate.sh --fast
+
+  test:
+    name: test (OTP ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - otp: '25.3'
+            rebar3: '3.22'
+          - otp: '27'
+            rebar3: '3.24'
+          - otp: '28'
+            rebar3: '3.24'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GNU gettext (msgfmt for parity oracle)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext
+          msgfmt --version | head -1
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: ${{ matrix.rebar3 }}
+
+      - name: Cache rebar3 build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp${{ matrix.otp }}-test-${{ hashFiles('rebar.lock', 'rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-otp${{ matrix.otp }}-test-
+
+      - name: Compile (warnings_as_errors)
+        run: rebar3 compile
+
+      - name: Common Test + coverage
+        run: rebar3 do ct --cover, cover
+
+      - name: Upload CT logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ct-logs-otp${{ matrix.otp }}
+          path: _build/test/logs/
+          retention-days: 7
+
+  dialyzer:
+    name: dialyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24'
+
+      - name: Cache Dialyzer PLT + rebar3 build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/default/rebar3_*_plt
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp28-plt-${{ hashFiles('rebar.config', 'rebar.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-otp28-plt-
+
+      - name: Dialyzer
+        run: rebar3 dialyzer
