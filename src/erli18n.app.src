@@ -33,5 +33,9 @@
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, []}
+    {links, [
+        {"GitHub", "https://github.com/eagle-head/erli18n"},
+        {"Changelog", "https://github.com/eagle-head/erli18n/blob/main/CHANGELOG.md"},
+        {"Issues", "https://github.com/eagle-head/erli18n/issues"}
+    ]}
 ]}.

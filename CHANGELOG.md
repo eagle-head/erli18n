@@ -25,16 +25,12 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 ## [Unreleased]
 
-### Added
+(No unreleased changes.)
 
-- **GitHub Actions CI** (`.github/workflows/ci.yml`) — three jobs running on `ubuntu-latest`:
-  - `lint`: fast quality gate (`bin/quality-gate.sh --fast`) on OTP 28.
-  - `test`: Common Test + coverage matrix across OTP 25.3 (minimum), 27, and 28. Installs GNU `gettext` (msgfmt) so `erli18n_parity_SUITE` exercises the oracle path instead of skipping.
-  - `dialyzer`: isolated job with PLT cache keyed on `rebar.config` + `rebar.lock`.
-  - Concurrency cancellation per ref, least-privilege `contents: read` token, rebar3 build cache keyed per OTP.
-  - Locally runnable via `act` (`mise exec -- act -j lint`).
+## [0.1.0] — 2026-05-18
 
-## [0.1.0] — Initial development release
+Initial development release. The public API is functional but subject to backward-incompatible
+changes on minor bumps per the `0.x` SemVer policy above.
 
 ### Added
 
@@ -57,6 +53,9 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 - **Test suite**: 238 tests total (10 server, 27 po, 34 plural, 18 loader, 36 façade, 17 telemetry, 9 PropEr properties P1-P5 @ 200 runs each, 7 fuzz scenarios F1-F7 @ 100-500 runs each, 6 parity scenarios skipped without `msgfmt`).
 - **Coverage**: 100% of behaviorally reachable lines. Dead defensive code removed (no silent fallbacks for invariant violations — crashes are explicit via `function_clause` / `case_clause` / `badmatch`).
 - **Apache 2.0 license**.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — three jobs on pinned `ubuntu-24.04` / `ubuntu-22.04` runners (per the `erlef/setup-beam` ABI compatibility matrix): `lint` (fast quality gate on OTP 28), `test` (Common Test + coverage matrix across OTP 25.3 / 27 / 28 with `gettext` installed so `erli18n_parity_SUITE` exercises the oracle path), `dialyzer` (isolated job with PLT cache). Concurrency cancellation per ref, least-privilege `contents: read` token, rebar3 build cache keyed per OTP.
+- **Local CI emulation** via `act` and a custom runner image (`Dockerfile.act-runner`): extends `ghcr.io/catthehacker/ubuntu:full-24.04` with ELP `2026-02-27` (SHA256-verified per SLSA v0.2). Reuses the workflow YAML unchanged — GitHub-hosted runners gracefully `[SKIP]` the ELP steps in real CI. Bootstrap is declarative in `compose.yml` (`act-toolcache` volume init + image build). `actionlint 1.7.12` pinned via `mise.toml` for static workflow analysis.
+- **Repo hygiene**: `README.md` (with usage / install / compatibility / dev sections), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 3.0), `.editorconfig`.
 
 ### Architecture decisions documented
 
