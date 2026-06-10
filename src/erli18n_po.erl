@@ -480,11 +480,14 @@ empty_header() ->
 fresh_entry(Ln) ->
     #po_st{start_line = Ln}.
 
-%% Line splitting that handles both \n and \r\n line endings without
-%% relying on binary:split (which would allocate sublists for the wrong
-%% delimiter family on some inputs). We normalize \r\n -> \n first.
+%% Line splitting that handles LF, CRLF and lone-CR line endings. We fold
+%% CRLF -> LF first, then any remaining lone CR (0x0D, classic-Mac style)
+%% -> LF, before splitting on LF. This matches `msgfmt -c`, which accepts
+%% all three newline conventions (Finding #15). Folding CRLF first ensures
+%% a CRLF is never turned into two separate line breaks.
 split_lines(Bin) ->
-    Norm = binary:replace(Bin, <<"\r\n">>, <<"\n">>, [global]),
+    Norm0 = binary:replace(Bin, <<"\r\n">>, <<"\n">>, [global]),
+    Norm = binary:replace(Norm0, <<"\r">>, <<"\n">>, [global]),
     binary:split(Norm, <<"\n">>, [global]).
 
 parse_lines([], _Ln, Cur, St) ->

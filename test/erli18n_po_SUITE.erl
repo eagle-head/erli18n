@@ -83,7 +83,8 @@
     dump_catalog_missing_raw_key/1,
     msgctxt_bare_keyword_before_header_prepass/1,
     msgid_plural_bare_keyword_before_header_prepass/1,
-    tab_indented_line_in_main_parser/1
+    tab_indented_line_in_main_parser/1,
+    line_endings_lf_crlf_lone_cr_parse_identically/1
 ]).
 
 all() ->
@@ -161,7 +162,8 @@ all() ->
         dump_catalog_missing_raw_key,
         msgctxt_bare_keyword_before_header_prepass,
         msgid_plural_bare_keyword_before_header_prepass,
-        tab_indented_line_in_main_parser
+        tab_indented_line_in_main_parser,
+        line_endings_lf_crlf_lone_cr_parse_identically
     ].
 
 init_per_suite(Config) ->
@@ -1341,4 +1343,70 @@ tab_indented_line_in_main_parser(_Config) ->
     ?assertEqual(
         [{singular, undefined, <<"x">>, <<"y">>}],
         maps:get(entries, Catalog)
+    ).
+
+%% Finding #15 (po-lone-cr-line-endings-not-normalized): split_lines/1
+%% must normalize lone CR (0x0D, classic Mac) to LF, the same way it
+%% already folds CRLF -> LF, so the three newline conventions parse a
+%% byte-identical catalog to the EXACT same result. Before the fix
+%% split_lines/1 only replaced <<"\r\n">> then split on <<"\n">>, so a
+%% lone-CR file was treated as one giant line and the parser saw content
+%% after the first closing quote, returning a spurious
+%% {error, {syntax_error, 1, content_after_close_quote}}. GNU `msgfmt -c`
+%% accepts the same lone-CR file (exit 0), so this was a real parity gap.
+line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
+    %% A logical 2-entry catalog whose lines are joined by a parameterized
+    %% terminator. The byte content of each line is identical across the
+    %% three variants; only the line terminator differs.
+    Lines = [
+        <<"msgid \"\"">>,
+        <<"msgstr \"\"">>,
+        <<"\"Content-Type: text/plain; charset=UTF-8\\n\"">>,
+        <<"\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"">>,
+        <<"">>,
+        <<"msgid \"Hello\"">>,
+        <<"msgstr \"Bonjour\"">>,
+        <<"">>,
+        <<"msgid \"Bye\"">>,
+        <<"msgstr \"Au revoir\"">>
+    ],
+    Join = fun(Sep) ->
+        iolist_to_binary(lists:join(Sep, Lines))
+    end,
+    LfBin = Join(<<"\n">>),
+    CrlfBin = Join(<<"\r\n">>),
+    LoneCrBin = Join(<<"\r">>),
+
+    Expected = [
+        {singular, undefined, <<"Hello">>, <<"Bonjour">>},
+        {singular, undefined, <<"Bye">>, <<"Au revoir">>}
+    ],
+
+    {ok, LfCatalog} = erli18n_po:parse(LfBin),
+    ?assertEqual(Expected, maps:get(entries, LfCatalog)),
+
+    {ok, CrlfCatalog} = erli18n_po:parse(CrlfBin),
+    ?assertEqual(Expected, maps:get(entries, CrlfCatalog)),
+
+    %% This is the case that regressed before the fix.
+    {ok, LoneCrCatalog} = erli18n_po:parse(LoneCrBin),
+    ?assertEqual(Expected, maps:get(entries, LoneCrCatalog)),
+
+    %% All three byte-distinct inputs must yield the SAME parsed entries
+    %% AND the same detected charset/plural-forms header.
+    ?assertEqual(
+        maps:get(entries, LfCatalog),
+        maps:get(entries, LoneCrCatalog)
+    ),
+    ?assertEqual(
+        maps:get(entries, CrlfCatalog),
+        maps:get(entries, LoneCrCatalog)
+    ),
+    ?assertEqual(
+        utf8,
+        maps:get(charset, maps:get(header, LoneCrCatalog))
+    ),
+    ?assertEqual(
+        <<"nplurals=2; plural=(n != 1);">>,
+        maps:get(plural_forms, maps:get(header, LoneCrCatalog))
     ).
