@@ -26,10 +26,24 @@
     prop_embedded_controls/0,
     prop_encoding_mismatch/0,
     prop_extreme_inputs/0,
-    prop_end_to_end_no_supervisor_restart/0
+    prop_end_to_end_no_supervisor_restart/0,
+    prop_decode_is_linear/0
 ]).
 
 -define(FUZZ_DOMAIN, fuzz_test_dom).
+
+%% F6 `giant_msgid` size. 400KB is well past the point where the old
+%% Θ(n²) right-append fold cost multiple seconds per parse but trivial
+%% (low single-digit ms) for the linear `iolist_to_binary/1` path.
+-define(GIANT_MSGID_BYTES, 400_000).
+
+%% Linear-budget ceiling for `prop_decode_is_linear/0`. The linear path
+%% parses a 400KB single-string msgid in a few ms even under CT load;
+%% the quadratic path needed seconds. 1500ms is a generous ceiling that
+%% the linear implementation clears by orders of magnitude while still
+%% failing hard against the quadratic one (which measured 6-9s at
+%% 400KB). Expressed in microseconds for `timer:tc/1`.
+-define(LINEAR_BUDGET_US, 1_500_000).
 
 %% =========================
 %% F1 — Raw random bytes (dumb baseline)
@@ -169,7 +183,7 @@ prop_encoding_mismatch() ->
 %%
 %% Bounded so we never starve the CI:
 %%   many_empty_entries : 1000 empty entries
-%%   giant_msgid        : single msgid of 100KB
+%%   giant_msgid        : single msgid of 400KB (see ?GIANT_MSGID_BYTES)
 %%   repeated_headers   : 100 consecutive header-style blocks
 prop_extreme_inputs() ->
     ?FORALL(
@@ -186,18 +200,90 @@ build_extreme(many_empty_entries) ->
     Header = minimal_valid_po_header(),
     iolist_to_binary([Header, lists:duplicate(1000, Entry)]);
 build_extreme(giant_msgid) ->
-    Header = minimal_valid_po_header(),
-    %% Use 100KB of `a` bytes for the msgid. ASCII-only stays UTF-8
-    %% valid and avoids a charset-conversion path while still pushing
-    %% the parser's string-collector.
-    Giant = binary:copy(<<"a">>, 100_000),
-    Entry = <<"msgid \"", Giant/binary, "\"\nmsgstr \"\"\n">>,
-    <<Header/binary, Entry/binary>>;
+    %% A single 400KB ASCII msgid. ASCII-only stays UTF-8 valid and
+    %% avoids a charset-conversion path while still pushing the parser's
+    %% string collector (`decode_chars/2` -> `bins_to_binary/1`). At this
+    %% size the historical right-append fold in `bins_to_binary/2` took
+    %% multiple seconds per parse (Θ(n²)); the linear materialization
+    %% stays in the low-millisecond range. `prop_decode_is_linear/0`
+    %% asserts the budget directly; this variant keeps `no_crash`
+    %% coverage at a size the old code could not survive cheaply.
+    giant_msgid_po(?GIANT_MSGID_BYTES);
 build_extreme(repeated_headers) ->
     %% N copies of `msgid "" msgstr "...."` — the parser keeps only the
     %% first per PSD-001 (`finalize_entry` drops duplicates silently).
     Header = minimal_valid_po_header(),
     iolist_to_binary([Header, lists:duplicate(100, Header)]).
+
+%% =========================
+%% F6b — Decode cost is linear in single-string length (Finding #3)
+%% =========================
+%%
+%% Regression guard for `po-decode-bins-to-binary-quadratic`. The PO
+%% quoted-string decoder accumulates one binary per source character
+%% and folds them into the final string via `bins_to_binary/1`. The
+%% historical fold prepended into a right-hand accumulator
+%% (`<<B/binary, Acc/binary>>`), recopying the whole accumulator on
+%% every element — Θ(n²) to materialize one n-byte string. A single
+%% large msgid/msgstr therefore stalled the loader gen_server for
+%% seconds.
+%%
+%% This property parses a single ?GIANT_MSGID_BYTES msgid and asserts:
+%%   1. it parses successfully (round-trips through the decoder), and
+%%   2. wall-clock cost stays under ?LINEAR_BUDGET_US.
+%%
+%% The budget is comfortably met by the linear `iolist_to_binary/1`
+%% path (single-digit ms) and comfortably blown by the quadratic fold
+%% (measured 6-9s at 400KB on OTP 28), so it is a sharp red/green line
+%% for this fix. There is no `?FORALL` generator — the input is fixed
+%% and the claim is about a single deterministic measurement — but we
+%% wrap it as a PropEr property so it runs through the same
+%% `proper:quickcheck/2` harness as its F-siblings.
+prop_decode_is_linear() ->
+    ?FORALL(
+        N,
+        oneof([?GIANT_MSGID_BYTES]),
+        begin
+            Po = giant_msgid_po(N),
+            {Elapsed, Result} =
+                timer:tc(fun() -> erli18n_po:parse(Po) end),
+            ParsedOk =
+                case Result of
+                    {ok, #{entries := Entries}} ->
+                        decoded_msgid_len(Entries) =:= N;
+                    _Other ->
+                        false
+                end,
+            WithinBudget = Elapsed =< ?LINEAR_BUDGET_US,
+            case ParsedOk andalso WithinBudget of
+                true ->
+                    true;
+                false ->
+                    ct:pal(
+                        "prop_decode_is_linear: N=~p parsed_ok=~p "
+                        "elapsed_us=~p budget_us=~p~n",
+                        [N, ParsedOk, Elapsed, ?LINEAR_BUDGET_US]
+                    ),
+                    false
+            end
+        end
+    ).
+
+%% Build a PO blob whose single entry has an `N`-byte ASCII msgid.
+giant_msgid_po(N) ->
+    Header = minimal_valid_po_header(),
+    Giant = binary:copy(<<"a">>, N),
+    Entry = <<"msgid \"", Giant/binary, "\"\nmsgstr \"\"\n">>,
+    <<Header/binary, Entry/binary>>.
+
+%% Length of the (single) non-header msgid in a parsed entry list. Used
+%% to confirm the decoder produced the full string, not a truncated or
+%% corrupted one.
+decoded_msgid_len(Entries) ->
+    case [M || {singular, undefined, M, _} <- Entries, M =/= <<>>] of
+        [Msgid] -> byte_size(Msgid);
+        _ -> -1
+    end.
 
 %% =========================
 %% F7 — End-to-end: malformed PO via `ensure_loaded` does not restart

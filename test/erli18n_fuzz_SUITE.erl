@@ -30,6 +30,7 @@
     fuzz_embedded_controls/1,
     fuzz_encoding_mismatch/1,
     fuzz_extreme_inputs/1,
+    fuzz_decode_is_linear/1,
     fuzz_end_to_end/1
 ]).
 
@@ -43,6 +44,7 @@ all() ->
         fuzz_embedded_controls,
         fuzz_encoding_mismatch,
         fuzz_extreme_inputs,
+        fuzz_decode_is_linear,
         fuzz_end_to_end
     ].
 
@@ -82,6 +84,19 @@ fuzz_extreme_inputs(_Config) ->
         proper:quickcheck(
             erli18n_po_fuzz:prop_extreme_inputs(),
             [{numtests, 100}, {to_file, user}]
+        ),
+    ?assert(Result =:= true).
+
+fuzz_decode_is_linear(_Config) ->
+    %% F6b — Finding #3 regression guard. The property measures a single
+    %% large-msgid parse against an absolute wall-clock budget, so a
+    %% handful of iterations is plenty (and each builds a 400KB blob).
+    %% The quadratic predecessor blew the budget by 4-6x; the linear
+    %% decoder clears it by orders of magnitude.
+    Result =
+        proper:quickcheck(
+            erli18n_po_fuzz:prop_decode_is_linear(),
+            [{numtests, 10}, {to_file, user}]
         ),
     ?assert(Result =:= true).
 

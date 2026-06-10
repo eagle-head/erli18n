@@ -33,7 +33,8 @@
 -export([
     prop_roundtrip_parse_dump/0,
     prop_idempotent_normalization/0,
-    prop_ets_key_canonical/0
+    prop_ets_key_canonical/0,
+    prop_large_string_roundtrip/0
 ]).
 
 %% Generators (exported so other property modules can compose them).
@@ -163,6 +164,48 @@ prop_ets_key_canonical() ->
                         "ets_key_canonical: unexpected parse result ~p~n"
                         "dumped=~p~n",
                         [Other, Dumped]
+                    ),
+                    false
+            end
+        end
+    ).
+
+%% P1b — Large single-string round trip (Finding #3 equivalence guard).
+%%
+%% The Finding #3 fix replaced the right-append fold in
+%% `bins_to_binary/1` with `iolist_to_binary(lists:reverse(_))`. That
+%% function backs both the parse-side decoder (`decode_chars/2`) and the
+%% dump-side escaper (`escape_string/2`), so the swap must be byte-exact
+%% on large inputs, not just fast. This property builds a catalog whose
+%% msgid and translation are each tens of KB (well past the
+%% in-place-growth threshold where the old and new code could diverge if
+%% the materialization were wrong), dumps it, reparses it, and asserts
+%% the entries survive unchanged. It complements `prop_decode_is_linear`
+%% in the fuzz suite: that one pins the *cost*, this one pins the
+%% *result*.
+prop_large_string_roundtrip() ->
+    ?FORALL(
+        {NGen, FillerGen},
+        {oneof([8_000, 32_000, 64_000]), oneof([$a, $z, $9, $\s])},
+        begin
+            %% Generator boundary — see `prop_roundtrip_parse_dump/0`.
+            %% `oneof/1` is typed `term()` by eqwalizer; cast to the
+            %% documented integer shapes the generators produce.
+            N = eqwalizer:dynamic_cast(NGen),
+            Filler = eqwalizer:dynamic_cast(FillerGen),
+            Big = binary:copy(<<Filler>>, N),
+            Msgid = <<"id-", Big/binary>>,
+            Translation = <<"tr-", Big/binary>>,
+            Po = make_singular_catalog(undefined, Msgid, Translation),
+            Dumped = erli18n_po:dump(Po),
+            case erli18n_po:parse(Dumped) of
+                {ok, #{entries := [{singular, undefined, M2, T2}]}} ->
+                    M2 =:= Msgid andalso T2 =:= Translation;
+                Other ->
+                    ct:pal(
+                        "large_string_roundtrip: unexpected parse "
+                        "result ~p (N=~p)~n",
+                        [Other, N]
                     ),
                     false
             end

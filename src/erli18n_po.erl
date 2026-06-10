@@ -252,18 +252,27 @@ consume_continuations([Line | Rest] = All, Acc) ->
 
 %% Reverse-and-concatenate a list of binaries into one binary. The list
 %% comes pre-reversed from accumulator-style callers (latest element
-%% first), so a single linear pass prepending into the output is the
-%% native shape — equivalent to `iolist_to_binary(lists:reverse(Bins))`
-%% but with a precise spec eqwalizer can carry through.
+%% first), so we reverse once and let `iolist_to_binary/1` materialize
+%% the result in a single linear pass.
+%%
+%% This MUST stay linear in the total byte count. The previous shape —
+%% a fold building `<<B/binary, Acc/binary>>` — placed the growing
+%% accumulator on the RIGHT, which defeats the runtime's in-place binary
+%% growth optimization (that only applies to append, `<<Acc/binary,
+%% B/binary>>`, with a single reference). With the accumulator on the
+%% right the whole `Acc` is re-copied on every element -> Θ(n²) to build
+%% one n-byte string, so a single large msgid/msgstr stalled the loader
+%% gen_server for seconds (Finding #3,
+%% `po-decode-bins-to-binary-quadratic`). `iolist_to_binary/1` does the
+%% same job in two linear passes (reverse + BIF) with one allocation —
+%% strictly better above a few dozen bytes. `[binary()]` is a subtype of
+%% `iolist()`, so the `-spec` is preserved and eqwalizer-friendly.
+%%
+%% `append_to_last/2` deliberately keeps the accumulator on the LEFT and
+%% is already O(total); do not "unify" the two.
 -spec bins_to_binary([binary()]) -> binary().
-bins_to_binary(Bins) ->
-    bins_to_binary(Bins, <<>>).
-
--spec bins_to_binary([binary()], binary()) -> binary().
-bins_to_binary([], Acc) ->
-    Acc;
-bins_to_binary([B | Rest], Acc) when is_binary(B) ->
-    bins_to_binary(Rest, <<B/binary, Acc/binary>>).
+bins_to_binary(Bins) when is_list(Bins) ->
+    iolist_to_binary(lists:reverse(Bins)).
 
 %% Per PSD-002: accept utf8 (and aliases), latin1 / iso-8859-1, us-ascii.
 %% Case-insensitive match per RFC 2978 (charset names are

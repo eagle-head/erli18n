@@ -32,6 +32,7 @@
     roundtrip_parse_dump/1,
     idempotent_normalization/1,
     ets_key_canonical/1,
+    large_string_roundtrip/1,
     plural_index_in_range/1,
     plural_compile_or_error/1,
     plural_compile_bounded/1,
@@ -51,6 +52,7 @@ all() ->
         roundtrip_parse_dump,
         idempotent_normalization,
         ets_key_canonical,
+        large_string_roundtrip,
         plural_index_in_range,
         plural_compile_or_error,
         plural_compile_bounded,
@@ -89,6 +91,9 @@ idempotent_normalization(_Config) ->
 
 ets_key_canonical(_Config) ->
     run_property(erli18n_po_props:prop_ets_key_canonical()).
+
+large_string_roundtrip(_Config) ->
+    run_property(erli18n_po_props:prop_large_string_roundtrip()).
 
 plural_index_in_range(_Config) ->
     run_property(erli18n_plural_props:prop_index_in_range()).
