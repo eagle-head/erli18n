@@ -62,6 +62,7 @@
     plural_by_po_header/2,
     cldr_rule/1,
     validate_against_cldr/2,
+    validate_against_cldr_ast/2,
     fallback_rule/0
 ]).
 
@@ -358,21 +359,62 @@ cldr_rule(Locale) when is_binary(Locale) ->
 %% identical (whitespace-insensitive) or `{warning, _}` if they diverge
 %% in a way that would affect runtime form selection. Per PSD-004 the
 %% header always wins at runtime — this only produces observability.
+%%
+%% This binary-string form is the convenience entry point (callers that
+%% have only the raw header). It compiles the header ONCE and then defers
+%% to `validate_against_cldr_ast/2`. The catalog loader, which already
+%% holds the compiled bundle, MUST use `validate_against_cldr_ast/2`
+%% directly so the header is never recompiled on the load path
+%% (finding #17, compute-divergence-recompiles-header-and-cldr-each-load).
 -spec validate_against_cldr(binary(), binary()) ->
     ok
     | {warning, {plural_divergence, binary(), binary(), binary()}}.
 validate_against_cldr(Locale, HeaderRule) when
     is_binary(Locale), is_binary(HeaderRule)
 ->
-    case cldr_rule(Locale) of
+    case compile(HeaderRule) of
+        {ok, Compiled} ->
+            validate_against_cldr_ast(Locale, Compiled);
+        {error, _} ->
+            %% An unparseable header has no AST to compare. Before
+            %% finding #17 this still produced a `{warning, _}` for a
+            %% CLDR-listed locale (the header could not match the
+            %% canonical rule), so preserve that observable behaviour.
+            case cldr_compiled(Locale) of
+                undefined -> ok;
+                #{raw := CldrRaw} -> {warning, {plural_divergence, Locale, HeaderRule, CldrRaw}}
+            end
+    end.
+
+%% AST-based sibling of `validate_against_cldr/2`. Takes the ALREADY
+%% compiled header bundle (`plural_compiled()`) and compares it against
+%% the CLDR canonical rule for the locale without recompiling anything:
+%%
+%%   * the header AST is reused as-is (the loader compiled it once via
+%%     `compile/1` and keeps it in the catalog map);
+%%   * the CLDR rule is taken from a one-time, memoised table of compiled
+%%     ASTs (`cldr_compiled/1`), so no CLDR rule is parsed/synthesised on
+%%     the load path either.
+%%
+%% Equivalence is structural on `(nplurals, expr-AST)` — exactly what the
+%% old `ast_equivalent/2` computed, but with both sides already parsed.
+%% The warning payload keeps the raw header string (the bundle's `raw`
+%% field) and the raw CLDR expression, matching `validate_against_cldr/2`.
+-spec validate_against_cldr_ast(binary(), plural_compiled()) ->
+    ok
+    | {warning, {plural_divergence, binary(), binary(), binary()}}.
+validate_against_cldr_ast(Locale, #{nplurals := NH, expr := EH, raw := HeaderRaw}) when
+    is_binary(Locale)
+->
+    case cldr_compiled(Locale) of
         undefined ->
             %% Locale has no CLDR entry; we cannot validate. Treat as ok
             %% — the loader has nothing meaningful to log.
             ok;
-        {ok, CldrRule} ->
-            case ast_equivalent(HeaderRule, CldrRule) of
+        #{nplurals := NC, expr := EC, raw := CldrRaw} ->
+            case NH =:= NC andalso EH =:= EC of
                 true -> ok;
-                false -> {warning, {plural_divergence, Locale, HeaderRule, CldrRule}}
+                false -> {warning, {plural_divergence, Locale, HeaderRaw, CldrRaw}}
             end
     end.
 
@@ -1302,43 +1344,91 @@ base_locale(Locale) ->
     end.
 
 %% =========================
-%% CLDR equivalence check
+%% CLDR equivalence check (pre-compiled)
 %% =========================
 %%
-%% Compare two rule strings by parsing both and structurally comparing
-%% their ASTs (plus their nplurals counts). This is whitespace and
-%% paren-noise insensitive — `(n != 1)` matches `n != 1` — so we only
-%% warn on actual semantic divergence.
+%% Divergence is checked structurally on the parsed ASTs (nplurals + expr
+%% AST), so it is whitespace and paren-noise insensitive — `(n != 1)`
+%% matches `n != 1`. Finding #17: the loader already compiled the header
+%% AST, so `validate_against_cldr_ast/2` reuses it; the CLDR side is taken
+%% from a one-time MEMOISED table of compiled bundles (`cldr_compiled/1`)
+%% instead of re-parsing the canonical rule on every load. This removes
+%% the second header compile (and the per-load CLDR synthesise+compile +
+%% linear scans) that the old `ast_equivalent/split_rule` path incurred,
+%% and decouples divergence from the plural-compile O(n^2) bug (a
+%% pathological header is compiled once, not twice).
 
-ast_equivalent(HeaderRule, CldrExpr) ->
-    HeaderParts = split_rule(HeaderRule),
-    CldrFullRule = synthesise_cldr_rule(CldrExpr),
-    CldrParts = split_rule(CldrFullRule),
-    case {HeaderParts, CldrParts} of
-        {{ok, NH, EH}, {ok, NC, EC}} ->
-            NH =:= NC andalso EH =:= EC;
-        _ ->
-            false
+%% persistent_term key for the memoised CLDR AST table. The table is a
+%% constant (~49 rows of static literals) so a single global cache is
+%% sound: it is content-addressed by the module and never invalidated.
+-define(CLDR_COMPILED_KEY, {?MODULE, cldr_compiled_table}).
+
+%% Compiled CLDR bundle for a locale, with region fallback identical to
+%% `cldr_rule/1` (`fr_BE` -> `fr`). Returns the same `plural_compiled()`
+%% shape as `compile/1` so the AST can be compared directly; `raw` carries
+%% the CLDR canonical EXPRESSION binary (matching the old
+%% `validate_against_cldr/2` warning payload, which used `cldr_rule/1`'s
+%% expr). `undefined` when neither the locale nor its base is in the table.
+-spec cldr_compiled(binary()) -> plural_compiled() | undefined.
+cldr_compiled(Locale) when is_binary(Locale) ->
+    Table = cldr_compiled_table(),
+    case maps:find(Locale, Table) of
+        {ok, Bundle} ->
+            Bundle;
+        error ->
+            case base_locale(Locale) of
+                Locale ->
+                    undefined;
+                Base ->
+                    maps:get(Base, Table, undefined)
+            end
     end.
 
-%% Parse a header into {ok, NPlurals, ExprAst} or `error`.
-split_rule(Rule) ->
-    case compile(Rule) of
-        {ok, #{nplurals := N, expr := Ast}} -> {ok, N, Ast};
-        {error, _} -> error
+%% Return the memoised locale -> compiled-bundle map, building it exactly
+%% once per node and caching it in `persistent_term`. `cldr_data/0` is a
+%% static, trusted constant whose every expression is a canonical CLDR
+%% rule, so each `compile/1` here is guaranteed to succeed; a malformed
+%% row would be a build-time defect in this module and is surfaced
+%% immediately (the bad row is simply dropped from the table, so it falls
+%% back to "no CLDR entry" rather than crashing the loader).
+-spec cldr_compiled_table() -> #{binary() => plural_compiled()}.
+cldr_compiled_table() ->
+    case persistent_term:get(?CLDR_COMPILED_KEY, undefined) of
+        undefined ->
+            Table = build_cldr_compiled_table(),
+            persistent_term:put(?CLDR_COMPILED_KEY, Table),
+            Table;
+        Table when is_map(Table) ->
+            %% `persistent_term:get/2` is typed `term()`; the only writer
+            %% is the clause above, so this branch is the cache hit.
+            eqwalizer:dynamic_cast(Table)
     end.
 
-%% The CLDR table stores raw expressions; turn one into a full header
-%% string by looking up its nplurals from the table again. Cheap because
-%% `cldr_data/0` is a static list literal evaluated once per call.
-%% Invariant: `CldrExpr` is always a value previously returned by
-%% `cldr_rule/1`, so `find_nplurals/2` is guaranteed to match.
-synthesise_cldr_rule(CldrExpr) ->
-    {ok, N} = find_nplurals(CldrExpr, cldr_data()),
-    NBin = integer_to_binary(N),
-    <<"nplurals=", NBin/binary, "; plural=", CldrExpr/binary, ";">>.
-
-find_nplurals(Expr, [{_Locale, N, Expr} | _]) ->
-    {ok, N};
-find_nplurals(Expr, [_ | Rest]) ->
-    find_nplurals(Expr, Rest).
+-spec build_cldr_compiled_table() -> #{binary() => plural_compiled()}.
+build_cldr_compiled_table() ->
+    lists:foldl(
+        fun({Locale, N, Expr}, Acc) ->
+            Header = <<
+                "nplurals=",
+                (integer_to_binary(N))/binary,
+                "; plural=",
+                Expr/binary,
+                ";"
+            >>,
+            case compile(Header) of
+                {ok, #{nplurals := NC, expr := Ast}} ->
+                    %% Store the raw CLDR EXPRESSION (not the synthesised
+                    %% header) as `raw`, to match the legacy warning
+                    %% payload that surfaced `cldr_rule/1`'s expr.
+                    Acc#{Locale => #{nplurals => NC, expr => Ast, raw => Expr}};
+                {error, _} ->
+                    %% A canonical CLDR row that fails to compile is a
+                    %% defect in `cldr_data/0`; skip it so the locale
+                    %% degrades to "no CLDR entry" instead of poisoning
+                    %% the cache.
+                    Acc
+            end
+        end,
+        #{},
+        cldr_data()
+    ).

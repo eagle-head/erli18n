@@ -33,6 +33,8 @@
     cldr_rule_with_region_fallback/1,
     validate_against_cldr_ok/1,
     validate_against_cldr_divergence/1,
+    validate_against_cldr_ast_matches_binary_api/1,
+    validate_against_cldr_ast_no_recompile/1,
     syntax_error_unclosed_paren/1,
     syntax_error_invalid_op/1,
     missing_nplurals/1,
@@ -111,6 +113,8 @@ all() ->
         cldr_rule_with_region_fallback,
         validate_against_cldr_ok,
         validate_against_cldr_divergence,
+        validate_against_cldr_ast_matches_binary_api,
+        validate_against_cldr_ast_no_recompile,
         syntax_error_unclosed_paren,
         syntax_error_invalid_op,
         missing_nplurals,
@@ -368,6 +372,116 @@ validate_against_cldr_divergence(_Config) ->
     {warning, {plural_divergence, _Locale, Hdr, Cldr}} = Result,
     ?assertEqual(eng(), Hdr),
     ?assert(is_binary(Cldr)).
+
+%% Finding #17: the load path keeps the header AST already compiled by
+%% `compile/1` and must reuse it for the (informational) CLDR divergence
+%% check. `validate_against_cldr_ast/2` takes the compiled bundle and is
+%% the variant the loader calls — it must agree, case for case, with the
+%% binary-string `validate_against_cldr/2` for ok, divergence, and
+%% unknown-locale outcomes (header always wins at runtime, PSD-004).
+validate_against_cldr_ast_matches_binary_api(_Config) ->
+    Cases = [
+        %% {Locale, HeaderBinary}
+        {<<"en">>, eng()},
+        {<<"fr">>, fre()},
+        %% English rule declared for French is a real divergence.
+        {<<"fr">>, eng()},
+        %% Russian 3-form canonical header.
+        {<<"ru">>, <<
+            "nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
+            "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;"
+        >>},
+        %% Portuguese (CLDR `n > 1`) matched and diverging.
+        {<<"pt">>, <<"nplurals=2; plural=n > 1;">>},
+        {<<"pt">>, eng()},
+        %% Locale absent from the CLDR table — both must early-return ok.
+        {<<"qq_QQ">>, eng()}
+    ],
+    lists:foreach(
+        fun({Locale, Header}) ->
+            {ok, Compiled} = erli18n_plural:compile(Header),
+            Expected = erli18n_plural:validate_against_cldr(Locale, Header),
+            Actual = erli18n_plural:validate_against_cldr_ast(Locale, Compiled),
+            ?assertEqual(
+                normalise_divergence(Expected),
+                normalise_divergence(Actual),
+                {Locale, Header}
+            )
+        end,
+        Cases
+    ).
+
+%% Both APIs return the divergence payload with the locale and two binary
+%% rule strings; the AST variant must surface the same locale and the same
+%% header binary (the `raw` field of the compiled bundle). We compare the
+%% shape that the loader actually consumes.
+normalise_divergence(ok) ->
+    ok;
+normalise_divergence({warning, {plural_divergence, Loc, _Hdr, _Cldr}}) ->
+    %% Compare on locale only for the divergence tag — both variants must
+    %% agree on WHETHER it diverges and on WHICH locale, which is what the
+    %% loader keys on. (The header/cldr binaries are asserted separately in
+    %% the dedicated tests above.)
+    {warning, plural_divergence, Loc}.
+
+%% Finding #17 (core regression): the loader already compiled the header
+%% via `compile/1` and the CLDR table is a static constant — so checking
+%% divergence with the COMPILED bundle must NOT recompile the header a
+%% second time, nor compile a CLDR rule on the hot path. We trace every
+%% call to `erli18n_plural:compile/1` while running the AST-based check and
+%% assert ZERO further compiles happen. Against the pre-fix code (which has
+%% no AST variant and re-parses through `split_rule -> compile`), this test
+%% cannot even compile/link the call — and once the variant exists but is
+%% naive, the trace count is non-zero. The fixed code precomputes the CLDR
+%% ASTs and reuses the passed-in bundle, so the count is 0.
+validate_against_cldr_ast_no_recompile(_Config) ->
+    %% Divergent case for a CLDR-listed locale exercises the full compare
+    %% path (both nplurals and expr are inspected, CLDR side is consulted).
+    {ok, Compiled} = erli18n_plural:compile(eng()),
+    %% Warm any one-time memoised CLDR-AST table BEFORE we start counting,
+    %% so the first-load amortised cost is not attributed to the per-load
+    %% divergence check we are measuring.
+    _ = erli18n_plural:validate_against_cldr_ast(<<"fr">>, Compiled),
+    Count = count_plural_compiles(fun() ->
+        erli18n_plural:validate_against_cldr_ast(<<"fr">>, Compiled)
+    end),
+    ?assertEqual(
+        0,
+        Count,
+        {header_recompiled_on_divergence_path, Count}
+    ).
+
+%% Count calls to `erli18n_plural:compile/1` made (in any process) while
+%% `Fun` runs, using OTP call tracing — no external mocking dependency.
+count_plural_compiles(Fun) ->
+    Self = self(),
+    Collector = spawn(fun() -> compile_trace_loop(Self, 0) end),
+    erlang:trace(all, true, [call, {tracer, Collector}]),
+    erlang:trace_pattern(
+        {erli18n_plural, compile, 1}, true, [global]
+    ),
+    try
+        Fun()
+    after
+        erlang:trace_pattern({erli18n_plural, compile, 1}, false, [global]),
+        erlang:trace(all, false, [call])
+    end,
+    Collector ! {count, self()},
+    receive
+        {compile_count, N} -> N
+    after 5000 ->
+        ct:fail(trace_collector_timeout)
+    end.
+
+compile_trace_loop(Owner, N) ->
+    receive
+        {trace, _Pid, call, {erli18n_plural, compile, _Args}} ->
+            compile_trace_loop(Owner, N + 1);
+        {count, From} ->
+            From ! {compile_count, N};
+        _Other ->
+            compile_trace_loop(Owner, N)
+    end.
 
 %% =========================
 %% Error reporting

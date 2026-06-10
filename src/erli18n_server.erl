@@ -1301,15 +1301,24 @@ maybe_compile_plural(#{plural_forms := PluralRaw}) ->
 %% header is absent we have nothing to compare; when the locale is not in
 %% the CLDR table we can't compare either. In both cases we report
 %% `none`.
-%% Like `maybe_compile_plural/1`, the two clauses below are exhaustive
-%% for any header produced by erli18n_po — `plural_forms` is always
-%% present (empty binary when no header / no expression was provided).
-%% A missing key would be a parser contract violation and is allowed to
-%% crash with function_clause.
-compute_divergence(_Locale, #{plural_forms := <<>>}) ->
+%%
+%% Finding #17 (compute-divergence-recompiles-header-and-cldr-each-load):
+%% takes the ALREADY compiled plural bundle (kept by `maybe_compile_plural/1`
+%% at the `stage_compiled` call site) and hands it straight to
+%% `validate_against_cldr_ast/2`, which reuses the parsed AST and a
+%% memoised CLDR-AST table. The old code passed the header MAP and let
+%% `validate_against_cldr/2` recompile the same expression a SECOND time
+%% (plus synthesise+compile a CLDR rule and linear-scan the CLDR list) on
+%% every real load. The `fallback` atom means the catalog shipped without
+%% a `Plural-Forms` header, so there is nothing to compare.
+-spec compute_divergence(
+    locale(),
+    erli18n_plural:plural_compiled() | fallback
+) -> none | {plural_divergence, binary(), binary()}.
+compute_divergence(_Locale, fallback) ->
     none;
-compute_divergence(Locale, #{plural_forms := HeaderRule}) ->
-    case erli18n_plural:validate_against_cldr(Locale, HeaderRule) of
+compute_divergence(Locale, #{} = PluralCompiled) ->
+    case erli18n_plural:validate_against_cldr_ast(Locale, PluralCompiled) of
         ok ->
             none;
         {warning, {plural_divergence, _Loc, HdrRule, CldrRule}} ->
@@ -1525,7 +1534,10 @@ stage_compiled(Domain, Locale, PoPath, IncludeFuzzy, Bin, Header, Entries, NumEn
         {error, CompileErr} ->
             {error, {plural_compile_error, CompileErr}};
         {ok, PluralCompiled} ->
-            Divergence = compute_divergence(Locale, Header),
+            %% Finding #17: pass the ALREADY compiled bundle, not the raw
+            %% header map, so the divergence check does not recompile the
+            %% same expression a second time.
+            Divergence = compute_divergence(Locale, PluralCompiled),
             HeaderState = #{
                 plural => PluralCompiled,
                 plural_raw => PluralRaw,
