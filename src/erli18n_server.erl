@@ -36,6 +36,7 @@
 -export([
     ensure_loaded/3,
     ensure_loaded/4,
+    ensure_loaded_many/1,
     reload/3,
     reload/4,
     default_po_path/3
@@ -71,7 +72,27 @@
     | {plural, domain(), locale(), context(), msgid(), plural_index()}.
 
 %% Load orchestration types (Parte 5).
--type opts() :: #{include_fuzzy => boolean()}.
+%%
+%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout):
+%% `opts()` gains resource bounds and a tunable commit timeout. Every field
+%% is optional; omitting them preserves the legacy behaviour (modulo the
+%% safety cap defaults). The heavy read+parse+compile now runs in the
+%% CALLING process, so these are the boundary knobs a multi-tenant
+%% deployment (ADR-0003) needs:
+%%   * `max_bytes`   — reject the file (via `filelib:file_size/1`) BEFORE
+%%                     reading it whole into memory. `infinity` = no cap.
+%%   * `max_entries` — reject the catalog AFTER the parse if it has more
+%%                     than N entries. `infinity` = no cap.
+%%   * `timeout`     — timeout of the `gen_server:call/3' that performs the
+%%                     (now millisecond-scale) commit. The heavy phase no
+%%                     longer runs behind the mailbox, so the deadline only
+%%                     covers the bulk insert.
+-type opts() :: #{
+    include_fuzzy => boolean(),
+    max_bytes => non_neg_integer() | infinity,
+    max_entries => non_neg_integer() | infinity,
+    timeout => timeout()
+}.
 %% `{ok, NewlyLoaded :: pos_integer()}`: number of entries inserted on a
 %% real load (parsed + compiled + installed).
 %% `{ok, already}`: idempotent fast-path, the catalog was already loaded.
@@ -84,7 +105,18 @@
     erli18n_po:parse_error()
     | {plural_compile_error, erli18n_plural:compile_error()}
     | {file_error, file:posix() | badarg | terminated | system_limit}
+    | bound_error()
     | {load_failed, term()}.
+%% Finding #6: errors introduced by the resource bounds. A subset of
+%% `ensure_error()`, surfaced from the caller-side heavy phase BEFORE any
+%% ETS mutation (same "errors before mutation" ordering the load pipeline
+%% always had).
+-type bound_error() ::
+    {input_too_large, Bytes :: non_neg_integer(), Limit :: non_neg_integer()}
+    | {too_many_entries, Count :: non_neg_integer(), Limit :: non_neg_integer()}.
+%% Finding #6: a single catalog to load in the bulk API. Same positional
+%% shape as the `ensure_loaded/4' arguments.
+-type load_spec() :: {domain(), locale(), file:filename(), opts()}.
 -type divergence_info() ::
     none
     | {plural_divergence, binary(), binary()}.
@@ -106,6 +138,16 @@
 %% prune. `objects` are the `{Key, Translation}' rows ready for
 %% `ets:insert/2'; `new_keys` is their data-key set (for stale pruning);
 %% `num_entries` is the count reported back to the caller.
+%%
+%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout):
+%% a `staged/0' IS the validated, ready-to-insert load payload. It is built
+%% entirely in the CALLING process (read+parse+compile+stage+fuzzy count),
+%% and only this value travels through the server mailbox to the commit. To
+%% keep the heavy fuzzy re-parse off the server, `fuzzy_skipped' is computed
+%% caller-side and carried here, so the commit only EMITS the precomputed
+%% count (no re-parse on the owner). `raw_bin' is retained for backwards
+%% compatibility with the staging shape but is no longer re-parsed at commit
+%% time.
 -type staged() :: #{
     objects := [tuple()],
     new_keys := sets:set(data_key()),
@@ -115,7 +157,8 @@
     locale := locale(),
     raw_bin := binary(),
     include_fuzzy := boolean(),
-    num_entries := non_neg_integer()
+    num_entries := non_neg_integer(),
+    fuzzy_skipped := non_neg_integer()
 }.
 
 -export_type([
@@ -132,6 +175,8 @@
     opts/0,
     ensure_result/0,
     ensure_error/0,
+    bound_error/0,
+    load_spec/0,
     divergence_info/0,
     header_state/0
 ]).
@@ -440,17 +485,60 @@ build_keys([Obj | Rest], Domain, Locale, Acc) ->
 ensure_loaded(Domain, Locale, PoPath) ->
     ensure_loaded(Domain, Locale, PoPath, #{}).
 
+%% Finding #6: the heavy half (read+parse+compile+validate+bounds) runs in
+%% the CALLING process inside the `[erli18n, catalog, load]' span, so the
+%% measurement is per-tenant and OUTSIDE the server mailbox. Only the
+%% validated payload is handed to the server for the millisecond commit,
+%% with a caller-tunable timeout. The idempotent fast-path stays a pure ETS
+%% read (no disk, no server roundtrip).
 -spec ensure_loaded(domain(), locale(), file:filename(), opts()) ->
     ensure_result().
 ensure_loaded(Domain, Locale, PoPath, Opts) when
     is_atom(Domain), is_binary(Locale), is_map(Opts)
 ->
+    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
+    StartMeta = #{
+        domain => Domain,
+        locale => Locale,
+        language => lc_messages,
+        po_path => to_binary_path(PoPath),
+        fuzzy_included => IncludeFuzzy
+    },
+    %% `erli18n_telemetry:span/3' is specced `span_result() = term()' — it
+    %% returns the first element of the closure tuple, which is always our
+    %% `ensure_result()'. Narrow it back at the boundary so the public
+    %% contract stays statically typed.
     narrow_ensure_result(
-        gen_server:call(
-            ?MODULE,
-            {ensure_loaded, Domain, Locale, PoPath, Opts}
+        erli18n_telemetry:span(
+            erli18n_telemetry:event_catalog_load(),
+            StartMeta,
+            fun() ->
+                Inner = do_ensure_loaded(Domain, Locale, PoPath, Opts),
+                {Inner, maps:merge(StartMeta, load_stop_metadata(Inner))}
+            end
         )
     ).
+
+%% Idempotent fast-path (RISK-012 mitigation 2): a pure ETS read, no disk,
+%% no server roundtrip. On a miss the heavy phase (`stage_catalog/4') runs
+%% in this process and only the validated payload is committed.
+-spec do_ensure_loaded(domain(), locale(), file:filename(), opts()) ->
+    ensure_result().
+do_ensure_loaded(Domain, Locale, PoPath, Opts) ->
+    case lookup_header(Domain, Locale) of
+        {ok, _} ->
+            {ok, already};
+        undefined ->
+            case stage_catalog(Domain, Locale, PoPath, Opts) of
+                {error, _} = E ->
+                    E;
+                {ok, Staged} ->
+                    %% Mode `ensure': the server re-checks idempotency under
+                    %% serialization, closing the check-then-insert race
+                    %% between two concurrent callers of the same catalog.
+                    commit_call({commit, ensure, Domain, Locale, Staged}, Opts)
+            end
+    end.
 
 %% Reload bypasses the idempotency check: always parses and re-installs.
 %% Resolves AMB-001 overwrite semantics — the new catalog overwrites the
@@ -471,23 +559,120 @@ ensure_loaded(Domain, Locale, PoPath, Opts) when
 reload(Domain, Locale, PoPath) ->
     reload(Domain, Locale, PoPath, #{}).
 
+%% Finding #6: like `ensure_loaded/4', the heavy STAGE runs in the caller
+%% inside the `[erli18n, catalog, reload]' span; only the atomic SWAP commit
+%% travels to the server with a tunable timeout. reload never takes the
+%% idempotent fast-path: it always re-stages and re-installs.
 -spec reload(domain(), locale(), file:filename(), opts()) ->
     ensure_result().
 reload(Domain, Locale, PoPath, Opts) when
     is_atom(Domain), is_binary(Locale), is_map(Opts)
 ->
+    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
+    StartMeta = #{
+        domain => Domain,
+        locale => Locale,
+        language => lc_messages,
+        po_path => to_binary_path(PoPath),
+        fuzzy_included => IncludeFuzzy
+    },
+    %% See `ensure_loaded/4': narrow the `span_result() = term()' back to
+    %% `ensure_result()' at the boundary.
     narrow_ensure_result(
-        gen_server:call(
-            ?MODULE,
-            {reload, Domain, Locale, PoPath, Opts}
+        erli18n_telemetry:span(
+            erli18n_telemetry:event_catalog_reload(),
+            StartMeta,
+            fun() ->
+                Inner =
+                    case stage_catalog(Domain, Locale, PoPath, Opts) of
+                        {error, _} = E ->
+                            E;
+                        {ok, Staged} ->
+                            commit_call(
+                                {commit, reload, Domain, Locale, Staged}, Opts
+                            )
+                    end,
+                {Inner, maps:merge(StartMeta, load_stop_metadata(Inner))}
+            end
         )
     ).
 
-%% Narrow the `term()` reply from `gen_server:call/2` to the public
-%% `ensure_result()` contract. Both `handle_call({ensure_loaded, ...})`
-%% and `handle_call({reload, ...})` deterministically return one of the
-%% three shapes pattern-matched below — any other shape is a contract
-%% violation and crashes with function_clause.
+%% Hand the validated payload to the owner and narrow the reply. The commit
+%% is only the bulk insert (~26ms for 40k entries measured live), so the
+%% default 5000ms is generous; the override exists for deployments that
+%% want it tighter or `infinity`.
+-spec commit_call(commit_msg(), opts()) -> ensure_result().
+commit_call(Msg, Opts) ->
+    Timeout = maps:get(timeout, Opts, 5000),
+    narrow_ensure_result(gen_server:call(?MODULE, Msg, Timeout)).
+
+-type commit_msg() ::
+    {commit, ensure | reload, domain(), locale(), staged()}.
+
+%% Finding #6, bulk API. Load N catalogs: the heavy phase of each runs in
+%% THIS process (sequential prepare — the v0.1 trade-off documented in the
+%% design; a parallel fan-out is a future evolution), and every
+%% ready-to-insert payload is delivered in a SINGLE commit. That collapses N
+%% server roundtrips into one and (with finding #7's O(1) index) the per-
+%% catalog idempotency check is O(1), not an O(total_rows) `tab2list' scan.
+%% Already-loaded or failing catalogs are reported individually; one
+%% catalog's error never blocks the others.
+-spec ensure_loaded_many([load_spec()]) ->
+    [{domain(), locale(), ensure_result()}].
+ensure_loaded_many(Specs) when is_list(Specs) ->
+    Prepared = [prepare_one(Spec) || Spec <- Specs],
+    {ToCommit, Resolved} = partition_prepared(Prepared),
+    Committed =
+        case ToCommit of
+            [] ->
+                [];
+            [_ | _] ->
+                narrow_commit_many(
+                    gen_server:call(?MODULE, {commit_many, ToCommit})
+                )
+        end,
+    Resolved ++ Committed.
+
+%% Prepare one spec in the caller: idempotent fast-path or heavy stage.
+-spec prepare_one(load_spec()) ->
+    {domain(), locale(), already}
+    | {domain(), locale(), {prepared, {ok, staged()} | {error, ensure_error()}}}.
+prepare_one({D, L, Path, Opts}) ->
+    case lookup_header(D, L) of
+        {ok, _} ->
+            {D, L, already};
+        undefined ->
+            {D, L, {prepared, stage_catalog(D, L, Path, Opts)}}
+    end.
+
+%% Split prepared specs into those needing a commit (validated payloads) and
+%% those already resolved (idempotent hits and prepare errors).
+-spec partition_prepared([
+    {domain(), locale(), already}
+    | {domain(), locale(), {prepared, {ok, staged()} | {error, ensure_error()}}}
+]) ->
+    {[{domain(), locale(), staged()}], [{domain(), locale(), ensure_result()}]}.
+partition_prepared(Prepared) ->
+    lists:foldr(fun partition_one/2, {[], []}, Prepared).
+
+-spec partition_one(
+    {domain(), locale(), already}
+    | {domain(), locale(), {prepared, {ok, staged()} | {error, ensure_error()}}},
+    {[{domain(), locale(), staged()}], [{domain(), locale(), ensure_result()}]}
+) ->
+    {[{domain(), locale(), staged()}], [{domain(), locale(), ensure_result()}]}.
+partition_one({D, L, already}, {Commit, Done}) ->
+    {Commit, [{D, L, {ok, already}} | Done]};
+partition_one({D, L, {prepared, {ok, Payload}}}, {Commit, Done}) ->
+    {[{D, L, Payload} | Commit], Done};
+partition_one({D, L, {prepared, {error, _} = Err}}, {Commit, Done}) ->
+    {Commit, [{D, L, Err} | Done]}.
+
+%% Narrow the `term()` reply from the `{commit, ...}' / `{commit_many, ...}'
+%% `gen_server:call/2,3' to the public `ensure_result()' contract. The
+%% commit callbacks deterministically return one of the three shapes
+%% pattern-matched below — any other shape is a contract violation and
+%% crashes with function_clause.
 -spec narrow_ensure_result(term()) -> ensure_result().
 narrow_ensure_result({ok, already}) ->
     {ok, already};
@@ -501,6 +686,20 @@ narrow_ensure_result({error, Reason}) ->
     %% known structured tag — this also future-proofs the API against new
     %% server-side error shapes leaking out untyped.
     {error, classify_ensure_error(Reason)}.
+
+%% Narrow the `term()` reply from the bulk `{commit_many, _}' call to the
+%% per-spec result list. The server callback deterministically returns a
+%% list of `{Domain, Locale, ensure_result()}', but `gen_server:call/2' is
+%% specced `term()'; we re-validate each row at the boundary so the public
+%% contract is statically typed. Any element that does not match the
+%% expected shape is a contract break and crashes with function_clause.
+-spec narrow_commit_many(term()) -> [{domain(), locale(), ensure_result()}].
+narrow_commit_many(Results) when is_list(Results) ->
+    [narrow_commit_many_row(Row) || Row <- Results].
+
+-spec narrow_commit_many_row(term()) -> {domain(), locale(), ensure_result()}.
+narrow_commit_many_row({D, L, Result}) when is_atom(D), is_binary(L) ->
+    {D, L, narrow_ensure_result(Result)}.
 
 -spec classify_ensure_error(term()) -> ensure_error().
 classify_ensure_error(Reason) ->
@@ -532,6 +731,17 @@ is_known_ensure_error({syntax_error, L, _}) when is_integer(L), L > 0 -> true;
 is_known_ensure_error({file_error, _}) ->
     true;
 is_known_ensure_error({plural_compile_error, _}) ->
+    true;
+%% Finding #6 bound errors. Emitted caller-side before any commit, so they
+%% normally never travel through `gen_server:call/2'; classified here for
+%% defence-in-depth so the boundary narrow stays total.
+is_known_ensure_error({input_too_large, B, L}) when
+    is_integer(B), B >= 0, is_integer(L), L >= 0
+->
+    true;
+is_known_ensure_error({too_many_entries, C, L}) when
+    is_integer(C), C >= 0, is_integer(L), L >= 0
+->
     true;
 is_known_ensure_error({load_failed, _}) ->
     true;
@@ -571,6 +781,14 @@ narrow_known_ensure_error({plural_compile_error, _CompileErr} = E) ->
     %% `erli18n_plural:compile_error()` is opaque to this module; we
     %% trust the upstream tag and wrap.
     classify_plural_compile_error(E);
+narrow_known_ensure_error({input_too_large, B, L}) when
+    is_integer(B), B >= 0, is_integer(L), L >= 0
+->
+    {input_too_large, B, L};
+narrow_known_ensure_error({too_many_entries, C, L}) when
+    is_integer(C), C >= 0, is_integer(L), L >= 0
+->
+    {too_many_entries, C, L};
 narrow_known_ensure_error({load_failed, _Term} = E) ->
     E.
 
@@ -912,86 +1130,23 @@ handle_call({unload, D, L}, _From, State) ->
     ),
     %% Preserve the historical public contract of `unload/2`.
     {reply, ok, State};
-handle_call({ensure_loaded, D, L, PoPath, Opts}, _From, State) ->
-    %% Span: [erli18n, catalog, load]. Always-on per observability.md
-    %% §6. Wraps the entire pipeline — header check, parse, compile,
-    %% validate, install. Idempotent fast-path still emits the span so
-    %% consumers see both load and "already loaded" traffic; the result
-    %% atom in the stop metadata disambiguates.
-    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
-    StartMeta = #{
-        domain => D,
-        locale => L,
-        language => lc_messages,
-        po_path => to_binary_path(PoPath),
-        fuzzy_included => IncludeFuzzy
-    },
-    Reply =
-        erli18n_telemetry:span(
-            erli18n_telemetry:event_catalog_load(),
-            StartMeta,
-            fun() ->
-                Inner =
-                    case lookup_header(D, L) of
-                        {ok, _} ->
-                            %% Idempotent fast-path per RISK-012
-                            %% mitigation 2: do not re-read the file,
-                            %% do not re-parse. The span still emits
-                            %% so consumers can see `result => already`
-                            %% (observability.md §4.1, note about
-                            %% RISK-012 mitigation 2).
-                            {ok, already};
-                        undefined ->
-                            do_load(D, L, PoPath, Opts)
-                    end,
-                StopMeta = maps:merge(
-                    StartMeta,
-                    load_stop_metadata(Inner)
-                ),
-                {Inner, StopMeta}
-            end
-        ),
-    {reply, Reply, State};
-handle_call({reload, D, L, PoPath, Opts}, _From, State) ->
-    %% Span: [erli18n, catalog, reload]. Identical schema to
-    %% [erli18n, catalog, load]; the distinct event name lets consumers
-    %% react differently (e.g. invalidate derived caches). Per AMB-001
-    %% reload overwrites the existing catalog.
-    %%
-    %% Finding #4: STAGE -> ATOMIC-SWAP. `stage_catalog/4' is pure (no ETS
-    %% mutation), so on `{error, _}' the prior catalog is provably intact —
-    %% never unloaded. Only on `{ok, Staged}' do we `swap_catalog/3', which
-    %% inserts the new rows BEFORE pruning the stale ones, so retained keys
-    %% never miss.
-    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
-    StartMeta = #{
-        domain => D,
-        locale => L,
-        language => lc_messages,
-        po_path => to_binary_path(PoPath),
-        fuzzy_included => IncludeFuzzy
-    },
-    Reply =
-        erli18n_telemetry:span(
-            erli18n_telemetry:event_catalog_reload(),
-            StartMeta,
-            fun() ->
-                Inner =
-                    case stage_catalog(D, L, PoPath, Opts) of
-                        {error, _} = E ->
-                            %% Prior catalog INTACT — nothing was mutated.
-                            E;
-                        {ok, Staged} ->
-                            swap_catalog(D, L, Staged)
-                    end,
-                StopMeta = maps:merge(
-                    StartMeta,
-                    load_stop_metadata(Inner)
-                ),
-                {Inner, StopMeta}
-            end
-        ),
-    {reply, Reply, State};
+%% Finding #6: the server now receives ONLY validated, ready-to-insert
+%% payloads. The heavy read+parse+compile already ran in the caller (inside
+%% the load/reload span), so this clause is the millisecond critical section
+%% — the only work that requires the owner of the `protected' table. The
+%% telemetry span fired caller-side, so no span here.
+%%
+%% `ensure' mode re-checks idempotency UNDER serialization, closing the
+%% check-then-insert race between two concurrent callers preparing the same
+%% catalog. `reload' mode does the finding-#4 atomic insert-before-prune
+%% swap.
+handle_call({commit, Mode, D, L, Staged}, _From, State) ->
+    {reply, do_commit(Mode, D, L, Staged), State};
+%% Bulk commit (finding #6): N validated payloads installed in one critical
+%% section, with a single deferred `memory_warning_check' (finding #7) at
+%% the end instead of one per catalog.
+handle_call({commit_many, Items}, _From, State) ->
+    {reply, do_commit_many(Items), State};
 handle_call(_Other, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -1008,163 +1163,111 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% =========================
-%% Internal: load pipeline
+%% Internal: commit (owner-only critical section) — finding #6
 %% =========================
 %%
-%% Atomicity: all error-producing operations (file read, parse, plural
-%% compile, CLDR validation) happen BEFORE any ETS mutation. The catalog
-%% insert and header insert are the last two steps; if either runs, both
-%% run, because ETS `set` is itself atomic at the row level and the
-%% gen_server serializes the whole sequence.
-%%
-%% Order:
-%%   1. file:read_file/1            — may fail with {file_error, Posix}
-%%   2. erli18n_po:parse/2          — may fail with parse_error()
-%%   3. compile plural header       — may fail with {plural_compile_error, _}
-%%   4. validate_against_cldr/2     — never fails (returns ok | {warning, _})
-%%   5. ets:insert entries          — infallible (ETS set always succeeds)
-%%   6. ets:insert header_state     — infallible
-%%
-%% On failure at steps 1-3, ETS is untouched. The caller sees a structured
-%% error and the catalog state is whatever it was before the call.
-do_load(Domain, Locale, PoPath, Opts) ->
-    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
-    case file:read_file(PoPath) of
-        {error, Posix} ->
-            {error, {file_error, Posix}};
-        {ok, Bin} ->
-            case erli18n_po:parse(Bin, #{include_fuzzy => IncludeFuzzy}) of
-                {error, _} = E ->
-                    E;
-                {ok, Parsed} ->
-                    %% Loader-level fuzzy_skip telemetry. The parser
-                    %% drops fuzzy entries silently (per PSD-001), but
-                    %% we want the count surfaced as a single aggregated
-                    %% emit per load so consumers can observe how much
-                    %% material is being discarded. observability.md
-                    %% §4.2 notes that this event is load-time-only on
-                    %% the implementation side. We re-parse a second
-                    %% time with `include_fuzzy => true` ONLY when (a)
-                    %% the consumer has opted in to lookup telemetry,
-                    %% and (b) the original load discarded fuzzy
-                    %% entries by default — otherwise we have no count
-                    %% to surface. Cost: one extra parse per load, paid
-                    %% only when explicitly opted in.
-                    maybe_emit_fuzzy_skip(
-                        Domain,
-                        Locale,
-                        Bin,
-                        IncludeFuzzy,
-                        length(maps:get(entries, Parsed, []))
-                    ),
-                    install_parsed(
-                        Domain,
-                        Locale,
-                        PoPath,
-                        IncludeFuzzy,
-                        Parsed
-                    )
-            end
-    end.
-
-%% Compute the number of fuzzy entries that the parser dropped on this
-%% load. Only invoked when both opt-in and not-include-fuzzy hold (the
-%% only case where the emit would be meaningful and observability.md §6
-%% says the flag controls it). The double-parse pattern keeps
-%% `erli18n_po` ignorant of the (Domain, Locale) context — the parser's
-%% job is parsing PO, not emitting telemetry. `DefaultCount` is the number
-%% of entries the default (non-fuzzy) parse kept — both load paths
-%% (`do_load/4' and `swap_catalog/3') already have it, so we pass the
-%% count rather than the whole parsed map.
--spec maybe_emit_fuzzy_skip(
-    domain(), locale(), binary(), boolean(), non_neg_integer()
-) -> ok.
-maybe_emit_fuzzy_skip(Domain, Locale, RawBin, false = _IncludeFuzzy, DefaultCount) ->
-    case erli18n_telemetry:lookup_telemetry_enabled() of
-        false ->
-            ok;
-        true ->
-            %% The re-parse uses include_fuzzy => true against the same
-            %% input bytes that already parsed successfully with
-            %% include_fuzzy => false. The flag only changes which
-            %% entries are kept; it cannot affect parser correctness.
-            %% A failure here would be a parser invariant break, so we
-            %% pattern-match exactly and let badmatch surface it.
-            {ok, #{entries := AllEntries}} =
-                erli18n_po:parse(RawBin, #{include_fuzzy => true}),
-            Diff = length(AllEntries) - DefaultCount,
-            case Diff > 0 of
-                true ->
-                    erli18n_telemetry:emit(
-                        erli18n_telemetry:event_lookup_fuzzy_skip(),
-                        #{count => Diff},
-                        #{domain => Domain, locale => Locale}
-                    ),
-                    ok;
-                false ->
-                    ok
-            end
+%% The heavy half (read+parse+compile+validate+bounds) already ran in the
+%% caller (`stage_catalog/4'), producing a validated `staged/0' payload.
+%% `do_commit/4' is the ONLY work that requires the owner of the `protected'
+%% table: it is ETS-`set' inserts (atomic per row) under the single mailbox,
+%% so no observable mixed state. `ensure' re-checks idempotency under
+%% serialization; `reload' does the finding-#4 atomic swap.
+-spec do_commit(ensure | reload, domain(), locale(), staged()) ->
+    ensure_result().
+do_commit(ensure, Domain, Locale, Staged) ->
+    %% Re-check idempotency INSIDE serialization: if a concurrent caller
+    %% installed this catalog while we were preparing, we do not overwrite.
+    case lookup_header(Domain, Locale) of
+        {ok, _} -> {ok, already};
+        undefined -> install_staged(Domain, Locale, Staged)
     end;
-maybe_emit_fuzzy_skip(
-    _Domain,
-    _Locale,
-    _RawBin,
-    true = _IncludeFuzzy,
-    _DefaultCount
-) ->
-    %% include_fuzzy => true was passed — no entries were dropped, so
-    %% the event is not emitted (observability.md §4.2 "Quando NÃO é
-    %% emitido").
-    ok.
+do_commit(reload, Domain, Locale, Staged) ->
+    %% Atomic insert-before-prune (finding #4): retained keys never miss.
+    swap_catalog(Domain, Locale, Staged).
 
-install_parsed(Domain, Locale, PoPath, IncludeFuzzy, Parsed) ->
-    #{header := Header, entries := Entries} = Parsed,
-    PluralRaw =
-        case maps:get(plural_forms, Header, <<>>) of
-            <<>> -> erli18n_plural:fallback_rule();
-            Other -> Other
+%% Bulk commit (finding #6): install N validated payloads in one critical
+%% section. Each catalog is idempotency-checked (O(1) via the finding-#7
+%% index) and installed without its own `memory_warning_check' — that scan
+%% is deferred to a SINGLE call after the whole batch, so a bulk of N is not
+%% N memory checks.
+-spec do_commit_many([{domain(), locale(), staged()}]) ->
+    [{domain(), locale(), ensure_result()}].
+do_commit_many(Items) ->
+    Results = [commit_one_no_memcheck(Item) || Item <- Items],
+    _ = erli18n_telemetry:memory_warning_check(memory_info()),
+    Results.
+
+-spec commit_one_no_memcheck({domain(), locale(), staged()}) ->
+    {domain(), locale(), ensure_result()}.
+commit_one_no_memcheck({D, L, Staged}) ->
+    R =
+        case lookup_header(D, L) of
+            {ok, _} -> {ok, already};
+            undefined -> install_staged_no_memcheck(D, L, Staged)
         end,
-    case maybe_compile_plural(Header) of
-        {error, CompileErr} ->
-            {error, {plural_compile_error, CompileErr}};
-        {ok, PluralCompiled} ->
-            Divergence = compute_divergence(Locale, Header),
-            HeaderState = #{
-                plural => PluralCompiled,
-                plural_raw => PluralRaw,
-                po_path => PoPath,
-                loaded_at => erlang:system_time(millisecond),
-                divergence => Divergence,
-                fuzzy_included => IncludeFuzzy,
-                num_entries => length(Entries)
-            },
-            emit_divergence_log(Domain, Locale, Divergence),
-            %% Telemetry: [erli18n, plural, divergence_warning]. Always-on
-            %% per observability.md §6 (load-time, infrequent). Schema in
-            %% observability.md §4.2.
-            emit_divergence_telemetry(Domain, Locale, Divergence),
-            InsertedKeys = insert_entries(Domain, Locale, Entries),
-            %% Findings #7/#13: record the loaded data keys in the index
-            %% (the catalog registers iff >=1 data row was written). A
-            %% header-only `.po' (or a plural with empty form lists) writes
-            %% only the header row below, which is intentionally NOT counted
-            %% as a catalog (consistent with `loaded_catalogs/0' / the old
-            %% tab2list scan) and contributes no keys. The `?HEADER_KEY'
-            %% insert is infallible and never touches the index.
-            index_add_keys(Domain, Locale, InsertedKeys),
-            true = ets:insert(
-                ?ETS_TABLE,
-                {?HEADER_KEY(Domain, Locale), HeaderState}
-            ),
-            %% Memory warning check runs after the insert so the
-            %% measurement reflects the post-install state — that's the
-            %% snapshot a consumer would observe via
-            %% `erli18n:memory_info/0`. Always-on, rate-limited inside
-            %% `erli18n_telemetry:memory_warning_check/1`. RISK-011
-            %% mitigation 2.
-            _ = erli18n_telemetry:memory_warning_check(memory_info()),
-            {ok, length(Entries)}
-    end.
+    {D, L, R}.
+
+%% Install a validated `staged/0' for a fresh (Domain, Locale): insert the
+%% data rows + header, register the index keys, emit the precomputed
+%% side-effects, and run the post-install `memory_warning_check'. Nothing
+%% here can fail (the failable work happened in the caller), so the commit
+%% is total and cheap.
+-spec install_staged(domain(), locale(), staged()) ->
+    {ok, non_neg_integer()}.
+install_staged(Domain, Locale, Staged) ->
+    Result = install_staged_no_memcheck(Domain, Locale, Staged),
+    %% Memory warning check runs after the insert so the measurement
+    %% reflects the post-install state (RISK-011 mitigation 2). Rate-limited
+    %% inside `erli18n_telemetry:memory_warning_check/1'.
+    _ = erli18n_telemetry:memory_warning_check(memory_info()),
+    Result.
+
+%% As `install_staged/3' but WITHOUT the per-catalog memory check, so the
+%% bulk path can defer it to one call after the whole batch.
+-spec install_staged_no_memcheck(domain(), locale(), staged()) ->
+    {ok, non_neg_integer()}.
+install_staged_no_memcheck(Domain, Locale, Staged) ->
+    #{
+        objects := Objects,
+        new_keys := NewKeys,
+        header := HeaderState,
+        divergence := Divergence,
+        num_entries := NumEntries,
+        fuzzy_skipped := FuzzySkipped
+    } = Staged,
+    emit_divergence_log(Domain, Locale, Divergence),
+    %% Telemetry: [erli18n, plural, divergence_warning]. Always-on per
+    %% observability.md §6 (load-time, infrequent). Schema in §4.2.
+    emit_divergence_telemetry(Domain, Locale, Divergence),
+    emit_fuzzy_skip(Domain, Locale, FuzzySkipped),
+    %% Findings #7/#13: register the catalog's data keys (iff >=1 row).
+    case Objects of
+        [] -> ok;
+        [_ | _] -> true = ets:insert(?ETS_TABLE, Objects)
+    end,
+    %% Register the catalog's exact key set (or drop the row for a
+    %% header-only / degenerate-plural catalog), per the finding-#7
+    %% membership rule. Same primitive the reload swap uses.
+    rewrite_index(Domain, Locale, NewKeys),
+    true = ets:insert(
+        ?ETS_TABLE,
+        {?HEADER_KEY(Domain, Locale), HeaderState}
+    ),
+    {ok, NumEntries}.
+
+%% Emit the (caller-precomputed) fuzzy-skip count. The heavy second parse
+%% that produced this count ran in the caller (`compute_fuzzy_skipped/3'),
+%% so the owner only fires the telemetry event — no re-parse on the server.
+-spec emit_fuzzy_skip(domain(), locale(), non_neg_integer()) -> ok.
+emit_fuzzy_skip(_Domain, _Locale, 0) ->
+    ok;
+emit_fuzzy_skip(Domain, Locale, Count) when Count > 0 ->
+    erli18n_telemetry:emit(
+        erli18n_telemetry:event_lookup_fuzzy_skip(),
+        #{count => Count},
+        #{domain => Domain, locale => Locale}
+    ),
+    ok.
 
 %% Compile the plural header into the in-memory bundle. Returns
 %% `{ok, Compiled | fallback}` where `fallback` signals "no header was
@@ -1247,29 +1350,6 @@ emit_divergence_telemetry(
     ),
     ok.
 
-%% Bulk-insert all entries in a single ETS call so the catalog is
-%% installed in one operation. Per `ets:insert/2` docs, multi-object
-%% insert on `set` is atomic and isolated — observers either see the old
-%% state or the new state, never a mix.
-%%
-%% Returns the list of data keys actually written (finding #13), so the
-%% caller can record them in the secondary index — and so the catalog
-%% registers iff >=1 data row was written (finding #7): an empty entry
-%% list, or entries that flatten to zero ETS objects (e.g. a plural with
-%% empty form lists), yields `[]' and must NOT count as a loaded catalog.
--spec insert_entries(domain(), locale(), [catalog_entry()]) -> [data_key()].
-insert_entries(_Domain, _Locale, []) ->
-    [];
-insert_entries(Domain, Locale, Entries) ->
-    Objects = build_catalog_objects(Domain, Locale, Entries),
-    case Objects of
-        [] ->
-            [];
-        [_ | _] ->
-            true = ets:insert(?ETS_TABLE, Objects),
-            object_keys(Objects)
-    end.
-
 %% Build the list of ETS objects for a single plural msgid. Each entry
 %% is a `{Index, Translation}` tuple; the output rows are
 %% `{?PLURAL_KEY/5, Translation}` tuples. The explicit `tuple()` element
@@ -1305,53 +1385,130 @@ build_catalog_objects(D, L, [E | Rest]) ->
     entry_to_objects(D, L, E) ++ build_catalog_objects(D, L, Rest).
 
 %% =========================
-%% Finding #4: STAGE -> ATOMIC-SWAP reload
+%% Finding #4/#6: STAGE (heavy phase, runs in the CALLER)
 %% =========================
 %%
-%% `stage_catalog/4' runs the entire FAILABLE half of the load pipeline —
-%% file read, parse, plural compile, CLDR divergence, object build — and
-%% produces a pure in-memory `staged/0' record. It performs ZERO ETS
-%% mutation, so on `{error, _}' the prior catalog is provably untouched
-%% (same guarantee `ensure_loaded' already had via the
-%% "errors-before-mutation" ordering of `do_load/install_parsed').
+%% `stage_catalog/4' runs the entire FAILABLE, heavy half of the load
+%% pipeline — bounds check, file read, parse, plural compile, CLDR
+%% divergence, object build, fuzzy count — and produces a pure in-memory
+%% `staged/0' payload. It performs ZERO ETS mutation, so on `{error, _}' the
+%% prior catalog is provably untouched.
 %%
-%% Failure order mirrors `do_load/4' so reload and ensure_loaded surface
-%% identical errors:
-%%   1. file:read_file/1        -> {file_error, Posix}
-%%   2. erli18n_po:parse/2      -> parse_error()
-%%   3. compile plural header   -> {plural_compile_error, _}
-%%   4. compute_divergence/2    -> never fails (informational)
+%% Finding #6: this now runs in the CALLING process (not the gen_server), so
+%% a large/slow/pathological `.po' from one tenant never blocks another
+%% tenant's load, and a slow parse never burns the server mailbox. Only the
+%% resulting payload travels to the owner for the millisecond commit.
+%%
+%% Failure order (all BEFORE any mutation, as before):
+%%   0. size cap (filelib:file_size/1, no read) -> {input_too_large, _, _}
+%%   1. file:read_file/1                         -> {file_error, Posix}
+%%   2. erli18n_po:parse/2                        -> parse_error()
+%%   3. entry cap (post-parse)                    -> {too_many_entries, _, _}
+%%   4. compile plural header                     -> {plural_compile_error, _}
+%%   5. compute_divergence/2                      -> never fails (informational)
 -spec stage_catalog(domain(), locale(), file:filename(), opts()) ->
     {ok, staged()} | {error, ensure_error()}.
 stage_catalog(Domain, Locale, PoPath, Opts) ->
     IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
-    case file:read_file(PoPath) of
-        {error, Posix} ->
-            {error, {file_error, Posix}};
-        {ok, Bin} ->
-            case erli18n_po:parse(Bin, #{include_fuzzy => IncludeFuzzy}) of
-                {error, _} = E ->
-                    E;
-                {ok, Parsed} ->
-                    stage_parsed(
-                        Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed
-                    )
+    MaxBytes = maps:get(max_bytes, Opts, default_max_bytes()),
+    MaxEntries = maps:get(max_entries, Opts, default_max_entries()),
+    case check_size(PoPath, MaxBytes) of
+        {error, _} = SizeErr ->
+            SizeErr;
+        ok ->
+            case file:read_file(PoPath) of
+                {error, Posix} ->
+                    {error, {file_error, Posix}};
+                {ok, Bin} ->
+                    case erli18n_po:parse(Bin, #{include_fuzzy => IncludeFuzzy}) of
+                        {error, _} = E ->
+                            E;
+                        {ok, Parsed} ->
+                            stage_parsed(
+                                Domain,
+                                Locale,
+                                PoPath,
+                                IncludeFuzzy,
+                                MaxEntries,
+                                Bin,
+                                Parsed
+                            )
+                    end
             end
     end.
 
-%% Pure compile + object build half of staging. Compile failure is the
-%% last failable step; on success we materialize the ETS objects and their
-%% data-key set so `swap_catalog/3' has nothing left to compute.
+%% Size cap applied BEFORE reading the whole file into memory:
+%% `filelib:file_size/1' stats the file, it does not load bytes. Closes the
+%% door on a gigabyte `.po' blowing the heap just to read it (finding #6).
+%% `infinity' = no cap (explicit legacy behaviour).
+-spec check_size(file:filename(), non_neg_integer() | infinity) ->
+    ok | {error, bound_error()}.
+check_size(_PoPath, infinity) ->
+    ok;
+check_size(PoPath, MaxBytes) when is_integer(MaxBytes) ->
+    case filelib:file_size(PoPath) of
+        Size when Size =< MaxBytes ->
+            ok;
+        Size ->
+            {error, {input_too_large, Size, MaxBytes}}
+    end.
+
+%% Pure entry-cap + compile + object build + fuzzy count half of staging.
+%% The entry cap rejects an over-large catalog AFTER the parse (we need the
+%% parsed entry count); compile failure is the last failable step. On
+%% success we materialize the ETS objects, their data-key set, and the
+%% caller-computed fuzzy_skipped count so the commit has nothing heavy left.
 -spec stage_parsed(
     domain(),
     locale(),
     file:filename(),
     boolean(),
+    non_neg_integer() | infinity,
     binary(),
     erli18n_po:parsed_catalog()
 ) -> {ok, staged()} | {error, ensure_error()}.
-stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed) ->
+stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, MaxEntries, Bin, Parsed) ->
     #{header := Header, entries := Entries} = Parsed,
+    NumEntries = length(Entries),
+    case within_entry_cap(NumEntries, MaxEntries) of
+        false ->
+            {error, {too_many_entries, NumEntries, narrow_cap(MaxEntries)}};
+        true ->
+            stage_compiled(
+                Domain,
+                Locale,
+                PoPath,
+                IncludeFuzzy,
+                Bin,
+                Header,
+                Entries,
+                NumEntries
+            )
+    end.
+
+-spec within_entry_cap(non_neg_integer(), non_neg_integer() | infinity) ->
+    boolean().
+within_entry_cap(_N, infinity) -> true;
+within_entry_cap(N, Max) when is_integer(Max) -> N =< Max.
+
+%% `within_entry_cap/2' only returns `false' for the integer-cap clause, so
+%% in the error path the cap is provably a `non_neg_integer()'. Narrow it for
+%% the `too_many_entries' tuple so eqwalizer sees the closed shape.
+-spec narrow_cap(non_neg_integer() | infinity) -> non_neg_integer().
+narrow_cap(N) when is_integer(N), N >= 0 -> N;
+narrow_cap(infinity) -> error(unreachable_infinity_cap).
+
+-spec stage_compiled(
+    domain(),
+    locale(),
+    file:filename(),
+    boolean(),
+    binary(),
+    erli18n_po:header_map(),
+    [erli18n_po:entry()],
+    non_neg_integer()
+) -> {ok, staged()} | {error, ensure_error()}.
+stage_compiled(Domain, Locale, PoPath, IncludeFuzzy, Bin, Header, Entries, NumEntries) ->
     PluralRaw =
         case maps:get(plural_forms, Header, <<>>) of
             <<>> -> erli18n_plural:fallback_rule();
@@ -1362,7 +1519,6 @@ stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed) ->
             {error, {plural_compile_error, CompileErr}};
         {ok, PluralCompiled} ->
             Divergence = compute_divergence(Locale, Header),
-            NumEntries = length(Entries),
             HeaderState = #{
                 plural => PluralCompiled,
                 plural_raw => PluralRaw,
@@ -1376,6 +1532,7 @@ stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed) ->
             NewKeys = sets:from_list(
                 object_keys(Objects), [{version, 2}]
             ),
+            FuzzySkipped = compute_fuzzy_skipped(IncludeFuzzy, Bin, NumEntries),
             {ok, #{
                 objects => Objects,
                 new_keys => NewKeys,
@@ -1385,9 +1542,55 @@ stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed) ->
                 locale => Locale,
                 raw_bin => Bin,
                 include_fuzzy => IncludeFuzzy,
-                num_entries => NumEntries
+                num_entries => NumEntries,
+                fuzzy_skipped => FuzzySkipped
             }}
     end.
+
+%% Count the fuzzy entries the default parse dropped, computed in the CALLER
+%% (finding #6: the heavy second parse no longer runs on the server). Only
+%% re-parses when the consumer opted in to lookup telemetry AND the default
+%% (non-fuzzy) load discarded fuzzy entries — identical gate to the original
+%% `maybe_emit_fuzzy_skip/5'. The emit itself happens at commit time from the
+%% precomputed count.
+-spec compute_fuzzy_skipped(boolean(), binary(), non_neg_integer()) ->
+    non_neg_integer().
+compute_fuzzy_skipped(true = _IncludeFuzzy, _Bin, _DefaultCount) ->
+    %% include_fuzzy => true: nothing was dropped (observability.md §4.2).
+    0;
+compute_fuzzy_skipped(false, Bin, DefaultCount) ->
+    case erli18n_telemetry:lookup_telemetry_enabled() of
+        false ->
+            0;
+        true ->
+            %% Re-parse with include_fuzzy => true against the same bytes
+            %% that already parsed successfully with include_fuzzy => false.
+            %% The flag only changes which entries are kept; a failure here
+            %% would be a parser invariant break, so we match exactly.
+            {ok, #{entries := AllEntries}} =
+                erli18n_po:parse(Bin, #{include_fuzzy => true}),
+            erlang:max(0, length(AllEntries) - DefaultCount)
+    end.
+
+%% Bounds defaults (finding #6), configurable via application env so a
+%% deployment can tune or disable (`infinity') them. Generous enough for
+%% real catalogs (gettext "large" rarely exceeds a few MB) but finite for
+%% safety.
+-spec default_max_bytes() -> non_neg_integer() | infinity.
+default_max_bytes() ->
+    narrow_bound(application:get_env(erli18n, max_po_bytes, 16 * 1024 * 1024)).
+
+-spec default_max_entries() -> non_neg_integer() | infinity.
+default_max_entries() ->
+    narrow_bound(application:get_env(erli18n, max_po_entries, 500000)).
+
+%% `application:get_env/3' is specced `term()'; narrow the configured value
+%% to the bound shape at the boundary. A non-conforming env value is a
+%% deployment misconfiguration and crashes with a descriptive payload.
+-spec narrow_bound(term()) -> non_neg_integer() | infinity.
+narrow_bound(infinity) -> infinity;
+narrow_bound(N) when is_integer(N), N >= 0 -> N;
+narrow_bound(Other) -> error({invalid_erli18n_bound, Other}).
 
 %% `swap_catalog/3' is the ONLY mutating step. It is insert-before-prune:
 %%   1. snapshot the OLD catalog's data keys (before any mutation);
@@ -1407,19 +1610,14 @@ swap_catalog(Domain, Locale, Staged) ->
         new_keys := NewKeys,
         header := HeaderState,
         divergence := Divergence,
-        raw_bin := Bin,
-        include_fuzzy := IncludeFuzzy,
-        num_entries := NumEntries
+        num_entries := NumEntries,
+        fuzzy_skipped := FuzzySkipped
     } = Staged,
     emit_divergence_log(Domain, Locale, Divergence),
     emit_divergence_telemetry(Domain, Locale, Divergence),
-    maybe_emit_fuzzy_skip(
-        Domain,
-        Locale,
-        Bin,
-        IncludeFuzzy,
-        NumEntries
-    ),
+    %% Finding #6: the fuzzy count was computed caller-side (no re-parse on
+    %% the owner); the commit just emits the precomputed value.
+    emit_fuzzy_skip(Domain, Locale, FuzzySkipped),
     %% (1) snapshot the old data keys BEFORE mutating.
     OldKeySet = index_key_set(Domain, Locale),
     %% (2) insert all new data rows (atomic, isolated). An empty catalog

@@ -47,7 +47,13 @@
     ensure_loaded_fuzzy_skip_with_lookup_telemetry/1,
     ensure_loaded_no_fuzzy_with_lookup_telemetry/1,
     lookup_plural_form_unloaded_catalog/1,
-    which_keys_filters_other_catalogs/1
+    which_keys_filters_other_catalogs/1,
+    ensure_loaded_rejects_oversized_file/1,
+    ensure_loaded_rejects_too_many_entries/1,
+    ensure_loaded_bounds_default_to_legacy/1,
+    ensure_loaded_does_not_block_concurrent_load/1,
+    ensure_loaded_many_equals_n_singles/1,
+    ensure_loaded_many_reports_errors_per_spec/1
 ]).
 
 %% Custom logger handler callback used by with_log_capture/1 to assert
@@ -83,7 +89,13 @@ all() ->
         ensure_loaded_fuzzy_skip_with_lookup_telemetry,
         ensure_loaded_no_fuzzy_with_lookup_telemetry,
         lookup_plural_form_unloaded_catalog,
-        which_keys_filters_other_catalogs
+        which_keys_filters_other_catalogs,
+        ensure_loaded_rejects_oversized_file,
+        ensure_loaded_rejects_too_many_entries,
+        ensure_loaded_bounds_default_to_legacy,
+        ensure_loaded_does_not_block_concurrent_load,
+        ensure_loaded_many_equals_n_singles,
+        ensure_loaded_many_reports_errors_per_spec
     ].
 
 init_per_suite(Config) ->
@@ -936,3 +948,243 @@ which_keys_filters_other_catalogs(_Config) ->
         ],
         KeysEs
     ).
+
+%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout),
+%% bounds class. A `.po` larger than `max_bytes` must be rejected with
+%% `{error, {input_too_large, Size, Limit}}` BEFORE the whole file is read
+%% into memory (the cap is applied via `filelib:file_size/1`). ETS stays
+%% untouched. Pre-fix `opts()` exposes only `include_fuzzy`, so the option
+%% is silently ignored and the load succeeds -> RED.
+ensure_loaded_rejects_oversized_file(Config) ->
+    Path = fixture(Config, "minimal_en.po"),
+    Size = filelib:file_size(Path),
+    Limit = Size - 1,
+    ?assertEqual(
+        {error, {input_too_large, Size, Limit}},
+        erli18n_server:ensure_loaded(
+            default, <<"toobig">>, Path, #{max_bytes => Limit}
+        )
+    ),
+    ?assertEqual(
+        undefined, erli18n_server:lookup_header(default, <<"toobig">>)
+    ),
+    %% A limit at/above the real size still loads.
+    ?assertEqual(
+        {ok, 1},
+        erli18n_server:ensure_loaded(
+            default, <<"okbig">>, Path, #{max_bytes => Size}
+        )
+    ),
+    ok = erli18n_server:unload(default, <<"okbig">>).
+
+%% Finding #6, bounds class (post-parse cap). A catalog with more than
+%% `max_entries` parsed entries must be rejected with
+%% `{error, {too_many_entries, Count, Limit}}` and leave ETS untouched.
+%% minimal_en.po has exactly 1 entry, so `max_entries => 0` must reject it
+%% while `max_entries => 1` accepts it.
+ensure_loaded_rejects_too_many_entries(Config) ->
+    Path = fixture(Config, "minimal_en.po"),
+    ?assertEqual(
+        {error, {too_many_entries, 1, 0}},
+        erli18n_server:ensure_loaded(
+            default, <<"toomany">>, Path, #{max_entries => 0}
+        )
+    ),
+    ?assertEqual(
+        undefined, erli18n_server:lookup_header(default, <<"toomany">>)
+    ),
+    ?assertEqual(
+        {ok, 1},
+        erli18n_server:ensure_loaded(
+            default, <<"okmany">>, Path, #{max_entries => 1}
+        )
+    ),
+    ok = erli18n_server:unload(default, <<"okmany">>).
+
+%% Finding #6, timeout/legacy class. With no bounds in `opts()` the load
+%% must behave exactly as before (the defaults are generous), AND an
+%% explicit `timeout => infinity` must be accepted by the commit call
+%% rather than crashing the caller. This pins that the new options are
+%% optional and the default path is byte-for-byte the legacy behaviour.
+ensure_loaded_bounds_default_to_legacy(Config) ->
+    Path = fixture(Config, "minimal_en.po"),
+    ?assertEqual(
+        {ok, 1},
+        erli18n_server:ensure_loaded(
+            default, <<"legacy">>, Path, #{timeout => infinity}
+        )
+    ),
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"legacy">>, undefined, <<"Hello">>
+        )
+    ),
+    ok = erli18n_server:unload(default, <<"legacy">>).
+
+%% Finding #6, head-of-line blocking class. A trivial 1-entry load must NOT
+%% queue behind a large/slow load in the single gen_server mailbox: the
+%% heavy read+parse+compile now runs in the CALLING process, so only the
+%% millisecond commit serializes. We build a large synthetic .po (tenant A)
+%% whose parse takes a noticeable wall-clock slice, fire it from a separate
+%% process, then time a trivial 1-entry load (tenant B) launched just after.
+%%
+%% Pre-fix the whole pipeline (read+parse+compile) runs inside handle_call,
+%% so B's trivial load blocks behind A's full parse -> B's wall time tracks
+%% A's parse time (seconds) -> RED. Post-fix B's parse is in B's own
+%% process and only A's ~ms commit is serialized, so B finishes promptly.
+ensure_loaded_does_not_block_concurrent_load(Config) ->
+    BigPath = big_po(Config, 30000),
+    TrivialPath = fixture(Config, "minimal_en.po"),
+    Parent = self(),
+    %% Measure how long the big parse takes on THIS machine so the bound is
+    %% relative, not a flaky absolute. We time a bare prepare (no install).
+    BigParseMs = time_big_parse(BigPath),
+    %% Tenant A loads the big catalog from a separate process.
+    spawn_link(fun() ->
+        R = erli18n_server:ensure_loaded(default, <<"big_tenant">>, BigPath, #{}),
+        Parent ! {tenant_a, R}
+    end),
+    %% Give A a head start so its load is in flight.
+    timer:sleep(20),
+    T0 = erlang:monotonic_time(millisecond),
+    RB = erli18n_server:ensure_loaded(default, <<"trivial_tenant">>, TrivialPath, #{}),
+    T1 = erlang:monotonic_time(millisecond),
+    TrivialWall = T1 - T0,
+    ?assertEqual({ok, 1}, RB),
+    %% The trivial load must finish in a small fraction of the big parse —
+    %% it must NOT wait for the big parse to clear the mailbox. Half the big
+    %% parse time is a generous, machine-relative ceiling: pre-fix the
+    %% trivial load waits ~the entire big parse (head-of-line), so it would
+    %% exceed this; post-fix it is bounded by the ~ms commit only.
+    Ceiling = max(200, BigParseMs div 2),
+    ?assert(
+        TrivialWall < Ceiling,
+        lists:flatten(
+            io_lib:format(
+                "trivial load took ~pms; big parse ~pms; expected < ~pms "
+                "(head-of-line blocking present)",
+                [TrivialWall, BigParseMs, Ceiling]
+            )
+        )
+    ),
+    receive
+        {tenant_a, RA} -> ?assertMatch({ok, _}, RA)
+    after 60000 -> ct:fail(tenant_a_timeout)
+    end,
+    ok = erli18n_server:unload(default, <<"big_tenant">>),
+    ok = erli18n_server:unload(default, <<"trivial_tenant">>).
+
+%% Time a single read+parse of the big fixture in the calling process, as a
+%% machine-relative reference for the head-of-line ceiling.
+time_big_parse(BigPath) ->
+    {ok, Bin} = file:read_file(BigPath),
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, _} = erli18n_po:parse(Bin, #{include_fuzzy => false}),
+    T1 = erlang:monotonic_time(millisecond),
+    max(1, T1 - T0).
+
+%% Build (once) a large valid .po with N distinct singular entries under
+%% the suite's priv_dir so the head-of-line test has a parse that takes a
+%% meaningful wall-clock slice. Returns the file path.
+big_po(Config, N) ->
+    Dir = ?config(priv_dir, Config),
+    Path = filename:join(Dir, "big_" ++ integer_to_list(N) ++ ".po"),
+    case filelib:is_file(Path) of
+        true ->
+            Path;
+        false ->
+            Header =
+                <<
+                    "msgid \"\"\n"
+                    "msgstr \"\"\n"
+                    "\"Content-Type: text/plain; charset=UTF-8\\n\"\n\n"
+                >>,
+            Body = [
+                [
+                    "msgid \"key_",
+                    integer_to_list(I),
+                    "\"\nmsgstr \"val_",
+                    integer_to_list(I),
+                    "\"\n\n"
+                ]
+             || I <- lists:seq(1, N)
+            ],
+            ok = file:write_file(Path, [Header | Body]),
+            Path
+    end.
+
+%% Finding #6, bulk class. `ensure_loaded_many/1` must install exactly the
+%% same catalogs as calling `ensure_loaded/4` one-by-one, returning a
+%% per-spec result list. The bulk API does not exist pre-fix -> RED
+%% (undefined function).
+ensure_loaded_many_equals_n_singles(Config) ->
+    Min = fixture(Config, "minimal_en.po"),
+    Plu = fixture(Config, "plural_fr.po"),
+    Specs = [
+        {default, <<"bulk_a">>, Min, #{}},
+        {default, <<"bulk_b">>, Plu, #{}}
+    ],
+    Results = erli18n_server:ensure_loaded_many(Specs),
+    ?assertEqual(
+        [
+            {default, <<"bulk_a">>, {ok, 1}},
+            {default, <<"bulk_b">>, {ok, 1}}
+        ],
+        lists:sort(Results)
+    ),
+    %% Both catalogs are queryable.
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"bulk_a">>, undefined, <<"Hello">>
+        )
+    ),
+    ?assertEqual(
+        {ok, <<"arbres">>},
+        erli18n_server:lookup_plural(
+            default, <<"bulk_b">>, undefined, <<"tree">>, 1
+        )
+    ),
+    %% Idempotent re-run: both report {ok, already}.
+    Again = erli18n_server:ensure_loaded_many(Specs),
+    ?assertEqual(
+        [
+            {default, <<"bulk_a">>, {ok, already}},
+            {default, <<"bulk_b">>, {ok, already}}
+        ],
+        lists:sort(Again)
+    ),
+    ok = erli18n_server:unload(default, <<"bulk_a">>),
+    ok = erli18n_server:unload(default, <<"bulk_b">>).
+
+%% Finding #6, bulk class. A single failing spec must NOT block the
+%% others — each catalog's result is reported individually.
+ensure_loaded_many_reports_errors_per_spec(Config) ->
+    Good = fixture(Config, "minimal_en.po"),
+    Missing =
+        "/tmp/erli18n_bulk_missing_" ++
+            integer_to_list(erlang:unique_integer([positive])) ++ ".po",
+    Specs = [
+        {default, <<"bulk_ok">>, Good, #{}},
+        {default, <<"bulk_err">>, Missing, #{}}
+    ],
+    Results = lists:sort(erli18n_server:ensure_loaded_many(Specs)),
+    ?assertMatch(
+        [
+            {default, <<"bulk_err">>, {error, {file_error, enoent}}},
+            {default, <<"bulk_ok">>, {ok, 1}}
+        ],
+        Results
+    ),
+    %% The good catalog landed despite the sibling error.
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"bulk_ok">>, undefined, <<"Hello">>
+        )
+    ),
+    ?assertEqual(
+        undefined, erli18n_server:lookup_header(default, <<"bulk_err">>)
+    ),
+    ok = erli18n_server:unload(default, <<"bulk_ok">>).
