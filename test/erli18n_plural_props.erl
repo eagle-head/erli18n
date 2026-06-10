@@ -32,7 +32,8 @@
 
 -export([
     prop_index_in_range/0,
-    prop_compile_or_error/0
+    prop_compile_or_error/0,
+    prop_compile_bounded/0
 ]).
 
 %% Generators
@@ -151,9 +152,129 @@ prop_compile_or_error() ->
         end
     ).
 
+%% Finding #2 (plural-compile-superlinear-unbounded). `compile/1` runs
+%% inside the single catalog gen_server's `handle_call` on UNTRUSTED `.po`
+%% input, so a pathological-but-valid `Plural-Forms` expression must
+%% never make it superlinear or unbounded. Two regressions are guarded:
+%%
+%%   * the O(n^2) `skip_ws_st/1` full-binary `=:=` (a flat `n+n+...+n`
+%%     chain with no leading whitespace is the exact trigger);
+%%   * unbounded recursion depth on `(((...n...)))` / `!!!...n`.
+%%
+%% This property feeds adversarial headers (UP TO ~1 MB, far past the
+%% size/depth the byte-cap permits) DIRECTLY to `compile/1` and asserts
+%% that it always returns within a strict per-call time budget with
+%% EITHER `{ok, _}` (small enough to compile) OR a structured
+%% `{error, {expr_too_long | expr_too_deep, ...}}` rejection — never a
+%% crash, never an open-ended run. The old generator capped AST depth at
+%% 4 (`c_plural_expr/1`), so it could never reach the sizes that exposed
+%% the quadratic/unbounded behaviour; this property closes that gap by
+%% generating the pathological shapes directly rather than via the AST
+%% grammar.
+prop_compile_bounded() ->
+    ?FORALL(
+        HeaderGen,
+        patho_header(),
+        begin
+            Header = eqwalizer:dynamic_cast(HeaderGen),
+            {Micros, Result} = timer:tc(fun() ->
+                erli18n_plural:compile(Header)
+            end),
+            BudgetOk = Micros < 50_000,
+            ShapeOk =
+                case Result of
+                    {ok, #{nplurals := _, expr := _, raw := _}} ->
+                        true;
+                    {error, {expr_too_long, Size, Max}} when
+                        is_integer(Size), is_integer(Max), Size > Max
+                    ->
+                        true;
+                    {error, {expr_too_deep, Depth, Pos}} when
+                        is_integer(Depth), is_integer(Pos)
+                    ->
+                        true;
+                    %% A pathological body can also be a plain syntax
+                    %% error (e.g. unbalanced parens once truncated by the
+                    %% byte cap); that is a fine fail-closed outcome too.
+                    {error, {syntax_error, _, _}} ->
+                        true;
+                    Other ->
+                        ct:pal(
+                            "prop_compile_bounded unexpected result: ~p~n"
+                            "header size=~p~n",
+                            [Other, byte_size(Header)]
+                        ),
+                        false
+                end,
+            case BudgetOk of
+                true ->
+                    ok;
+                false ->
+                    ct:pal(
+                        "prop_compile_bounded budget blown: ~p us "
+                        "(budget 50000) for header size=~p~n",
+                        [Micros, byte_size(Header)]
+                    )
+            end,
+            BudgetOk andalso ShapeOk
+        end
+    ).
+
 %% =========================
 %% Generators
 %% =========================
+
+%% Pathological-but-syntactically-plausible `Plural-Forms` headers. Each
+%% wraps an adversarial expression body whose SIZE/DEPTH is drawn well
+%% past the parser's caps so the property exercises both the length guard
+%% and the depth guard, plus the O(n) whitespace scan on the largest
+%% accepted inputs. Sizes range from "comfortably under the cap" to ~1 MB.
+patho_header() ->
+    ?LET(
+        {NPluralsGen, BodyGen},
+        {oneof([1, 2, 3, 6]), patho_body()},
+        %% PropEr generator payloads are statically `term()` (opaque to
+        %% eqwalizer); cast at the boundary to the documented contracts —
+        %% `NPlurals` is a `pos_integer()`, `Body` a `binary()` produced
+        %% by `build_patho/2`.
+        build_patho_header(
+            eqwalizer:dynamic_cast(NPluralsGen),
+            eqwalizer:dynamic_cast(BodyGen)
+        )
+    ).
+
+-spec build_patho_header(pos_integer(), binary()) -> binary().
+build_patho_header(NPlurals, Body) ->
+    <<"nplurals=", (integer_to_binary(NPlurals))/binary, "; plural=", Body/binary, ";">>.
+
+%% A single adversarial expression body. `Count` spans both sides of the
+%% byte/depth caps so compile/1 must take each guarded branch.
+patho_body() ->
+    ?LET(
+        {ShapeGen, CountGen},
+        {oneof([flat_add, nested_paren, bang_chain]), oneof([10, 100, 1000, 10_000, 100_000])},
+        build_patho(
+            eqwalizer:dynamic_cast(ShapeGen),
+            eqwalizer:dynamic_cast(CountGen)
+        )
+    ).
+
+%% `n+n+...+n` — the exact flat shape that triggered the O(n^2)
+%% `skip_ws_st/1` equality match (no leading whitespace per token).
+-spec build_patho(flat_add | nested_paren | bang_chain, non_neg_integer()) ->
+    binary().
+build_patho(flat_add, Count) ->
+    Tail = binary:copy(<<"+n">>, max(Count - 1, 0)),
+    <<"n", Tail/binary>>;
+%% `(((...n...)))` — unbounded recursion depth.
+build_patho(nested_paren, Count) ->
+    Opens = binary:copy(<<"(">>, Count),
+    Closes = binary:copy(<<")">>, Count),
+    <<Opens/binary, "n", Closes/binary>>;
+%% `!!!...n` — unbounded unary recursion depth.
+build_patho(bang_chain, Count) ->
+    Bangs = binary:copy(<<"!">>, Count),
+    <<Bangs/binary, "n">>.
 
 %% A small positive integer for nplurals. Real-world locales top out at
 %% 6 (Arabic); we mirror that range so the property exercises every

@@ -54,6 +54,12 @@
     divide_by_zero_clamps_no_crash/1,
     evaluate_checked_reports_anomalies/1,
     compile_rejects_statically_unsafe_rule/1,
+    %% Finding #2 (plural-compile-superlinear-unbounded): the parser must
+    %% bound expression byte-length and recursion depth, and compile in
+    %% linear time even on adversarial-but-trivial input.
+    compile_rejects_oversized_expr/1,
+    compile_rejects_deeply_nested_expr/1,
+    compile_pathological_input_is_linear/1,
     %% Coverage additions — header malformed paths
     empty_nplurals_value/1,
     empty_plural_value/1,
@@ -120,6 +126,9 @@ all() ->
         divide_by_zero_clamps_no_crash,
         evaluate_checked_reports_anomalies,
         compile_rejects_statically_unsafe_rule,
+        compile_rejects_oversized_expr,
+        compile_rejects_deeply_nested_expr,
+        compile_pathological_input_is_linear,
         %% Coverage additions
         empty_nplurals_value,
         empty_plural_value,
@@ -632,6 +641,82 @@ compile_rejects_statically_unsafe_rule(_Config) ->
         {error, {unsafe_plural_rule, {form_out_of_range, 5, 2}}},
         erli18n_plural:compile(<<"nplurals=2; plural=5;">>)
     ).
+
+%% =========================
+%% Finding #2 — compile is O(n) and bounded (plural-compile-superlinear)
+%% =========================
+
+%% A `Plural-Forms` expression whose byte-length exceeds the parser cap
+%% is rejected up front with a structured `{expr_too_long, Size, Max}`
+%% error — the catalog is refused at `ensure_loaded` time rather than
+%% triggering the O(n^2) parse and freezing the gen_server. NPlurals
+%% stays in range so the rejection comes from the length bound, not the
+%% nplurals sanity check. The real-world most-complex rule (Arabic) is
+%% ~98 bytes, so any legitimate catalog is far below the cap.
+compile_rejects_oversized_expr(_Config) ->
+    %% `n+n+...+n` repeated until well past ?PLURAL_EXPR_MAX_BYTES (2048).
+    Body = repeat_join(<<"n">>, <<"+">>, 4000),
+    Header = <<"nplurals=2; plural=", Body/binary, ";">>,
+    ?assertMatch(
+        {error, {expr_too_long, _, _}},
+        erli18n_plural:compile(Header)
+    ),
+    %% The reported size/limit are coherent: Size > Max.
+    {error, {expr_too_long, Size, Max}} = erli18n_plural:compile(Header),
+    ?assert(is_integer(Size) andalso is_integer(Max) andalso Size > Max).
+
+%% A deeply nested expression (within the byte cap) that would otherwise
+%% recurse unbounded — `(((...n...)))` — is rejected with a structured
+%% `{expr_too_deep, Depth, Pos}` error, bounding parser (and downstream
+%% evaluator) stack growth. We keep the body under the byte cap so the
+%% depth guard, not the length guard, is what fires.
+compile_rejects_deeply_nested_expr(_Config) ->
+    %% 600 nested parens around `n` is ~1201 bytes (< 2048 cap) but far
+    %% deeper than ?PLURAL_EXPR_MAX_DEPTH (64).
+    Depth = 600,
+    Opens = binary:copy(<<"(">>, Depth),
+    Closes = binary:copy(<<")">>, Depth),
+    Body = <<Opens/binary, "n", Closes/binary>>,
+    ?assert(byte_size(Body) < 2048),
+    Header = <<"nplurals=2; plural=", Body/binary, ";">>,
+    ?assertMatch(
+        {error, {expr_too_deep, _, _}},
+        erli18n_plural:compile(Header)
+    ).
+
+%% Regression for the O(n^2) `skip_ws_st/1` equality match: compiling a
+%% large-but-trivial valid expression must stay within a generous linear
+%% time budget. Before the fix a ~390 KB expression froze the parser for
+%% seconds; here we use an input just under the byte cap (the largest a
+%% legitimate caller could submit) and assert the whole compile returns
+%% well under 50 ms. A regression to the quadratic match would blow this
+%% budget by orders of magnitude at the larger sizes the cap permits.
+compile_pathological_input_is_linear(_Config) ->
+    %% Just under ?PLURAL_EXPR_MAX_BYTES so the parser actually runs the
+    %% full O(n) scan rather than short-circuiting on the length guard.
+    %% `n+n+...+n` (no leading whitespace) is the exact shape that
+    %% triggered the quadratic full-binary `=:=` in skip_ws_st/1.
+    Terms = 1000,
+    Body = repeat_join(<<"n">>, <<"+">>, Terms),
+    ?assert(byte_size(Body) =< 2048),
+    Header = <<"nplurals=2; plural=", Body/binary, ";">>,
+    {Micros, Result} = timer:tc(fun() -> erli18n_plural:compile(Header) end),
+    ?assertMatch({ok, _}, Result),
+    ?assert(
+        Micros < 50_000,
+        lists:flatten(
+            io_lib:format("compile took ~p us (budget 50000 us)", [Micros])
+        )
+    ).
+
+%% Build `Item Sep Item Sep ... Item` with Count items. Used to
+%% synthesise the pathological-but-valid plural expressions above
+%% without embedding a multi-KB literal in the source.
+repeat_join(Item, _Sep, 1) ->
+    Item;
+repeat_join(Item, Sep, Count) when Count > 1 ->
+    Tail = repeat_join(Item, Sep, Count - 1),
+    <<Item/binary, Sep/binary, Tail/binary>>.
 
 %% =========================
 %% Header malformed paths (parser tokenizer)

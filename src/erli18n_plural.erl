@@ -93,7 +93,15 @@
     %% index provably outside [0, NPlurals) — is rejected at load time
     %% so the poisoned catalog is refused by `ensure_loaded` rather than
     %% loading as `{ok, _}` and crashing every later lookup.
-    | {unsafe_plural_rule, plural_eval_error()}.
+    | {unsafe_plural_rule, plural_eval_error()}
+    %% Finding #2 (plural-compile-superlinear-unbounded): the parser
+    %% runs on untrusted `.po` input inside the catalog gen_server's
+    %% `handle_call`. An expression longer than `?PLURAL_EXPR_MAX_BYTES`
+    %% or nested deeper than `?PLURAL_EXPR_MAX_DEPTH` is rejected
+    %% fail-closed so a pathological-but-valid rule cannot make compile
+    %% superlinear/unbounded and freeze the server.
+    | {expr_too_long, Size :: non_neg_integer(), Max :: pos_integer()}
+    | {expr_too_deep, Depth :: pos_integer(), Position :: non_neg_integer()}.
 
 %% Anomaly observed while evaluating a compiled plural rule. Surfaced as
 %% data by `evaluate_checked/2` and as the payload of a Layer 3
@@ -137,6 +145,21 @@
 %% Sanity bound for nplurals. Real-world locales top out at 6 (Arabic).
 %% Any header declaring more than a thousand forms is malformed input.
 -define(NPLURALS_MAX, 1000).
+
+%% Bounds for the `Plural-Forms` expression itself (finding #2,
+%% plural-compile-superlinear-unbounded). `?NPLURALS_MAX` bounds the
+%% form COUNT, not the expression SIZE, so without these the parser is
+%% unbounded in both byte-length and recursion depth on untrusted input.
+%%
+%%   * `?PLURAL_EXPR_MAX_BYTES` — the real-world most-complex rule
+%%     (Arabic) is ~98 bytes; 2048 is ~20x headroom, so no legitimate
+%%     catalog is affected, while a multi-KB adversarial expression is
+%%     rejected before it can be parsed.
+%%   * `?PLURAL_EXPR_MAX_DEPTH` — Arabic's nesting depth is well under
+%%     10; 64 is ~6x headroom and also bounds the recursion depth of the
+%%     hot-path `eval_ast/2` walker (stack growth per lookup).
+-define(PLURAL_EXPR_MAX_BYTES, 2048).
+-define(PLURAL_EXPR_MAX_DEPTH, 64).
 
 %% Identifier-character predicate, used to reject malformed bare words
 %% like `nx`. Macro so the parser inlines the test in a guard.
@@ -433,9 +456,13 @@ take_until_semicolon_or_end(Bin, N) ->
 
 -spec parse_expr_bin(binary()) ->
     {ok, ast()} | {error, compile_error()}.
+%% Finding #2: reject an over-long expression BEFORE parsing it, so a
+%% multi-KB adversarial rule never reaches the recursive descent.
+parse_expr_bin(ExprBin) when byte_size(ExprBin) > ?PLURAL_EXPR_MAX_BYTES ->
+    {error, {expr_too_long, byte_size(ExprBin), ?PLURAL_EXPR_MAX_BYTES}};
 parse_expr_bin(ExprBin) ->
     try
-        {Ast, St} = parse_expr(#ps{src = ExprBin}),
+        {Ast, St} = parse_expr(#ps{src = ExprBin}, 0),
         case skip_ws_st(St) of
             #ps{src = <<>>} ->
                 {ok, Ast};
@@ -445,24 +472,34 @@ parse_expr_bin(ExprBin) ->
         end
     catch
         throw:{syntax_error, Reason, Pos} ->
-            {error, {syntax_error, Reason, Pos}}
+            {error, {syntax_error, Reason, Pos}};
+        %% Finding #2: recursion-depth guard tripped — fail closed with a
+        %% structured error rather than parsing an unbounded-depth tree.
+        throw:{expr_too_deep, Depth, Pos} ->
+            {error, {expr_too_deep, Depth, Pos}}
     end.
 
-parse_expr(St) ->
-    parse_ternary(St).
+%% `Depth` is propagated through every recursive-descent clause and
+%% checked at each new nesting level (finding #2). It bounds both the
+%% parser's stack and — because the AST it builds is no deeper than the
+%% recursion — the hot-path `eval_ast/2` walker's stack per lookup.
+parse_expr(St, Depth) when Depth > ?PLURAL_EXPR_MAX_DEPTH ->
+    throw({expr_too_deep, Depth, St#ps.pos});
+parse_expr(St, Depth) ->
+    parse_ternary(St, Depth).
 
-parse_ternary(St0) ->
-    {Cond, St1} = parse_lor(St0),
+parse_ternary(St0, Depth) ->
+    {Cond, St1} = parse_lor(St0, Depth),
     St2 = skip_ws_st(St1),
     case peek_byte(St2) of
         {ok, $?} ->
             St3 = advance(St2, 1),
-            {Then, St4} = parse_expr(St3),
+            {Then, St4} = parse_expr(St3, Depth + 1),
             St5 = skip_ws_st(St4),
             case peek_byte(St5) of
                 {ok, $:} ->
                     St6 = advance(St5, 1),
-                    {Else, St7} = parse_expr(St6),
+                    {Else, St7} = parse_expr(St6, Depth + 1),
                     {{ternary, Cond, Then, Else}, St7};
                 _ ->
                     throw({syntax_error, {expected, $:, peek_byte(St5)}, St5#ps.pos})
@@ -471,147 +508,149 @@ parse_ternary(St0) ->
             {Cond, St1}
     end.
 
-parse_lor(St0) ->
-    {Left, St1} = parse_land(St0),
-    parse_lor_tail(Left, St1).
+parse_lor(St0, Depth) ->
+    {Left, St1} = parse_land(St0, Depth),
+    parse_lor_tail(Left, St1, Depth).
 
-parse_lor_tail(Left, St0) ->
+parse_lor_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek2(St1) of
         {ok, $|, $|} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_land(St2),
-            parse_lor_tail({binop, '||', Left, Right}, St3);
+            {Right, St3} = parse_land(St2, Depth + 1),
+            parse_lor_tail({binop, '||', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_land(St0) ->
-    {Left, St1} = parse_equality(St0),
-    parse_land_tail(Left, St1).
+parse_land(St0, Depth) ->
+    {Left, St1} = parse_equality(St0, Depth),
+    parse_land_tail(Left, St1, Depth).
 
-parse_land_tail(Left, St0) ->
+parse_land_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek2(St1) of
         {ok, $&, $&} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_equality(St2),
-            parse_land_tail({binop, '&&', Left, Right}, St3);
+            {Right, St3} = parse_equality(St2, Depth + 1),
+            parse_land_tail({binop, '&&', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_equality(St0) ->
-    {Left, St1} = parse_relational(St0),
-    parse_equality_tail(Left, St1).
+parse_equality(St0, Depth) ->
+    {Left, St1} = parse_relational(St0, Depth),
+    parse_equality_tail(Left, St1, Depth).
 
-parse_equality_tail(Left, St0) ->
+parse_equality_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek2(St1) of
         {ok, $=, $=} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_relational(St2),
-            parse_equality_tail({binop, '==', Left, Right}, St3);
+            {Right, St3} = parse_relational(St2, Depth + 1),
+            parse_equality_tail({binop, '==', Left, Right}, St3, Depth);
         {ok, $!, $=} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_relational(St2),
-            parse_equality_tail({binop, '!=', Left, Right}, St3);
+            {Right, St3} = parse_relational(St2, Depth + 1),
+            parse_equality_tail({binop, '!=', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_relational(St0) ->
-    {Left, St1} = parse_additive(St0),
-    parse_relational_tail(Left, St1).
+parse_relational(St0, Depth) ->
+    {Left, St1} = parse_additive(St0, Depth),
+    parse_relational_tail(Left, St1, Depth).
 
-parse_relational_tail(Left, St0) ->
+parse_relational_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek2(St1) of
         {ok, $<, $=} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_additive(St2),
-            parse_relational_tail({binop, '<=', Left, Right}, St3);
+            {Right, St3} = parse_additive(St2, Depth + 1),
+            parse_relational_tail({binop, '<=', Left, Right}, St3, Depth);
         {ok, $>, $=} ->
             St2 = advance(St1, 2),
-            {Right, St3} = parse_additive(St2),
-            parse_relational_tail({binop, '>=', Left, Right}, St3);
+            {Right, St3} = parse_additive(St2, Depth + 1),
+            parse_relational_tail({binop, '>=', Left, Right}, St3, Depth);
         {ok, $<, _} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_additive(St2),
-            parse_relational_tail({binop, '<', Left, Right}, St3);
+            {Right, St3} = parse_additive(St2, Depth + 1),
+            parse_relational_tail({binop, '<', Left, Right}, St3, Depth);
         {ok, $>, _} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_additive(St2),
-            parse_relational_tail({binop, '>', Left, Right}, St3);
+            {Right, St3} = parse_additive(St2, Depth + 1),
+            parse_relational_tail({binop, '>', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_additive(St0) ->
-    {Left, St1} = parse_multiplicative(St0),
-    parse_additive_tail(Left, St1).
+parse_additive(St0, Depth) ->
+    {Left, St1} = parse_multiplicative(St0, Depth),
+    parse_additive_tail(Left, St1, Depth).
 
-parse_additive_tail(Left, St0) ->
+parse_additive_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek_byte(St1) of
         {ok, $+} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_multiplicative(St2),
-            parse_additive_tail({binop, '+', Left, Right}, St3);
+            {Right, St3} = parse_multiplicative(St2, Depth + 1),
+            parse_additive_tail({binop, '+', Left, Right}, St3, Depth);
         {ok, $-} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_multiplicative(St2),
-            parse_additive_tail({binop, '-', Left, Right}, St3);
+            {Right, St3} = parse_multiplicative(St2, Depth + 1),
+            parse_additive_tail({binop, '-', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_multiplicative(St0) ->
-    {Left, St1} = parse_unary(St0),
-    parse_multiplicative_tail(Left, St1).
+parse_multiplicative(St0, Depth) ->
+    {Left, St1} = parse_unary(St0, Depth),
+    parse_multiplicative_tail(Left, St1, Depth).
 
-parse_multiplicative_tail(Left, St0) ->
+parse_multiplicative_tail(Left, St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek_byte(St1) of
         {ok, $*} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_unary(St2),
-            parse_multiplicative_tail({binop, '*', Left, Right}, St3);
+            {Right, St3} = parse_unary(St2, Depth + 1),
+            parse_multiplicative_tail({binop, '*', Left, Right}, St3, Depth);
         {ok, $/} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_unary(St2),
-            parse_multiplicative_tail({binop, '/', Left, Right}, St3);
+            {Right, St3} = parse_unary(St2, Depth + 1),
+            parse_multiplicative_tail({binop, '/', Left, Right}, St3, Depth);
         {ok, $%} ->
             St2 = advance(St1, 1),
-            {Right, St3} = parse_unary(St2),
-            parse_multiplicative_tail({binop, '%', Left, Right}, St3);
+            {Right, St3} = parse_unary(St2, Depth + 1),
+            parse_multiplicative_tail({binop, '%', Left, Right}, St3, Depth);
         _ ->
             {Left, St0}
     end.
 
-parse_unary(St0) ->
+parse_unary(St0, Depth) when Depth > ?PLURAL_EXPR_MAX_DEPTH ->
+    throw({expr_too_deep, Depth, St0#ps.pos});
+parse_unary(St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek_byte(St1) of
         {ok, $!} ->
             %% Disambiguate against `!=` (handled in parse_equality).
             case peek2(St1) of
                 {ok, $!, $=} ->
-                    parse_primary(St1);
+                    parse_primary(St1, Depth);
                 _ ->
                     St2 = advance(St1, 1),
-                    {Inner, St3} = parse_unary(St2),
+                    {Inner, St3} = parse_unary(St2, Depth + 1),
                     {{unop, '!', Inner}, St3}
             end;
         _ ->
-            parse_primary(St1)
+            parse_primary(St1, Depth)
     end.
 
-parse_primary(St0) ->
+parse_primary(St0, Depth) ->
     St1 = skip_ws_st(St0),
     case peek_byte(St1) of
         {ok, $(} ->
             St2 = advance(St1, 1),
-            {Inner, St3} = parse_expr(St2),
+            {Inner, St3} = parse_expr(St2, Depth + 1),
             St4 = skip_ws_st(St3),
             case peek_byte(St4) of
                 {ok, $)} ->
@@ -643,11 +682,20 @@ parse_primary(St0) ->
 %% Parser state helpers
 %% =========================
 
+%% Finding #2 (plural-compile-superlinear-unbounded): dispatch on a
+%% `byte_size/1` comparison, NOT a full-binary `=:=` match. `skip_ws/1`
+%% only ever strips a leading prefix, so when nothing is consumed the
+%% result is byte-for-byte equal and `byte_size(Rest) =:= byte_size(Src)`
+%% is exact. Matching `case skip_ws(Src) of Src -> ...` instead forced a
+%% byte-by-byte comparison of the whole remaining input on every token
+%% (the binaries are structurally equal but not identical), which made
+%% the parser O(n^2). `byte_size/1` is O(1), collapsing it to O(n).
 skip_ws_st(#ps{src = Src, pos = Pos} = St) ->
-    case skip_ws(Src) of
-        Src ->
+    Rest = skip_ws(Src),
+    case byte_size(Rest) =:= byte_size(Src) of
+        true ->
             St;
-        Rest ->
+        false ->
             Consumed = byte_size(Src) - byte_size(Rest),
             St#ps{src = Rest, pos = Pos + Consumed}
     end.
