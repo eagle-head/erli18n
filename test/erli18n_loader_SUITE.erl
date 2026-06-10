@@ -33,6 +33,8 @@
     ensure_loaded_emits_cldr_divergence_warning/1,
     reload_replaces_catalog/1,
     reload_idempotency_bypassed/1,
+    reload_failure_preserves_catalog/1,
+    reload_no_empty_window/1,
     unload_removes_header_too/1,
     which_keys_returns_unique_msgids/1,
     default_po_path_convention/1,
@@ -67,6 +69,8 @@ all() ->
         ensure_loaded_emits_cldr_divergence_warning,
         reload_replaces_catalog,
         reload_idempotency_bypassed,
+        reload_failure_preserves_catalog,
+        reload_no_empty_window,
         unload_removes_header_too,
         which_keys_returns_unique_msgids,
         default_po_path_convention,
@@ -441,6 +445,148 @@ reload_idempotency_bypassed(Config) ->
     %% Distinct calls — even same path — must yield distinct timestamps
     %% when wall-clock differs.
     ?assertNotEqual(maps:get(loaded_at, H1), maps:get(loaded_at, H2)).
+
+%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window),
+%% failure-mode class. A reload whose new .po is invalid must return a
+%% structured `{error, _}` AND leave the previously-good catalog fully
+%% intact — mirrors `atomicidade_load_fails/1` but for `reload/3,4`. The
+%% pre-fix code unloaded the working catalog BEFORE attempting the new
+%% load, so a failed reload permanently destroyed the translation in use.
+%% We exercise every failable step of the load pipeline (file read, parse,
+%% charset classification, plural compile) so any reordering regression is
+%% caught regardless of which step fails.
+reload_failure_preserves_catalog(Config) ->
+    GoodPath = fixture(Config, "minimal_en.po"),
+    %% Each entry is a distinct failure mode of the reload load pipeline.
+    BadFixtures = [
+        % parse/syntax error
+        {syntax, fixture(Config, "invalid_syntax.po")},
+        % unsupported_charset
+        {charset, fixture(Config, "shift_jis.po")},
+        % plural_compile_error
+        {plural, fixture(Config, "bad_plural_expr.po")}
+    ],
+    MissingPath =
+        "/tmp/erli18n_reload_missing_" ++
+            integer_to_list(erlang:unique_integer([positive])) ++ ".po",
+    AllBad = BadFixtures ++ [{missing, MissingPath}],
+    lists:foreach(
+        fun({Tag, BadPath}) ->
+            %% Fresh good catalog before each reload attempt.
+            {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, GoodPath),
+            ?assertEqual(
+                {ok, <<"Bonjour">>},
+                erli18n_server:lookup_singular(
+                    default, <<"fr">>, undefined, <<"Hello">>
+                )
+            ),
+            {ok, HeaderBefore} =
+                erli18n_server:lookup_header(default, <<"fr">>),
+            %% The reload must fail with a structured error.
+            ReloadResult =
+                erli18n_server:reload(default, <<"fr">>, BadPath),
+            ?assertMatch(
+                {error, _},
+                ReloadResult,
+                lists:flatten(
+                    io_lib:format("~p reload expected {error,_}", [Tag])
+                )
+            ),
+            %% The previously-good catalog must STILL be present and
+            %% serving the original translation — not destroyed.
+            ?assertEqual(
+                {ok, <<"Bonjour">>},
+                erli18n_server:lookup_singular(
+                    default, <<"fr">>, undefined, <<"Hello">>
+                ),
+                lists:flatten(
+                    io_lib:format(
+                        "~p reload must preserve good catalog", [Tag]
+                    )
+                )
+            ),
+            %% The header must also survive unchanged (same po_path /
+            %% loaded_at — the failed reload never mutated ETS).
+            ?assertEqual(
+                {ok, HeaderBefore},
+                erli18n_server:lookup_header(default, <<"fr">>),
+                lists:flatten(
+                    io_lib:format(
+                        "~p reload must preserve header_state", [Tag]
+                    )
+                )
+            ),
+            ok = erli18n_server:unload(default, <<"fr">>)
+        end,
+        AllBad
+    ).
+
+%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window),
+%% empty-window class. A successful reload must NEVER expose a window in
+%% which a key present in BOTH the old and the new catalog is missing.
+%% The pre-fix code unloaded the catalog and only then re-inserted, so a
+%% concurrent reader hammering a retained key saw misses across the whole
+%% disk read + parse + compile. With STAGE -> ATOMIC-SWAP (insert-before-
+%% prune), the key is overwritten old->new with no observable gap.
+reload_no_empty_window(Config) ->
+    Path = fixture(Config, "minimal_en.po"),
+    %% Load the catalog whose <<"Hello">> key is present in both the
+    %% current and the reloaded content (we reload the SAME file, so the
+    %% key is retained across the swap).
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"fr">>, undefined, <<"Hello">>
+        )
+    ),
+    Parent = self(),
+    Readers = 8,
+    %% Each reader hammers the retained key and reports any miss it saw.
+    Pids = [
+        spawn_link(fun() ->
+            Misses = hammer_lookup(2000, 0),
+            Parent ! {self(), Misses}
+        end)
+     || _ <- lists:seq(1, Readers)
+    ],
+    %% Reload many times while the readers are hammering, to widen the
+    %% window the pre-fix code would have exposed.
+    lists:foreach(
+        fun(_) ->
+            {ok, 1} = erli18n_server:reload(default, <<"fr">>, Path)
+        end,
+        lists:seq(1, 30)
+    ),
+    TotalMisses = lists:sum([
+        receive
+            {Pid, M} -> M
+        after 30000 -> ct:fail({reader_timeout, Pid})
+        end
+     || Pid <- Pids
+    ]),
+    ?assertEqual(
+        0,
+        TotalMisses,
+        "a retained key must never miss across a successful reload"
+    ),
+    ok = erli18n_server:unload(default, <<"fr">>).
+
+%% Tight loop: look up the retained key N times, counting how often the
+%% lookup returned a miss (`undefined`) instead of the translation.
+hammer_lookup(0, Misses) ->
+    Misses;
+hammer_lookup(N, Misses) ->
+    Misses1 =
+        case
+            erli18n_server:lookup_singular(
+                default, <<"fr">>, undefined, <<"Hello">>
+            )
+        of
+            {ok, <<"Bonjour">>} -> Misses;
+            _Other -> Misses + 1
+        end,
+    hammer_lookup(N - 1, Misses1).
 
 unload_removes_header_too(Config) ->
     Path = fixture(Config, "minimal_en.po"),

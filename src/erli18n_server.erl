@@ -98,6 +98,26 @@
     num_entries := non_neg_integer()
 }.
 
+%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window):
+%% the product of the pure, failable half of the load pipeline (read +
+%% parse + compile + divergence). A `staged/0` is built WITHOUT touching
+%% ETS, so any error leaves the prior catalog intact; `swap_catalog/3`
+%% then performs the only observable mutation as an atomic insert-before-
+%% prune. `objects` are the `{Key, Translation}' rows ready for
+%% `ets:insert/2'; `new_keys` is their data-key set (for stale pruning);
+%% `num_entries` is the count reported back to the caller.
+-type staged() :: #{
+    objects := [tuple()],
+    new_keys := sets:set(data_key()),
+    header := header_state(),
+    divergence := divergence_info(),
+    domain := domain(),
+    locale := locale(),
+    raw_bin := binary(),
+    include_fuzzy := boolean(),
+    num_entries := non_neg_integer()
+}.
+
 -export_type([
     domain/0,
     locale/0,
@@ -434,9 +454,19 @@ ensure_loaded(Domain, Locale, PoPath, Opts) when
 
 %% Reload bypasses the idempotency check: always parses and re-installs.
 %% Resolves AMB-001 overwrite semantics — the new catalog overwrites the
-%% old one entry-by-entry. Atomicity caveat: between `unload/2` and the
-%% insert step, the ETS catalog is briefly empty; lookups during that
-%% window return `undefined` (v0.1 limitation, documented).
+%% old one entry-by-entry.
+%%
+%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window):
+%% reload is STAGE -> ATOMIC-SWAP. The entire failable pipeline (read,
+%% parse, plural compile, CLDR divergence) runs into an in-memory
+%% `staged/0' record WITHOUT touching ETS, so a reload whose new `.po' is
+%% invalid (syntax error, unsupported charset, bad Plural-Forms, missing
+%% file) returns a structured `{error, _}' and leaves the previously-good
+%% catalog FULLY INTACT — never destroyed. On success the only observable
+%% mutation is insert-before-prune: every retained key is overwritten
+%% old->new by an atomic `ets:insert/2', and only the keys absent from
+%% the new catalog are pruned afterwards, so a concurrent reader of a
+%% retained key never observes a miss window.
 -spec reload(domain(), locale(), file:filename()) -> ensure_result().
 reload(Domain, Locale, PoPath) ->
     reload(Domain, Locale, PoPath, #{}).
@@ -926,9 +956,13 @@ handle_call({reload, D, L, PoPath, Opts}, _From, State) ->
     %% Span: [erli18n, catalog, reload]. Identical schema to
     %% [erli18n, catalog, load]; the distinct event name lets consumers
     %% react differently (e.g. invalidate derived caches). Per AMB-001
-    %% reload overwrites the existing catalog — atomicity caveat
-    %% (lookups during the unload→load gap return undefined) is
-    %% documented in `reload/3,4`.
+    %% reload overwrites the existing catalog.
+    %%
+    %% Finding #4: STAGE -> ATOMIC-SWAP. `stage_catalog/4' is pure (no ETS
+    %% mutation), so on `{error, _}' the prior catalog is provably intact —
+    %% never unloaded. Only on `{ok, Staged}' do we `swap_catalog/3', which
+    %% inserts the new rows BEFORE pruning the stale ones, so retained keys
+    %% never miss.
     IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
     StartMeta = #{
         domain => D,
@@ -942,8 +976,14 @@ handle_call({reload, D, L, PoPath, Opts}, _From, State) ->
             erli18n_telemetry:event_catalog_reload(),
             StartMeta,
             fun() ->
-                do_unload(D, L),
-                Inner = do_load(D, L, PoPath, Opts),
+                Inner =
+                    case stage_catalog(D, L, PoPath, Opts) of
+                        {error, _} = E ->
+                            %% Prior catalog INTACT — nothing was mutated.
+                            E;
+                        {ok, Staged} ->
+                            swap_catalog(D, L, Staged)
+                    end,
                 StopMeta = maps:merge(
                     StartMeta,
                     load_stop_metadata(Inner)
@@ -1015,7 +1055,7 @@ do_load(Domain, Locale, PoPath, Opts) ->
                         Locale,
                         Bin,
                         IncludeFuzzy,
-                        Parsed
+                        length(maps:get(entries, Parsed, []))
                     ),
                     install_parsed(
                         Domain,
@@ -1032,13 +1072,18 @@ do_load(Domain, Locale, PoPath, Opts) ->
 %% only case where the emit would be meaningful and observability.md §6
 %% says the flag controls it). The double-parse pattern keeps
 %% `erli18n_po` ignorant of the (Domain, Locale) context — the parser's
-%% job is parsing PO, not emitting telemetry.
-maybe_emit_fuzzy_skip(Domain, Locale, RawBin, false = _IncludeFuzzy, Parsed) ->
+%% job is parsing PO, not emitting telemetry. `DefaultCount` is the number
+%% of entries the default (non-fuzzy) parse kept — both load paths
+%% (`do_load/4' and `swap_catalog/3') already have it, so we pass the
+%% count rather than the whole parsed map.
+-spec maybe_emit_fuzzy_skip(
+    domain(), locale(), binary(), boolean(), non_neg_integer()
+) -> ok.
+maybe_emit_fuzzy_skip(Domain, Locale, RawBin, false = _IncludeFuzzy, DefaultCount) ->
     case erli18n_telemetry:lookup_telemetry_enabled() of
         false ->
             ok;
         true ->
-            DefaultCount = length(maps:get(entries, Parsed, [])),
             %% The re-parse uses include_fuzzy => true against the same
             %% input bytes that already parsed successfully with
             %% include_fuzzy => false. The flag only changes which
@@ -1065,7 +1110,7 @@ maybe_emit_fuzzy_skip(
     _Locale,
     _RawBin,
     true = _IncludeFuzzy,
-    _Parsed
+    _DefaultCount
 ) ->
     %% include_fuzzy => true was passed — no entries were dropped, so
     %% the event is not emitted (observability.md §4.2 "Quando NÃO é
@@ -1259,16 +1304,175 @@ build_catalog_objects(_D, _L, []) ->
 build_catalog_objects(D, L, [E | Rest]) ->
     entry_to_objects(D, L, E) ++ build_catalog_objects(D, L, Rest).
 
-do_unload(Domain, Locale) ->
-    _ = do_unload_with_count(Domain, Locale),
-    ok.
+%% =========================
+%% Finding #4: STAGE -> ATOMIC-SWAP reload
+%% =========================
+%%
+%% `stage_catalog/4' runs the entire FAILABLE half of the load pipeline —
+%% file read, parse, plural compile, CLDR divergence, object build — and
+%% produces a pure in-memory `staged/0' record. It performs ZERO ETS
+%% mutation, so on `{error, _}' the prior catalog is provably untouched
+%% (same guarantee `ensure_loaded' already had via the
+%% "errors-before-mutation" ordering of `do_load/install_parsed').
+%%
+%% Failure order mirrors `do_load/4' so reload and ensure_loaded surface
+%% identical errors:
+%%   1. file:read_file/1        -> {file_error, Posix}
+%%   2. erli18n_po:parse/2      -> parse_error()
+%%   3. compile plural header   -> {plural_compile_error, _}
+%%   4. compute_divergence/2    -> never fails (informational)
+-spec stage_catalog(domain(), locale(), file:filename(), opts()) ->
+    {ok, staged()} | {error, ensure_error()}.
+stage_catalog(Domain, Locale, PoPath, Opts) ->
+    IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
+    case file:read_file(PoPath) of
+        {error, Posix} ->
+            {error, {file_error, Posix}};
+        {ok, Bin} ->
+            case erli18n_po:parse(Bin, #{include_fuzzy => IncludeFuzzy}) of
+                {error, _} = E ->
+                    E;
+                {ok, Parsed} ->
+                    stage_parsed(
+                        Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed
+                    )
+            end
+    end.
+
+%% Pure compile + object build half of staging. Compile failure is the
+%% last failable step; on success we materialize the ETS objects and their
+%% data-key set so `swap_catalog/3' has nothing left to compute.
+-spec stage_parsed(
+    domain(),
+    locale(),
+    file:filename(),
+    boolean(),
+    binary(),
+    erli18n_po:parsed_catalog()
+) -> {ok, staged()} | {error, ensure_error()}.
+stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, Bin, Parsed) ->
+    #{header := Header, entries := Entries} = Parsed,
+    PluralRaw =
+        case maps:get(plural_forms, Header, <<>>) of
+            <<>> -> erli18n_plural:fallback_rule();
+            Other -> Other
+        end,
+    case maybe_compile_plural(Header) of
+        {error, CompileErr} ->
+            {error, {plural_compile_error, CompileErr}};
+        {ok, PluralCompiled} ->
+            Divergence = compute_divergence(Locale, Header),
+            NumEntries = length(Entries),
+            HeaderState = #{
+                plural => PluralCompiled,
+                plural_raw => PluralRaw,
+                po_path => PoPath,
+                loaded_at => erlang:system_time(millisecond),
+                divergence => Divergence,
+                fuzzy_included => IncludeFuzzy,
+                num_entries => NumEntries
+            },
+            Objects = build_catalog_objects(Domain, Locale, Entries),
+            NewKeys = sets:from_list(
+                object_keys(Objects), [{version, 2}]
+            ),
+            {ok, #{
+                objects => Objects,
+                new_keys => NewKeys,
+                header => HeaderState,
+                divergence => Divergence,
+                domain => Domain,
+                locale => Locale,
+                raw_bin => Bin,
+                include_fuzzy => IncludeFuzzy,
+                num_entries => NumEntries
+            }}
+    end.
+
+%% `swap_catalog/3' is the ONLY mutating step. It is insert-before-prune:
+%%   1. snapshot the OLD catalog's data keys (before any mutation);
+%%   2. `ets:insert/2' all new data rows — atomic and isolated, so every
+%%      key present in both catalogs flips old->new with no observable
+%%      intermediate state (zero miss for retained keys);
+%%   3. `ets:insert/2' the header row;
+%%   4. delete ONLY the stale keys (old minus new) — retained keys are
+%%      never deleted, so a concurrent reader sees old-then-new, never a
+%%      gap.
+%% Side-effecting emits (divergence log/telemetry, fuzzy_skip) fire here,
+%% post-stage, preserving the observable behavior the old `reload' had.
+-spec swap_catalog(domain(), locale(), staged()) -> {ok, non_neg_integer()}.
+swap_catalog(Domain, Locale, Staged) ->
+    #{
+        objects := Objects,
+        new_keys := NewKeys,
+        header := HeaderState,
+        divergence := Divergence,
+        raw_bin := Bin,
+        include_fuzzy := IncludeFuzzy,
+        num_entries := NumEntries
+    } = Staged,
+    emit_divergence_log(Domain, Locale, Divergence),
+    emit_divergence_telemetry(Domain, Locale, Divergence),
+    maybe_emit_fuzzy_skip(
+        Domain,
+        Locale,
+        Bin,
+        IncludeFuzzy,
+        NumEntries
+    ),
+    %% (1) snapshot the old data keys BEFORE mutating.
+    OldKeySet = index_key_set(Domain, Locale),
+    %% (2) insert all new data rows (atomic, isolated). An empty catalog
+    %% (header-only or degenerate plural) inserts nothing.
+    case Objects of
+        [] -> ok;
+        [_ | _] -> true = ets:insert(?ETS_TABLE, Objects)
+    end,
+    %% (3) insert the header row (infallible, never indexed).
+    true = ets:insert(
+        ?ETS_TABLE,
+        {?HEADER_KEY(Domain, Locale), HeaderState}
+    ),
+    %% (4) prune ONLY the stale keys (present in old, absent in new) so
+    %% retained keys never miss. The index is rewritten to exactly the new
+    %% key set (findings #7/#13 membership rule).
+    Stale = sets:subtract(OldKeySet, NewKeys),
+    prune_stale_keys(sets:to_list(Stale)),
+    rewrite_index(Domain, Locale, NewKeys),
+    _ = erli18n_telemetry:memory_warning_check(memory_info()),
+    {ok, NumEntries}.
+
+%% Delete each stale data key from the catalog table. O(#stale) on a
+%% `set'; retained keys are never in this list.
+-spec prune_stale_keys([data_key()]) -> ok.
+prune_stale_keys([]) ->
+    ok;
+prune_stale_keys([Key | Rest]) ->
+    true = ets:delete(?ETS_TABLE, Key),
+    prune_stale_keys(Rest).
+
+%% Replace the catalog's index row with exactly the new key set. When the
+%% new catalog has >=1 data key we install that set; when it is empty
+%% (header-only / degenerate plural) we drop the index row entirely so the
+%% finding-#7 membership rule ("row present <=> >=1 data entry") holds.
+-spec rewrite_index(domain(), locale(), sets:set(data_key())) -> ok.
+rewrite_index(Domain, Locale, NewKeys) ->
+    case sets:is_empty(NewKeys) of
+        true ->
+            index_delete(Domain, Locale);
+        false ->
+            true = ets:insert(
+                ?CATALOG_INDEX_TABLE, {{Domain, Locale}, NewKeys}
+            ),
+            ok
+    end.
 
 %% Counts the rows actually deleted so the unload span can report
 %% `keys_removed` (observability.md §4.1). The result atom mirrors the
 %% schema: `not_loaded` when there was nothing to delete, `ok`
-%% otherwise. Defined separately so the legacy `do_unload/2` keeps its
-%% simple ok-returning shape for non-telemetry callers (e.g. the
-%% internal `reload` step that doesn't need the count).
+%% otherwise. This is the catalog-removal primitive behind the `unload`
+%% handle_call; the `reload` path no longer deletes-then-reloads (finding
+%% #4: it STAGEs then atomically swaps via `swap_catalog/3').
 %%
 %% Finding #13: deletion is O(catalog size), not O(total rows). We read the
 %% target catalog's data keys from the secondary index and `ets:delete/2'
