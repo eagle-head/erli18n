@@ -62,6 +62,14 @@
 -type plural_entry() :: {plural, context(), msgid(), plural_entries()}.
 -type catalog_entry() :: singular_entry() | plural_entry().
 
+%% Finding #13: a single data (non-header) ETS key as stored in the catalog
+%% table — exactly the `?SINGULAR_KEY'/`?PLURAL_KEY' macro shapes. The
+%% secondary index records a `sets:set/1' of these per catalog so unload
+%% deletes them one-by-one (O(catalog size)) instead of full-scanning.
+-type data_key() ::
+    {singular, domain(), locale(), context(), msgid()}
+    | {plural, domain(), locale(), context(), msgid(), plural_index()}.
+
 %% Load orchestration types (Parte 5).
 -type opts() :: #{include_fuzzy => boolean()}.
 %% `{ok, NewlyLoaded :: pos_integer()}`: number of entries inserted on a
@@ -807,24 +815,27 @@ seed_index([Obj | Rest]) ->
     _ = index_obj(Obj),
     seed_index(Rest).
 
-%% Register the (Domain, Locale) of a single surviving data row. Header
-%% rows carry no user-visible entries and so do NOT register — same rule
-%% `memory_info/0' has always used (a header-only `.po' is not a catalog
-%% for counting purposes).
+%% Register a single surviving data row's key in its catalog's index key
+%% set (finding #13). Header rows carry no user-visible entries and are not
+%% data keys, so they do NOT register — same rule `memory_info/0' has
+%% always used (a header-only `.po' is not a catalog for counting
+%% purposes), and they are not range-deleted via the key set on unload
+%% (the header is removed by its own O(1) key delete).
 -spec index_obj(tuple()) -> ok.
-index_obj({{singular, D, L, _, _}, _}) ->
-    index_put(D, L);
-index_obj({{plural, D, L, _, _, _}, _}) ->
-    index_put(D, L);
+index_obj({{singular, D, L, Ctx, Msgid}, _}) ->
+    index_add_keys(D, L, [?SINGULAR_KEY(D, L, Ctx, Msgid)]);
+index_obj({{plural, D, L, Ctx, Msgid, Idx}, _}) ->
+    index_add_keys(D, L, [?PLURAL_KEY(D, L, Ctx, Msgid, Idx)]);
 index_obj(_Other) ->
     ok.
 
 handle_call({insert_singular, D, L, Ctx, Msgid, T}, _From, State) ->
-    true = ets:insert(?ETS_TABLE, {?SINGULAR_KEY(D, L, Ctx, Msgid), T}),
-    %% Finding #7: maintain the O(1) catalog index incrementally. A
+    Key = ?SINGULAR_KEY(D, L, Ctx, Msgid),
+    true = ets:insert(?ETS_TABLE, {Key, T}),
+    %% Findings #7/#13: maintain the catalog index incrementally. A
     %% singular insert always writes exactly one data row, so the catalog
-    %% now has >=1 entry — register it (idempotent).
-    index_put(D, L),
+    %% now has >=1 entry — record its key (idempotent on the `set').
+    index_add_keys(D, L, [Key]),
     {reply, ok, State};
 handle_call({insert_plural, D, L, Ctx, Msgid, Entries}, _From, State) ->
     %% Build a strictly-tuple list so `ets:insert/2` sees the precise
@@ -832,15 +843,15 @@ handle_call({insert_plural, D, L, Ctx, Msgid, Entries}, _From, State) ->
     %% entry; the result tuple has fixed arity 2 and is always a tuple.
     Objects = build_plural_objects(D, L, Ctx, Msgid, Entries),
     true = ets:insert(?ETS_TABLE, Objects),
-    %% Only register when at least one row was actually written. An empty
-    %% form list inserts nothing, so it must not bump the catalog count
-    %% (membership rule: index row present <=> >=1 data entry).
-    maybe_index_put(D, L, Objects),
+    %% Only register the keys actually written. An empty form list inserts
+    %% nothing, so it must not bump the catalog count (membership rule:
+    %% index row present <=> >=1 data entry).
+    index_add_keys(D, L, object_keys(Objects)),
     {reply, ok, State};
 handle_call({insert_catalog, D, L, Entries}, _From, State) ->
     Objects = build_catalog_objects(D, L, Entries),
     true = ets:insert(?ETS_TABLE, Objects),
-    maybe_index_put(D, L, Objects),
+    index_add_keys(D, L, object_keys(Objects)),
     {reply, ok, State};
 handle_call({unload, D, L}, _From, State) ->
     %% Span: [erli18n, catalog, unload]. Always-on per observability.md
@@ -1087,15 +1098,15 @@ install_parsed(Domain, Locale, PoPath, IncludeFuzzy, Parsed) ->
             %% per observability.md §6 (load-time, infrequent). Schema in
             %% observability.md §4.2.
             emit_divergence_telemetry(Domain, Locale, Divergence),
-            Inserted = insert_entries(Domain, Locale, Entries),
-            %% Finding #7: register the catalog in the O(1) index iff the
-            %% load produced at least one data row. A header-only `.po'
-            %% (or a plural with empty form lists) writes only the header
-            %% row below, which is intentionally NOT counted as a catalog
-            %% (consistent with `loaded_catalogs/0' / the old tab2list
-            %% scan). The `?HEADER_KEY' insert is infallible and never
-            %% touches the index.
-            maybe_index_put_loaded(Domain, Locale, Inserted),
+            InsertedKeys = insert_entries(Domain, Locale, Entries),
+            %% Findings #7/#13: record the loaded data keys in the index
+            %% (the catalog registers iff >=1 data row was written). A
+            %% header-only `.po' (or a plural with empty form lists) writes
+            %% only the header row below, which is intentionally NOT counted
+            %% as a catalog (consistent with `loaded_catalogs/0' / the old
+            %% tab2list scan) and contributes no keys. The `?HEADER_KEY'
+            %% insert is infallible and never touches the index.
+            index_add_keys(Domain, Locale, InsertedKeys),
             true = ets:insert(
                 ?ETS_TABLE,
                 {?HEADER_KEY(Domain, Locale), HeaderState}
@@ -1196,19 +1207,22 @@ emit_divergence_telemetry(
 %% insert on `set` is atomic and isolated — observers either see the old
 %% state or the new state, never a mix.
 %%
-%% Returns `true' iff at least one data row was actually written, so the
-%% caller can decide whether the catalog should register in the O(1)
-%% index (finding #7): an empty entry list — or entries that flatten to
-%% zero ETS objects, e.g. a plural with empty form lists — must NOT count
-%% as a loaded catalog.
--spec insert_entries(domain(), locale(), [catalog_entry()]) -> boolean().
+%% Returns the list of data keys actually written (finding #13), so the
+%% caller can record them in the secondary index — and so the catalog
+%% registers iff >=1 data row was written (finding #7): an empty entry
+%% list, or entries that flatten to zero ETS objects (e.g. a plural with
+%% empty form lists), yields `[]' and must NOT count as a loaded catalog.
+-spec insert_entries(domain(), locale(), [catalog_entry()]) -> [data_key()].
 insert_entries(_Domain, _Locale, []) ->
-    false;
+    [];
 insert_entries(Domain, Locale, Entries) ->
     Objects = build_catalog_objects(Domain, Locale, Entries),
     case Objects of
-        [] -> false;
-        [_ | _] -> ets:insert(?ETS_TABLE, Objects)
+        [] ->
+            [];
+        [_ | _] ->
+            true = ets:insert(?ETS_TABLE, Objects),
+            object_keys(Objects)
     end.
 
 %% Build the list of ETS objects for a single plural msgid. Each entry
@@ -1255,25 +1269,59 @@ do_unload(Domain, Locale) ->
 %% otherwise. Defined separately so the legacy `do_unload/2` keeps its
 %% simple ok-returning shape for non-telemetry callers (e.g. the
 %% internal `reload` step that doesn't need the count).
+%%
+%% Finding #13: deletion is O(catalog size), not O(total rows). We read the
+%% target catalog's data keys from the secondary index and `ets:delete/2'
+%% each (O(1) per key on a `set'), then remove the header by its own O(1)
+%% key delete. This replaces the previous `ets:select_delete/2' with a
+%% partial-key match spec, which on a `set' table cannot probe by a (D, L)
+%% prefix and so scanned EVERY row of ALL resident catalogs.
+-spec do_unload_with_count(domain(), locale()) ->
+    {ok | not_loaded, non_neg_integer()}.
 do_unload_with_count(Domain, Locale) ->
-    MatchSpec =
-        [
-            {{?SINGULAR_KEY(Domain, Locale, '_', '_'), '_'}, [], [true]},
-            {{?PLURAL_KEY(Domain, Locale, '_', '_', '_'), '_'}, [], [true]},
-            {{?HEADER_KEY(Domain, Locale), '_'}, [], [true]}
-        ],
-    Deleted = ets:select_delete(?ETS_TABLE, MatchSpec),
-    %% Finding #7: drop the catalog from the O(1) index. Unload is the only
+    DataKeys = index_keys(Domain, Locale),
+    DataDeleted = delete_keys(DataKeys, 0),
+    %% The header is not a data key (no index entry), so delete it directly.
+    %% `ets:take/2' removes and returns it atomically, letting us count
+    %% whether it was present (a header-only `.po' has a header but no data
+    %% keys / no index row — it must still report 1 removed row here, as
+    %% the old full-scan match spec did).
+    HeaderDeleted =
+        case ets:take(?ETS_TABLE, ?HEADER_KEY(Domain, Locale)) of
+            [] -> 0;
+            [_ | _] -> 1
+        end,
+    %% Findings #7/#13: drop the catalog from the index. Unload is the only
     %% bulk removal path (the write API has no per-key delete), so this is
     %% where index rows disappear. `index_delete/2' is idempotent — a
     %% never-loaded (Domain, Locale) was never in the index.
     index_delete(Domain, Locale),
+    Deleted = DataDeleted + HeaderDeleted,
     Result =
         case Deleted of
             0 -> not_loaded;
             _ -> ok
         end,
     {Result, Deleted}.
+
+%% Delete each data key from the catalog table, tallying how many were
+%% present. `ets:delete/2' is O(1) on a `set'; the loop is O(length(Keys))
+%% — i.e. O(target catalog size), independent of total resident rows.
+%% `ets:member/2' guards the count so a stale index key (which cannot
+%% happen while the server is the sole writer) would not inflate the tally.
+-spec delete_keys([data_key()], non_neg_integer()) -> non_neg_integer().
+delete_keys([], Acc) ->
+    Acc;
+delete_keys([Key | Rest], Acc) ->
+    Acc1 =
+        case ets:member(?ETS_TABLE, Key) of
+            true ->
+                true = ets:delete(?ETS_TABLE, Key),
+                Acc + 1;
+            false ->
+                Acc
+        end,
+    delete_keys(Rest, Acc1).
 
 %% Build the stop metadata for the catalog load/reload span. Maps the
 %% internal load result onto the schema in observability.md §4.1:
@@ -1312,39 +1360,77 @@ entry_to_objects(D, L, {plural, Ctx, Msgid, Entries}) ->
     build_plural_objects(D, L, Ctx, Msgid, Entries).
 
 %% =========================
-%% Internal: O(1) catalog index (finding #7)
+%% Internal: O(1) catalog index (findings #7 & #13)
 %% =========================
 %%
-%% The index holds one row `{{Domain, Locale}}' per catalog with >=1 data
-%% entry. The server is its only writer, mutating it in lock-step with the
-%% data table inside the serialized `handle_call' callbacks, so the two
-%% never diverge. All operations are O(1).
+%% The index holds one row `{{Domain, Locale}, KeySet}' per catalog with
+%% >=1 data entry, where `KeySet' is a `sets:set/1' of that catalog's data
+%% keys (finding #13). The server is its only writer, mutating it in
+%% lock-step with the data table inside the serialized `handle_call'
+%% callbacks, so the two never diverge. Registration/lookup are O(1);
+%% `num_catalogs' is still `ets:info(_, size)' (finding #7). The KeySet
+%% drives O(catalog size) unload (`do_unload_with_count/2').
 
-%% Register a catalog. Idempotent: re-inserting the same key is a no-op on
-%% a `set' table, so repeated inserts into an already-loaded catalog do
-%% not corrupt the count.
--spec index_put(domain(), locale()) -> ok.
-index_put(D, L) ->
-    true = ets:insert(?CATALOG_INDEX_TABLE, {{D, L}}),
+%% Record the given data keys in the catalog's index set, creating the row
+%% on first key. Empty `Keys' is a no-op, so a header-only load (or a
+%% degenerate plural that flattens to zero rows) does NOT register a
+%% catalog — preserving the finding-#7 membership rule "row present <=> >=1
+%% data entry". Idempotent: re-adding an existing key leaves the set
+%% unchanged (so re-inserting into a loaded catalog cannot corrupt it).
+-spec index_add_keys(domain(), locale(), [data_key()]) -> ok.
+index_add_keys(_D, _L, []) ->
+    ok;
+index_add_keys(D, L, [_ | _] = Keys) ->
+    Existing = index_key_set(D, L),
+    Merged = lists:foldl(fun sets:add_element/2, Existing, Keys),
+    Row = {{D, L}, Merged},
+    true = ets:insert(?CATALOG_INDEX_TABLE, Row),
     ok.
 
-%% Register iff the just-completed write produced at least one ETS object.
-%% Used by the bulk insert paths (`insert_plural'/`insert_catalog') where
-%% an empty/degenerate entry set yields zero rows and must not count.
--spec maybe_index_put(domain(), locale(), [tuple()]) -> ok.
-maybe_index_put(_D, _L, []) ->
-    ok;
-maybe_index_put(D, L, [_ | _]) ->
-    index_put(D, L).
+%% The catalog's set of data keys, or an empty set when not loaded.
+-spec index_key_set(domain(), locale()) -> sets:set(data_key()).
+index_key_set(D, L) ->
+    case ets:lookup(?CATALOG_INDEX_TABLE, {D, L}) of
+        [{{_, _}, KeySet}] -> dynamic_cast_index_keyset(KeySet);
+        _ -> sets:new([{version, 2}])
+    end.
 
-%% Variant for the load path, keyed on the `insert_entries/3' boolean
-%% (did it write any data row?). Header-only loads pass `false' and so do
-%% not register as a catalog.
--spec maybe_index_put_loaded(domain(), locale(), boolean()) -> ok.
-maybe_index_put_loaded(_D, _L, false) ->
-    ok;
-maybe_index_put_loaded(D, L, true) ->
-    index_put(D, L).
+%% The catalog's data keys as a list (finding #13: the unload work set).
+%% Empty when the catalog is not loaded.
+-spec index_keys(domain(), locale()) -> [data_key()].
+index_keys(D, L) ->
+    sets:to_list(index_key_set(D, L)).
+
+%% `ets:lookup/2' is typed `[tuple()]' by eqwalizer — it cannot prove the
+%% second element is the `sets:set(data_key())' we (the sole writer) always
+%% store. The server is the table's only writer and only ever inserts
+%% `index_row/0', so this boundary cast is sound. Narrowed in one place,
+%% specced precisely, so the rest of the index code stays statically typed.
+-spec dynamic_cast_index_keyset(term()) -> sets:set(data_key()).
+dynamic_cast_index_keyset(KeySet) ->
+    eqwalizer:dynamic_cast(KeySet).
+
+%% Project the data keys out of built ETS objects (the `{Key, Value}'
+%% tuples produced by `build_*_objects/_'). Used by the insert paths to
+%% feed `index_add_keys/3'.
+-spec object_keys([tuple()]) -> [data_key()].
+object_keys([]) ->
+    [];
+object_keys([{Key, _Value} | Rest]) ->
+    [object_key(Key) | object_keys(Rest)];
+object_keys([Other | _Rest]) ->
+    error({unexpected_catalog_object, Other}).
+
+%% Narrow a stored object's key to the `data_key/0' shape. The build paths
+%% only ever emit `?SINGULAR_KEY'/`?PLURAL_KEY' tuples (never a header), so
+%% the two clauses are exhaustive; anything else is an invariant break.
+-spec object_key(tuple()) -> data_key().
+object_key({singular, D, L, Ctx, Msgid}) ->
+    ?SINGULAR_KEY(D, L, Ctx, Msgid);
+object_key({plural, D, L, Ctx, Msgid, Idx}) ->
+    ?PLURAL_KEY(D, L, Ctx, Msgid, Idx);
+object_key(Other) ->
+    error({unexpected_catalog_key, Other}).
 
 %% Deregister a catalog. Idempotent: deleting an absent key is a no-op.
 -spec index_delete(domain(), locale()) -> ok.

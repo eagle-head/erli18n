@@ -5,23 +5,35 @@
 
 -define(ETS_TABLE, erli18n_catalog).
 
-%% Finding #7 (memory-info-tab2list-per-load-quadratic): authoritative
-%% O(1) side index of distinct loaded catalogs.
+%% Finding #7 (memory-info-tab2list-per-load-quadratic) + Finding #13
+%% (server-unload-select-delete-full-scan): authoritative O(1) side index
+%% of loaded catalogs, keyed per (Domain, Locale), carrying that catalog's
+%% set of data keys.
 %%
 %% The data table (`?ETS_TABLE') used to be scanned in full
 %% (`ets:tab2list/1') on every load to count distinct (Domain, Locale)
 %% catalogs for `memory_info/0' — O(total_rows) per load, so N loads were
 %% O(N^2). Instead the server now maintains this `set' table with exactly
-%% one row `{{Domain, Locale}}' per catalog that has >=1 entry, updated
-%% incrementally on insert (idempotent) and unload. `num_catalogs' is then
-%% `ets:info(?CATALOG_INDEX_TABLE, size)' — O(1).
+%% one row per catalog that has >=1 entry, updated incrementally on insert
+%% and unload. `num_catalogs' is then `ets:info(?CATALOG_INDEX_TABLE,
+%% size)' — O(1).
+%%
+%% Finding #13: each index row is `{{Domain, Locale}, KeySet}', where
+%% `KeySet' is a `sets:set/1' of the catalog's full data keys (the
+%% `?SINGULAR_KEY'/`?PLURAL_KEY' tuples; the header key is NOT a data key
+%% and is tracked separately). This lets `unload/2' (and the reload path)
+%% delete a single catalog by iterating ITS keys and calling `ets:delete/2'
+%% per key — O(catalog size) — instead of `ets:select_delete/2' with a
+%% partial-key match spec, which on a `set' table cannot probe by a (D, L)
+%% key prefix and so scans EVERY row of ALL catalogs (O(total rows)).
 %%
 %% Owned by `erli18n_server' (not the table owner): unlike the data table,
 %% the index is cheap, derivable server-private state. When the worker
 %% crashes the index dies with it, and the worker rebuilds it on `init/1'
 %% from the surviving data table (a one-time O(rows) pass, never on the
 %% per-load hot path). Membership rule, drift-free by construction:
-%% "index row present <=> the catalog has >=1 data entry".
+%% "index row present <=> the catalog has >=1 data entry; its KeySet is
+%% exactly that catalog's set of data keys".
 -define(CATALOG_INDEX_TABLE, erli18n_catalog_index).
 
 -define(SINGULAR_KEY(Domain, Locale, Context, Msgid),

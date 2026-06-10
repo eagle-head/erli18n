@@ -30,7 +30,8 @@
     code_change_no_op/1,
     catalog_survives_worker_kill/1,
     catalog_index_maintained_incrementally/1,
-    catalog_index_rebuilt_after_worker_kill/1
+    catalog_index_rebuilt_after_worker_kill/1,
+    unload_uses_key_index_not_full_scan/1
 ]).
 
 all() ->
@@ -52,7 +53,8 @@ all() ->
         code_change_no_op,
         catalog_survives_worker_kill,
         catalog_index_maintained_incrementally,
-        catalog_index_rebuilt_after_worker_kill
+        catalog_index_rebuilt_after_worker_kill,
+        unload_uses_key_index_not_full_scan
     ].
 
 init_per_suite(Config) ->
@@ -665,6 +667,82 @@ assert_index_matches(Expected) ->
     ?assertEqual(Expected, NumCatalogs),
     Distinct = length(erli18n_server:loaded_catalogs()),
     ?assertEqual(Expected, Distinct).
+
+%% Finding #13 (server-unload-select-delete-full-scan): unload of a single
+%% (Domain, Locale) must delete that catalog's rows in O(catalog size), not
+%% scan the whole `set' data table with a partial-key `ets:select_delete'
+%% match spec (O(total rows of ALL catalogs)). The fix maintains a secondary
+%% index of the data keys per catalog (reusing the finding-#7
+%% ?CATALOG_INDEX_TABLE) so unload iterates only the target's keys and
+%% deletes each with O(1) `ets:delete/2'.
+%%
+%% Structural contract pinned here (RED before the fix, which only stores a
+%% membership marker `{{D, L}}' with no key set):
+%%   1. After loading a catalog, the index row for (D, L) carries the EXACT
+%%      set of that catalog's data keys (singular + plural).
+%%   2. Unload removes precisely those keys (target gone, neighbour intact)
+%%      AND drops the index row.
+unload_uses_key_index_not_full_scan(_Config) ->
+    %% Target catalog: 2 singulars + 1 plural (2 forms) => 4 data keys.
+    ok = erli18n_server:insert_singular(
+        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+    ),
+    ok = erli18n_server:insert_singular(
+        default, <<"fr">>, <<"menu">>, <<"File">>, <<"Fichier">>
+    ),
+    ok = erli18n_server:insert_plural(
+        default, <<"fr">>, undefined, <<"tree">>, [
+            {0, <<"arbre">>}, {1, <<"arbres">>}
+        ]
+    ),
+    %% A neighbour catalog that must remain untouched by the unload.
+    ok = erli18n_server:insert_singular(
+        default, <<"es">>, undefined, <<"Hello">>, <<"Hola">>
+    ),
+
+    %% (1) The secondary index must carry this catalog's full data key set,
+    %% not merely a {{D, L}} membership marker. This is the per-(D, L) key
+    %% index the O(catalog) unload relies on.
+    ExpectedKeys = lists:sort([
+        {singular, default, <<"fr">>, undefined, <<"Hello">>},
+        {singular, default, <<"fr">>, <<"menu">>, <<"File">>},
+        {plural, default, <<"fr">>, undefined, <<"tree">>, 0},
+        {plural, default, <<"fr">>, undefined, <<"tree">>, 1}
+    ]),
+    ?assertEqual(ExpectedKeys, index_catalog_keys(default, <<"fr">>)),
+
+    %% (2) Unload removes exactly the target's keys and its index row.
+    ok = erli18n_server:unload(default, <<"fr">>),
+    ?assertEqual([], index_catalog_keys(default, <<"fr">>)),
+    ?assertEqual(
+        undefined,
+        erli18n_server:lookup_singular(default, <<"fr">>, undefined, <<"Hello">>)
+    ),
+    ?assertEqual(
+        undefined,
+        erli18n_server:lookup_plural(default, <<"fr">>, undefined, <<"tree">>, 0)
+    ),
+    %% Neighbour catalog is fully intact.
+    ?assertEqual(
+        {ok, <<"Hola">>},
+        erli18n_server:lookup_singular(default, <<"es">>, undefined, <<"Hello">>)
+    ),
+    ?assertEqual(
+        [{singular, default, <<"es">>, undefined, <<"Hello">>}],
+        index_catalog_keys(default, <<"es">>)
+    ),
+
+    ok = erli18n_server:unload(default, <<"es">>).
+
+%% Read the secondary-index key set for (D, L) as a sorted list. Returns []
+%% when the catalog is absent. Depends on the fix storing a per-catalog key
+%% set in the index row (RED before the fix: the row is the arity-1 tuple
+%% `{{D, L}}' with no second element).
+index_catalog_keys(D, L) ->
+    case ets:lookup(?CATALOG_INDEX_TABLE, {D, L}) of
+        [{{D, L}, KeySet}] -> lists:sort(sets:to_list(KeySet));
+        _ -> []
+    end.
 
 %% Poll until the registered worker is a live pid different from the one
 %% that was killed. Bounded retries keep the case from hanging if the
