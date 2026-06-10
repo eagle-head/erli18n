@@ -60,6 +60,12 @@
     compile_rejects_oversized_expr/1,
     compile_rejects_deeply_nested_expr/1,
     compile_pathological_input_is_linear/1,
+    %% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath): even within the
+    %% byte cap, a wide flat operator chain (`n*n*...*n`) builds an AST with
+    %% thousands of nodes that `evaluate/2` walks (and whose bignum grows)
+    %% on EVERY ngettext call. The node-count cap rejects it at compile.
+    compile_rejects_complex_expr/1,
+    compile_accepts_real_world_rules_under_node_cap/1,
     %% Coverage additions — header malformed paths
     empty_nplurals_value/1,
     empty_plural_value/1,
@@ -129,6 +135,8 @@ all() ->
         compile_rejects_oversized_expr,
         compile_rejects_deeply_nested_expr,
         compile_pathological_input_is_linear,
+        compile_rejects_complex_expr,
+        compile_accepts_real_world_rules_under_node_cap,
         %% Coverage additions
         empty_nplurals_value,
         empty_plural_value,
@@ -685,18 +693,22 @@ compile_rejects_deeply_nested_expr(_Config) ->
     ).
 
 %% Regression for the O(n^2) `skip_ws_st/1` equality match: compiling a
-%% large-but-trivial valid expression must stay within a generous linear
+%% large-but-trivial VALID expression must stay within a generous linear
 %% time budget. Before the fix a ~390 KB expression froze the parser for
-%% seconds; here we use an input just under the byte cap (the largest a
-%% legitimate caller could submit) and assert the whole compile returns
-%% well under 50 ms. A regression to the quadratic match would blow this
-%% budget by orders of magnitude at the larger sizes the cap permits.
+%% seconds; a regression to the quadratic match would blow this budget by
+%% orders of magnitude. With the finding #9 node cap (?AST_MAX_NODES =
+%% 256) the largest expression that still compiles to `{ok, _}` is a
+%% 128-term chain (255 nodes); we use exactly that — the biggest valid
+%% input — so the parser still runs the full O(n) per-token scan rather
+%% than short-circuiting on a length/node guard, and assert it returns
+%% well under 50 ms. (Larger byte inputs are covered by
+%% `compile_rejects_complex_expr` / `compile_rejects_oversized_expr`,
+%% which assert the fail-closed rejection also returns quickly.)
 compile_pathological_input_is_linear(_Config) ->
-    %% Just under ?PLURAL_EXPR_MAX_BYTES so the parser actually runs the
-    %% full O(n) scan rather than short-circuiting on the length guard.
     %% `n+n+...+n` (no leading whitespace) is the exact shape that
-    %% triggered the quadratic full-binary `=:=` in skip_ws_st/1.
-    Terms = 1000,
+    %% triggered the quadratic full-binary `=:=` in skip_ws_st/1. 128
+    %% terms => 2*128-1 = 255 AST nodes, the most the node cap permits.
+    Terms = 128,
     Body = repeat_join(<<"n">>, <<"+">>, Terms),
     ?assert(byte_size(Body) =< 2048),
     Header = <<"nplurals=2; plural=", Body/binary, ";">>,
@@ -708,6 +720,64 @@ compile_pathological_input_is_linear(_Config) ->
             io_lib:format("compile took ~p us (budget 50000 us)", [Micros])
         )
     ).
+
+%% =========================
+%% Finding #9 — compile bounds AST node count (plural-bignum-cpu-dos)
+%% =========================
+
+%% A wide, flat operator chain (`n*n*...*n`) stays UNDER the byte cap and
+%% UNDER the recursion-depth cap (the chain is left-associative, so it
+%% does not nest the parser), yet it builds an AST with thousands of nodes.
+%% `evaluate/2` would walk that whole tree — and grow an `n^k` bignum — on
+%% EVERY ngettext call (uncached per-lookup amplification). The node-count
+%% cap (`?AST_MAX_NODES`) rejects it at compile time with a structured
+%% `{expr_too_complex, Nodes, Max}` error, complementing finding #2's byte
+%% and depth caps. The real-world most-complex rule (Russian/Arabic) has
+%% ~39 nodes, so the cap leaves generous headroom for any legitimate rule.
+compile_rejects_complex_expr(_Config) ->
+    %% 1000-factor multiply chain: ~1999 bytes (< 2048 byte cap) and a
+    %% single multiplicative level (< 64 depth cap), so neither the
+    %% length nor the depth guard fires — only the node-count guard does.
+    Factors = 1000,
+    Body = repeat_join(<<"n">>, <<"*">>, Factors),
+    ?assert(byte_size(Body) =< 2048),
+    Header = <<"nplurals=2; plural=", Body/binary, ";">>,
+    {Micros, Result} = timer:tc(fun() -> erli18n_plural:compile(Header) end),
+    ?assertMatch({error, {expr_too_complex, _, _}}, Result),
+    %% The node guard short-circuits, so even the rejection path is fast.
+    ?assert(
+        Micros < 50_000,
+        lists:flatten(
+            io_lib:format("compile took ~p us (budget 50000 us)", [Micros])
+        )
+    ),
+    %% The reported node count / limit are coherent: Nodes > Max.
+    {error, {expr_too_complex, Nodes, Max}} = Result,
+    ?assert(is_integer(Nodes) andalso is_integer(Max) andalso Nodes > Max).
+
+%% The node-count cap must not reject any legitimate rule. The most
+%% complex real-world rules (Arabic 6-form, Russian/Ukrainian 3-form,
+%% Slovenian 4-form) sit far under ?AST_MAX_NODES; they must still
+%% compile cleanly to `{ok, _}`.
+compile_accepts_real_world_rules_under_node_cap(_Config) ->
+    Arabic =
+        <<
+            "nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : "
+            "n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;"
+        >>,
+    Russian =
+        <<
+            "nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
+            "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;"
+        >>,
+    Slovenian =
+        <<
+            "nplurals=4; plural=n%100==1 ? 0 : n%100==2 ? 1 : "
+            "n%100==3 || n%100==4 ? 2 : 3;"
+        >>,
+    ?assertMatch({ok, _}, erli18n_plural:compile(Arabic)),
+    ?assertMatch({ok, _}, erli18n_plural:compile(Russian)),
+    ?assertMatch({ok, _}, erli18n_plural:compile(Slovenian)).
 
 %% Build `Item Sep Item Sep ... Item` with Count items. Used to
 %% synthesise the pathological-but-valid plural expressions above

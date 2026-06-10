@@ -33,7 +33,8 @@
 -export([
     prop_index_in_range/0,
     prop_compile_or_error/0,
-    prop_compile_bounded/0
+    prop_compile_bounded/0,
+    prop_compile_node_bounded/0
 ]).
 
 %% Generators
@@ -193,6 +194,14 @@ prop_compile_bounded() ->
                         is_integer(Depth), is_integer(Pos)
                     ->
                         true;
+                    %% Finding #9: a wide flat chain (e.g. `n+n+...+n`)
+                    %% can stay under BOTH the byte cap and the depth cap
+                    %% yet exceed the AST node-count cap; the node guard
+                    %% rejecting it fail-closed is a fine outcome too.
+                    {error, {expr_too_complex, Nodes, NMax}} when
+                        is_integer(Nodes), is_integer(NMax), Nodes > NMax
+                    ->
+                        true;
                     %% A pathological body can also be a plain syntax
                     %% error (e.g. unbalanced parens once truncated by the
                     %% byte cap); that is a fine fail-closed outcome too.
@@ -216,6 +225,62 @@ prop_compile_bounded() ->
                         [Micros, byte_size(Header)]
                     )
             end,
+            BudgetOk andalso ShapeOk
+        end
+    ).
+
+%% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath). The byte/depth
+%% caps from finding #2 do NOT bound the AST NODE COUNT: a wide flat
+%% operator chain (`n*n*...*n`) stays under the byte cap and at a single
+%% recursion level, yet compiles to thousands of AST nodes. `evaluate/2`
+%% then walks that whole tree — and grows an `n^k` bignum — on every
+%% ngettext lookup, with no result cache (the per-LOOKUP amplification
+%% axis, distinct from the COMPILE-time blow-up of finding #2).
+%%
+%% This property generates wide multiply chains whose node count spans
+%% both sides of ?AST_MAX_NODES (256) and asserts the post-compile
+%% invariant: `compile/1` EITHER returns `{ok, _}` with a bounded AST
+%% (node_count =< 256) OR rejects fail-closed with a structured
+%% `{error, {expr_too_complex, Nodes, Max}}` (or, for the largest bodies,
+%% `{expr_too_long, _, _}` once the byte cap is also crossed). It must
+%% never return `{ok, _}` carrying an unbounded AST, and must return
+%% within a strict per-call time budget. This property CHANCELS THE
+%% CURRENT BUG: today compile accepts a 1000-factor chain and returns
+%% `{ok, _}` with ~1999 nodes.
+prop_compile_node_bounded() ->
+    ?FORALL(
+        FactorsGen,
+        oneof([10, 100, 200, 256, 300, 1000, 4000]),
+        begin
+            Factors = eqwalizer:dynamic_cast(FactorsGen),
+            Body = multiply_chain(Factors),
+            Header =
+                <<"nplurals=2; plural=", Body/binary, ";">>,
+            {Micros, Result} = timer:tc(fun() ->
+                erli18n_plural:compile(Header)
+            end),
+            BudgetOk = Micros < 50_000,
+            ShapeOk =
+                case Result of
+                    {ok, #{expr := Ast}} ->
+                        %% Accepted only when the AST is provably bounded.
+                        ast_node_count(Ast) =< 256;
+                    {error, {expr_too_complex, Nodes, Max}} when
+                        is_integer(Nodes), is_integer(Max), Nodes > Max
+                    ->
+                        true;
+                    {error, {expr_too_long, Size, Max}} when
+                        is_integer(Size), is_integer(Max), Size > Max
+                    ->
+                        true;
+                    Other ->
+                        ct:pal(
+                            "prop_compile_node_bounded unexpected: ~p "
+                            "(factors=~p, body bytes=~p)~n",
+                            [Other, Factors, byte_size(Body)]
+                        ),
+                        false
+                end,
             BudgetOk andalso ShapeOk
         end
     ).
@@ -275,6 +340,25 @@ build_patho(nested_paren, Count) ->
 build_patho(bang_chain, Count) ->
     Bangs = binary:copy(<<"!">>, Count),
     <<Bangs/binary, "n">>.
+
+%% `n*n*...*n` with `Factors` factors. Left-associative, so it stays at a
+%% single multiplicative recursion level (under the depth cap) but its AST
+%% has 2*Factors-1 nodes — the exact shape that inflates per-lookup
+%% `evaluate/2` cost in finding #9.
+-spec multiply_chain(pos_integer()) -> binary().
+multiply_chain(Factors) when Factors >= 1 ->
+    Tail = binary:copy(<<"*n">>, max(Factors - 1, 0)),
+    <<"n", Tail/binary>>.
+
+%% Count the nodes of a compiled plural AST (the internal representation
+%% returned by `erli18n_plural:compile/1`). Mirrors the bound enforced by
+%% `compile/1`; used to assert the post-compile invariant.
+-spec ast_node_count(term()) -> pos_integer().
+ast_node_count(N) when is_integer(N) -> 1;
+ast_node_count(n) -> 1;
+ast_node_count({unop, '!', E}) -> 1 + ast_node_count(E);
+ast_node_count({binop, _Op, L, R}) -> 1 + ast_node_count(L) + ast_node_count(R);
+ast_node_count({ternary, C, T, E}) -> 1 + ast_node_count(C) + ast_node_count(T) + ast_node_count(E).
 
 %% A small positive integer for nplurals. Real-world locales top out at
 %% 6 (Arabic); we mirror that range so the property exercises every

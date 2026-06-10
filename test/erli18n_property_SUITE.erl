@@ -35,6 +35,7 @@
     plural_index_in_range/1,
     plural_compile_or_error/1,
     plural_compile_bounded/1,
+    plural_compile_node_bounded/1,
     lookup_singular_deterministic/1,
     lookup_plural_deterministic/1,
     lookup_contextual_deterministic/1,
@@ -53,6 +54,7 @@ all() ->
         plural_index_in_range,
         plural_compile_or_error,
         plural_compile_bounded,
+        plural_compile_node_bounded,
         lookup_singular_deterministic,
         lookup_plural_deterministic,
         lookup_contextual_deterministic,
@@ -96,6 +98,9 @@ plural_compile_or_error(_Config) ->
 
 plural_compile_bounded(_Config) ->
     run_property(erli18n_plural_props:prop_compile_bounded()).
+
+plural_compile_node_bounded(_Config) ->
+    run_property(erli18n_plural_props:prop_compile_node_bounded()).
 
 lookup_singular_deterministic(_Config) ->
     run_property(erli18n_lookup_props:prop_singular_lookup_deterministic()).

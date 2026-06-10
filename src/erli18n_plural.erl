@@ -101,7 +101,14 @@
     %% fail-closed so a pathological-but-valid rule cannot make compile
     %% superlinear/unbounded and freeze the server.
     | {expr_too_long, Size :: non_neg_integer(), Max :: pos_integer()}
-    | {expr_too_deep, Depth :: pos_integer(), Position :: non_neg_integer()}.
+    | {expr_too_deep, Depth :: pos_integer(), Position :: non_neg_integer()}
+    %% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath): the byte and
+    %% depth caps above do not bound the AST NODE COUNT, so a wide flat
+    %% operator chain (`n*n*...*n`) can still compile to thousands of
+    %% nodes that `evaluate/2` walks — growing an `n^k` bignum — on every
+    %% lookup. An AST above `?AST_MAX_NODES` is rejected fail-closed so
+    %% the per-lookup cost stays O(1)-bounded by construction.
+    | {expr_too_complex, Nodes :: pos_integer(), Max :: pos_integer()}.
 
 %% Anomaly observed while evaluating a compiled plural rule. Surfaced as
 %% data by `evaluate_checked/2` and as the payload of a Layer 3
@@ -161,6 +168,22 @@
 -define(PLURAL_EXPR_MAX_BYTES, 2048).
 -define(PLURAL_EXPR_MAX_DEPTH, 64).
 
+%% Bound on the number of nodes in the compiled plural AST (finding #9,
+%% plural-bignum-cpu-dos-evaluate-hotpath). Complements the byte/depth
+%% caps above, which do NOT bound the node count: a wide, flat operator
+%% chain (`n*n*...*n`) stays under both — it is left-associative, so it
+%% does not nest the parser, and ~1000 factors fit inside 2048 bytes —
+%% yet it compiles to ~2000 AST nodes. `evaluate/2` walks that whole tree
+%% (and grows an `n^k` bignum) on EVERY ngettext lookup, with no result
+%% cache, so the per-lookup cost is super-linear in the chain length and
+%% grows with N. Bounding the node count at compile time keeps the
+%% installed AST small, so `evaluate/2`'s cost is O(1)-bounded by
+%% construction. The real-world most-complex rule (Russian/Arabic) has
+%% ~39 nodes; 256 is ~6.5x headroom, so no legitimate catalog is
+%% affected, while a pathological chain is rejected before it can poison
+%% every later evaluation.
+-define(AST_MAX_NODES, 256).
+
 %% Identifier-character predicate, used to reject malformed bare words
 %% like `nx`. Macro so the parser inlines the test in a guard.
 -define(IS_IDENT(C),
@@ -185,19 +208,7 @@ compile(Header) when is_binary(Header) ->
                 {ok, ExprBin} ->
                     case parse_expr_bin(ExprBin) of
                         {ok, Ast} ->
-                            %% Layer 3 (finding #1): reject rules that are
-                            %% statically guaranteed to fault before they
-                            %% can be stored and crash every later lookup.
-                            case validate_safe(Ast, NPlurals) of
-                                ok ->
-                                    {ok, #{
-                                        nplurals => NPlurals,
-                                        expr => Ast,
-                                        raw => Header
-                                    }};
-                                {error, EvalErr} ->
-                                    {error, {unsafe_plural_rule, EvalErr}}
-                            end;
+                            compile_validated(Header, NPlurals, Ast);
                         {error, _} = Err ->
                             Err
                     end;
@@ -206,6 +217,35 @@ compile(Header) when is_binary(Header) ->
             end;
         {error, _} = Err ->
             Err
+    end.
+
+%% Apply the two load-time validation barriers to a successfully parsed
+%% AST and, on success, materialise the `plural_compiled()` bundle.
+%%
+%%   * Layer 3 (finding #1): reject rules that are STATICALLY guaranteed
+%%     to fault (literal div/mod by zero, constant out-of-range form)
+%%     before they can be stored and crash every later lookup.
+%%   * Node-count cap (finding #9): reject an AST above `?AST_MAX_NODES`
+%%     so a wide flat chain cannot make `evaluate/2` walk thousands of
+%%     nodes (and grow a large bignum) on every lookup. Run once here at
+%%     load time, never on the hot path.
+-spec compile_validated(binary(), pos_integer(), ast()) ->
+    {ok, plural_compiled()} | {error, compile_error()}.
+compile_validated(Header, NPlurals, Ast) ->
+    case validate_safe(Ast, NPlurals) of
+        ok ->
+            case check_ast_complexity(Ast) of
+                ok ->
+                    {ok, #{
+                        nplurals => NPlurals,
+                        expr => Ast,
+                        raw => Header
+                    }};
+                {error, _} = Err ->
+                    Err
+            end;
+        {error, EvalErr} ->
+            {error, {unsafe_plural_rule, EvalErr}}
     end.
 
 %% Evaluate a compiled plural rule for a particular N. Pure function on
@@ -1038,6 +1078,78 @@ is_constant(n) -> false;
 is_constant({unop, '!', E}) -> is_constant(E);
 is_constant({binop, _Op, L, R}) -> is_constant(L) andalso is_constant(R);
 is_constant({ternary, C, T, E}) -> is_constant(C) andalso is_constant(T) andalso is_constant(E).
+
+%% =========================
+%% AST node-count cap (finding #9, plural-bignum-cpu-dos-evaluate-hotpath)
+%% =========================
+%%
+%% Reject — at compile/load time — an AST whose node count exceeds
+%% `?AST_MAX_NODES`. The byte and depth caps from finding #2 do not bound
+%% the node count, so a wide flat operator chain (`n*n*...*n`, ~2000 nodes
+%% inside the 2048-byte cap, at a single recursion level) would otherwise
+%% be installed and walked by `evaluate/2` — growing an `n^k` bignum — on
+%% every ngettext lookup. Capping the node count keeps the installed AST
+%% small so `evaluate/2`'s cost is bounded by construction (largest
+%% intermediate bignum is `n^?AST_MAX_NODES`). Runs once on the load path,
+%% never on the hot path.
+
+%% Short-circuiting node-count guard: stops descending as soon as the
+%% budget is blown, so its cost is O(min(nodes, ?AST_MAX_NODES)) — never
+%% proportional to a pathologically large AST.
+-spec check_ast_complexity(ast()) ->
+    ok | {error, {expr_too_complex, pos_integer(), pos_integer()}}.
+check_ast_complexity(Ast) ->
+    case count_nodes_bounded(Ast, 0) of
+        {ok, _Total} ->
+            ok;
+        over_limit ->
+            %% Only the (rare, off-hot-path) error branch pays for the
+            %% exact total — used purely for diagnostics.
+            {error, {expr_too_complex, ast_node_count(Ast), ?AST_MAX_NODES}}
+    end.
+
+%% Budgeted counter. Returns `{ok, Total}` if the whole AST fits within
+%% `?AST_MAX_NODES`, otherwise `over_limit` at the first node that blows
+%% the budget.
+-spec count_nodes_bounded(ast(), non_neg_integer()) ->
+    {ok, non_neg_integer()} | over_limit.
+count_nodes_bounded(_Ast, Acc) when Acc > ?AST_MAX_NODES ->
+    over_limit;
+count_nodes_bounded(N, Acc) when is_integer(N) ->
+    {ok, Acc + 1};
+count_nodes_bounded(n, Acc) ->
+    {ok, Acc + 1};
+count_nodes_bounded({unop, '!', E}, Acc) ->
+    count_nodes_bounded(E, Acc + 1);
+count_nodes_bounded({binop, _Op, L, R}, Acc) ->
+    case count_nodes_bounded(L, Acc + 1) of
+        over_limit -> over_limit;
+        {ok, Acc1} -> count_nodes_bounded(R, Acc1)
+    end;
+count_nodes_bounded({ternary, C, T, E}, Acc) ->
+    case count_nodes_bounded(C, Acc + 1) of
+        over_limit ->
+            over_limit;
+        {ok, Acc1} ->
+            case count_nodes_bounded(T, Acc1) of
+                over_limit -> over_limit;
+                {ok, Acc2} -> count_nodes_bounded(E, Acc2)
+            end
+    end.
+
+%% Exact, total node count — used only on the error branch for diagnostic
+%% reporting (`{expr_too_complex, Nodes, Max}`).
+-spec ast_node_count(ast()) -> pos_integer().
+ast_node_count(N) when is_integer(N) ->
+    1;
+ast_node_count(n) ->
+    1;
+ast_node_count({unop, '!', E}) ->
+    1 + ast_node_count(E);
+ast_node_count({binop, _Op, L, R}) ->
+    1 + ast_node_count(L) + ast_node_count(R);
+ast_node_count({ternary, C, T, E}) ->
+    1 + ast_node_count(C) + ast_node_count(T) + ast_node_count(E).
 
 %% =========================
 %% CLDR canonical rules
