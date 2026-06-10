@@ -589,7 +589,7 @@ ensure_loaded_header_only_no_entries(Config) ->
         erli18n_server:lookup_header(default, <<"empty_cat">>),
     ?assertEqual(0, maps:get(num_entries, HeaderState)),
     %% Header rows are excluded from the user-visible catalog count by
-    %% design — see extract_catalog/2.
+    %% design — the O(1) catalog index only tracks (D, L) with >=1 entry.
     Catalogs = erli18n_server:loaded_catalogs(),
     ?assertEqual(
         false,

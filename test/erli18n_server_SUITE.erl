@@ -2,6 +2,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include("erli18n.hrl").
 
 -export([
     all/0,
@@ -27,7 +28,9 @@
     unknown_info_does_not_crash/1,
     terminate_called_on_app_stop/1,
     code_change_no_op/1,
-    catalog_survives_worker_kill/1
+    catalog_survives_worker_kill/1,
+    catalog_index_maintained_incrementally/1,
+    catalog_index_rebuilt_after_worker_kill/1
 ]).
 
 all() ->
@@ -47,7 +50,9 @@ all() ->
         unknown_info_does_not_crash,
         terminate_called_on_app_stop,
         code_change_no_op,
-        catalog_survives_worker_kill
+        catalog_survives_worker_kill,
+        catalog_index_maintained_incrementally,
+        catalog_index_rebuilt_after_worker_kill
     ].
 
 init_per_suite(Config) ->
@@ -555,6 +560,111 @@ catalog_survives_worker_kill(_Config) ->
             default, <<"fr">>, undefined, <<"Bye">>
         )
     ).
+
+%% Finding #7 (memory-info-tab2list-per-load-quadratic): `num_catalogs`
+%% must be maintained by an authoritative O(1) side index
+%% (?CATALOG_INDEX_TABLE), NOT recomputed by `ets:tab2list/1` on every
+%% load. This case pins the structural invariant the fix introduces:
+%%
+%%   1. The index table exists (it does not before the fix -> RED).
+%%   2. `memory_info().num_catalogs` == `ets:info(index, size)` at all
+%%      times (the count IS the index, not a scan).
+%%   3. The index tracks distinct (D, L) with >=1 entry across an
+%%      arbitrary insert/unload/overwrite sequence with no drift.
+%%   4. Header-only catalogs (no entries) do NOT register (consistent
+%%      with the index membership rule and loaded_catalogs/0).
+catalog_index_maintained_incrementally(_Config) ->
+    %% Index table must be present and start empty (init_per_testcase
+    %% unloaded everything).
+    ?assertNotEqual(undefined, ets:info(?CATALOG_INDEX_TABLE, size)),
+    assert_index_matches(0),
+
+    ok = erli18n_server:insert_singular(
+        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+    ),
+    assert_index_matches(1),
+
+    %% Same (D, L) again — idempotent, still one catalog.
+    ok = erli18n_server:insert_singular(
+        default, <<"fr">>, undefined, <<"Bye">>, <<"Au revoir">>
+    ),
+    assert_index_matches(1),
+
+    %% A plural insert on a fresh (D, L) registers a second catalog.
+    ok = erli18n_server:insert_plural(
+        default, <<"es">>, undefined, <<"tree">>, [
+            {0, <<"arbol">>}, {1, <<"arboles">>}
+        ]
+    ),
+    assert_index_matches(2),
+
+    %% A bulk catalog insert on a third (D, L).
+    ok = erli18n_server:insert_catalog(default, <<"de">>, [
+        {singular, undefined, <<"Hello">>, <<"Hallo">>}
+    ]),
+    assert_index_matches(3),
+
+    %% Unload removes exactly one catalog from the index.
+    ok = erli18n_server:unload(default, <<"es">>),
+    assert_index_matches(2),
+
+    %% Unloading a never-loaded catalog is a no-op for the index.
+    ok = erli18n_server:unload(default, <<"never">>),
+    assert_index_matches(2),
+
+    %% Unload the rest.
+    ok = erli18n_server:unload(default, <<"fr">>),
+    ok = erli18n_server:unload(default, <<"de">>),
+    assert_index_matches(0).
+
+%% The index is server-private state; a worker crash destroys it. After
+%% the supervisor restarts the worker, the index MUST be rebuilt from the
+%% data table that survived via the heir handoff, so `num_catalogs` stays
+%% authoritative. Without a rebuild on init the count would read 0 after a
+%% crash even though catalogs are still loaded.
+catalog_index_rebuilt_after_worker_kill(_Config) ->
+    ok = erli18n_server:insert_singular(
+        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+    ),
+    ok = erli18n_server:insert_singular(
+        default, <<"es">>, undefined, <<"Hello">>, <<"Hola">>
+    ),
+    assert_index_matches(2),
+
+    Pid =
+        case whereis(erli18n_server) of
+            P when is_pid(P) -> P;
+            Other -> error({erli18n_server_not_running, Other})
+        end,
+    Ref = monitor(process, Pid),
+    exit(Pid, kill),
+    receive
+        {'DOWN', Ref, process, Pid, _Reason} -> ok
+    after 5000 ->
+        ct:fail({worker_kill_timeout, Pid})
+    end,
+    NewPid = wait_for_new_worker(Pid, 100),
+    ?assert(is_pid(NewPid)),
+
+    %% Rebuilt index reflects the two surviving catalogs.
+    assert_index_matches(2),
+    ?assertEqual(2, maps:get(num_catalogs, erli18n_server:memory_info())),
+
+    %% Clean up.
+    ok = erli18n_server:unload(default, <<"fr">>),
+    ok = erli18n_server:unload(default, <<"es">>),
+    assert_index_matches(0).
+
+%% Assert the side index size, `memory_info().num_catalogs`, and the
+%% distinct count derived from `loaded_catalogs/0` all agree on Expected.
+%% This is the drift-free invariant the fix guarantees.
+assert_index_matches(Expected) ->
+    IndexSize = ets:info(?CATALOG_INDEX_TABLE, size),
+    ?assertEqual(Expected, IndexSize),
+    #{num_catalogs := NumCatalogs} = erli18n_server:memory_info(),
+    ?assertEqual(Expected, NumCatalogs),
+    Distinct = length(erli18n_server:loaded_catalogs()),
+    ?assertEqual(Expected, Distinct).
 
 %% Poll until the registered worker is a live pid different from the one
 %% that was killed. Bounded retries keep the case from hanging if the

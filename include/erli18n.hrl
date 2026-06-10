@@ -5,6 +5,25 @@
 
 -define(ETS_TABLE, erli18n_catalog).
 
+%% Finding #7 (memory-info-tab2list-per-load-quadratic): authoritative
+%% O(1) side index of distinct loaded catalogs.
+%%
+%% The data table (`?ETS_TABLE') used to be scanned in full
+%% (`ets:tab2list/1') on every load to count distinct (Domain, Locale)
+%% catalogs for `memory_info/0' — O(total_rows) per load, so N loads were
+%% O(N^2). Instead the server now maintains this `set' table with exactly
+%% one row `{{Domain, Locale}}' per catalog that has >=1 entry, updated
+%% incrementally on insert (idempotent) and unload. `num_catalogs' is then
+%% `ets:info(?CATALOG_INDEX_TABLE, size)' — O(1).
+%%
+%% Owned by `erli18n_server' (not the table owner): unlike the data table,
+%% the index is cheap, derivable server-private state. When the worker
+%% crashes the index dies with it, and the worker rebuilds it on `init/1'
+%% from the surviving data table (a one-time O(rows) pass, never on the
+%% per-load hot path). Membership rule, drift-free by construction:
+%% "index row present <=> the catalog has >=1 data entry".
+-define(CATALOG_INDEX_TABLE, erli18n_catalog_index).
+
 -define(SINGULAR_KEY(Domain, Locale, Context, Msgid),
         {singular, Domain, Locale, Context, Msgid}).
 -define(PLURAL_KEY(Domain, Locale, Context, Msgid, Index),

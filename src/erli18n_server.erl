@@ -243,7 +243,11 @@ memory_info() ->
     Words = ets_info_integer(memory),
     Bytes = Words * erlang:system_info(wordsize),
     NumKeys = ets_info_integer(size),
-    NumCatalogs = sets:size(distinct_catalogs()),
+    %% Finding #7: O(1) read of the authoritative side index instead of an
+    %% O(total_rows) `ets:tab2list/1' + per-row `sets:add_element/2' scan
+    %% on every call (which made N loads O(N^2) and briefly doubled peak
+    %% memory by copying the whole table onto the server heap).
+    NumCatalogs = index_size(),
     #{
         ets_bytes => Bytes,
         num_catalogs => NumCatalogs,
@@ -755,10 +759,72 @@ init([]) ->
         %% (the supervisor re-evaluates).
         error({ets_handoff_timeout, ?ETS_TABLE})
     end,
+    %% Finding #7: create the authoritative O(1) catalog index and seed it
+    %% from whatever rows survived in the data table. On first boot the
+    %% data table is empty so this is a no-op; after a worker crash the
+    %% data table comes back (heir handoff) populated, so we rebuild the
+    %% index once here instead of scanning the table on every load. The
+    %% server is the table's sole writer, so an index it owns can never
+    %% diverge while the worker is alive.
+    _ = create_catalog_index(),
+    ok = rebuild_catalog_index(),
     {ok, #{}}.
+
+%% Create the side index table if it does not already exist. The table is
+%% server-owned (dies with the worker, rebuilt on `init/1') and protected:
+%% only this process writes to it. Re-entrant so a worker restart that
+%% inherits a stale name (it won't — the table dies with the old worker)
+%% degrades to a no-op rather than crashing.
+-spec create_catalog_index() -> ets:table().
+create_catalog_index() ->
+    case ets:info(?CATALOG_INDEX_TABLE, name) of
+        undefined ->
+            ets:new(?CATALOG_INDEX_TABLE, [
+                set,
+                protected,
+                named_table,
+                {read_concurrency, true},
+                {keypos, 1}
+            ]);
+        _Existing ->
+            ?CATALOG_INDEX_TABLE
+    end.
+
+%% Rebuild the index from the data table. Runs exactly once per worker
+%% lifetime (in `init/1'), NOT on the per-load path. Cost is O(rows) of
+%% the surviving table — paid only after a crash, never repeated. We clear
+%% first so a re-entrant rebuild stays idempotent.
+-spec rebuild_catalog_index() -> ok.
+rebuild_catalog_index() ->
+    true = ets:delete_all_objects(?CATALOG_INDEX_TABLE),
+    seed_index(ets:tab2list(?ETS_TABLE)),
+    ok.
+
+-spec seed_index([tuple()]) -> ok.
+seed_index([]) ->
+    ok;
+seed_index([Obj | Rest]) ->
+    _ = index_obj(Obj),
+    seed_index(Rest).
+
+%% Register the (Domain, Locale) of a single surviving data row. Header
+%% rows carry no user-visible entries and so do NOT register — same rule
+%% `memory_info/0' has always used (a header-only `.po' is not a catalog
+%% for counting purposes).
+-spec index_obj(tuple()) -> ok.
+index_obj({{singular, D, L, _, _}, _}) ->
+    index_put(D, L);
+index_obj({{plural, D, L, _, _, _}, _}) ->
+    index_put(D, L);
+index_obj(_Other) ->
+    ok.
 
 handle_call({insert_singular, D, L, Ctx, Msgid, T}, _From, State) ->
     true = ets:insert(?ETS_TABLE, {?SINGULAR_KEY(D, L, Ctx, Msgid), T}),
+    %% Finding #7: maintain the O(1) catalog index incrementally. A
+    %% singular insert always writes exactly one data row, so the catalog
+    %% now has >=1 entry — register it (idempotent).
+    index_put(D, L),
     {reply, ok, State};
 handle_call({insert_plural, D, L, Ctx, Msgid, Entries}, _From, State) ->
     %% Build a strictly-tuple list so `ets:insert/2` sees the precise
@@ -766,10 +832,15 @@ handle_call({insert_plural, D, L, Ctx, Msgid, Entries}, _From, State) ->
     %% entry; the result tuple has fixed arity 2 and is always a tuple.
     Objects = build_plural_objects(D, L, Ctx, Msgid, Entries),
     true = ets:insert(?ETS_TABLE, Objects),
+    %% Only register when at least one row was actually written. An empty
+    %% form list inserts nothing, so it must not bump the catalog count
+    %% (membership rule: index row present <=> >=1 data entry).
+    maybe_index_put(D, L, Objects),
     {reply, ok, State};
 handle_call({insert_catalog, D, L, Entries}, _From, State) ->
     Objects = build_catalog_objects(D, L, Entries),
     true = ets:insert(?ETS_TABLE, Objects),
+    maybe_index_put(D, L, Objects),
     {reply, ok, State};
 handle_call({unload, D, L}, _From, State) ->
     %% Span: [erli18n, catalog, unload]. Always-on per observability.md
@@ -1016,7 +1087,15 @@ install_parsed(Domain, Locale, PoPath, IncludeFuzzy, Parsed) ->
             %% per observability.md §6 (load-time, infrequent). Schema in
             %% observability.md §4.2.
             emit_divergence_telemetry(Domain, Locale, Divergence),
-            true = insert_entries(Domain, Locale, Entries),
+            Inserted = insert_entries(Domain, Locale, Entries),
+            %% Finding #7: register the catalog in the O(1) index iff the
+            %% load produced at least one data row. A header-only `.po'
+            %% (or a plural with empty form lists) writes only the header
+            %% row below, which is intentionally NOT counted as a catalog
+            %% (consistent with `loaded_catalogs/0' / the old tab2list
+            %% scan). The `?HEADER_KEY' insert is infallible and never
+            %% touches the index.
+            maybe_index_put_loaded(Domain, Locale, Inserted),
             true = ets:insert(
                 ?ETS_TABLE,
                 {?HEADER_KEY(Domain, Locale), HeaderState}
@@ -1116,13 +1195,19 @@ emit_divergence_telemetry(
 %% installed in one operation. Per `ets:insert/2` docs, multi-object
 %% insert on `set` is atomic and isolated — observers either see the old
 %% state or the new state, never a mix.
--spec insert_entries(domain(), locale(), [catalog_entry()]) -> true.
+%%
+%% Returns `true' iff at least one data row was actually written, so the
+%% caller can decide whether the catalog should register in the O(1)
+%% index (finding #7): an empty entry list — or entries that flatten to
+%% zero ETS objects, e.g. a plural with empty form lists — must NOT count
+%% as a loaded catalog.
+-spec insert_entries(domain(), locale(), [catalog_entry()]) -> boolean().
 insert_entries(_Domain, _Locale, []) ->
-    true;
+    false;
 insert_entries(Domain, Locale, Entries) ->
     Objects = build_catalog_objects(Domain, Locale, Entries),
     case Objects of
-        [] -> true;
+        [] -> false;
         [_ | _] -> ets:insert(?ETS_TABLE, Objects)
     end.
 
@@ -1178,6 +1263,11 @@ do_unload_with_count(Domain, Locale) ->
             {{?HEADER_KEY(Domain, Locale), '_'}, [], [true]}
         ],
     Deleted = ets:select_delete(?ETS_TABLE, MatchSpec),
+    %% Finding #7: drop the catalog from the O(1) index. Unload is the only
+    %% bulk removal path (the write API has no per-key delete), so this is
+    %% where index rows disappear. `index_delete/2' is idempotent — a
+    %% never-loaded (Domain, Locale) was never in the index.
+    index_delete(Domain, Locale),
     Result =
         case Deleted of
             0 -> not_loaded;
@@ -1221,37 +1311,61 @@ entry_to_objects(D, L, {singular, Ctx, Msgid, T}) ->
 entry_to_objects(D, L, {plural, Ctx, Msgid, Entries}) ->
     build_plural_objects(D, L, Ctx, Msgid, Entries).
 
--spec distinct_catalogs() -> sets:set({domain(), locale()}).
-distinct_catalogs() ->
-    %% Manual recursion over an `ets:tab2list/1` snapshot for the same
-    %% accumulator-typing reason as `loaded_catalogs/0`. Observability
-    %% path; not a hot path.
-    build_distinct(ets:tab2list(?ETS_TABLE), sets:new([{version, 2}])).
+%% =========================
+%% Internal: O(1) catalog index (finding #7)
+%% =========================
+%%
+%% The index holds one row `{{Domain, Locale}}' per catalog with >=1 data
+%% entry. The server is its only writer, mutating it in lock-step with the
+%% data table inside the serialized `handle_call' callbacks, so the two
+%% never diverge. All operations are O(1).
 
--spec build_distinct(
-    [tuple()],
-    sets:set({domain(), locale()})
-) -> sets:set({domain(), locale()}).
-build_distinct([], Acc) ->
-    Acc;
-build_distinct([Obj | Rest], Acc) ->
-    build_distinct(Rest, extract_catalog(Obj, Acc)).
+%% Register a catalog. Idempotent: re-inserting the same key is a no-op on
+%% a `set' table, so repeated inserts into an already-loaded catalog do
+%% not corrupt the count.
+-spec index_put(domain(), locale()) -> ok.
+index_put(D, L) ->
+    true = ets:insert(?CATALOG_INDEX_TABLE, {{D, L}}),
+    ok.
 
--spec extract_catalog(
-    tuple(),
-    sets:set({domain(), locale()})
-) -> sets:set({domain(), locale()}).
-extract_catalog({{singular, D, L, _, _}, _}, Acc) ->
-    sets:add_element({D, L}, Acc);
-extract_catalog({{plural, D, L, _, _, _}, _}, Acc) ->
-    sets:add_element({D, L}, Acc);
-extract_catalog({{header, _, _}, _}, Acc) ->
-    %% Header rows are metadata, not part of the user-visible catalog
-    %% count. A header without entries (empty .po) intentionally does
-    %% not register as a "catalog" for memory_info purposes.
-    Acc;
-extract_catalog(_Other, Acc) ->
-    Acc.
+%% Register iff the just-completed write produced at least one ETS object.
+%% Used by the bulk insert paths (`insert_plural'/`insert_catalog') where
+%% an empty/degenerate entry set yields zero rows and must not count.
+-spec maybe_index_put(domain(), locale(), [tuple()]) -> ok.
+maybe_index_put(_D, _L, []) ->
+    ok;
+maybe_index_put(D, L, [_ | _]) ->
+    index_put(D, L).
+
+%% Variant for the load path, keyed on the `insert_entries/3' boolean
+%% (did it write any data row?). Header-only loads pass `false' and so do
+%% not register as a catalog.
+-spec maybe_index_put_loaded(domain(), locale(), boolean()) -> ok.
+maybe_index_put_loaded(_D, _L, false) ->
+    ok;
+maybe_index_put_loaded(D, L, true) ->
+    index_put(D, L).
+
+%% Deregister a catalog. Idempotent: deleting an absent key is a no-op.
+-spec index_delete(domain(), locale()) -> ok.
+index_delete(D, L) ->
+    true = ets:delete(?CATALOG_INDEX_TABLE, {D, L}),
+    ok.
+
+%% O(1) count of distinct loaded catalogs — the whole point of the index.
+%% `ets:info(_, size)' is documented O(1); the table only ever exists
+%% after `init/1' creates it, so a real `undefined' here means the server
+%% is dead and crashing with a descriptive payload is correct.
+-spec index_size() -> non_neg_integer().
+index_size() ->
+    case ets:info(?CATALOG_INDEX_TABLE, size) of
+        N when is_integer(N), N >= 0 ->
+            N;
+        Other ->
+            error(
+                {ets_info_invalid, {?CATALOG_INDEX_TABLE, size, Other, expected, non_neg_integer}}
+            )
+    end.
 
 -spec count_per_catalog(
     tuple(),
