@@ -33,6 +33,7 @@
     idempotent_normalization/1,
     ets_key_canonical/1,
     large_string_roundtrip/1,
+    parse_output_is_valid_utf8/1,
     plural_index_in_range/1,
     plural_compile_or_error/1,
     plural_compile_bounded/1,
@@ -53,6 +54,7 @@ all() ->
         idempotent_normalization,
         ets_key_canonical,
         large_string_roundtrip,
+        parse_output_is_valid_utf8,
         plural_index_in_range,
         plural_compile_or_error,
         plural_compile_bounded,
@@ -94,6 +96,9 @@ ets_key_canonical(_Config) ->
 
 large_string_roundtrip(_Config) ->
     run_property(erli18n_po_props:prop_large_string_roundtrip()).
+
+parse_output_is_valid_utf8(_Config) ->
+    run_property(erli18n_po_props:prop_parse_output_is_valid_utf8()).
 
 plural_index_in_range(_Config) ->
     run_property(erli18n_plural_props:prop_index_in_range()).

@@ -38,6 +38,11 @@
     parse_file_ok/1,
     parse_file_missing/1,
     hex_and_octal_escapes/1,
+    hex_escape_high_byte_utf8_rejected/1,
+    hex_escape_latin1_transcodes/1,
+    hex_escape_utf8_multibyte_ok/1,
+    octal_escape_high_byte/1,
+    ascii_escape_high_byte_rejected/1,
     degenerate_plural_nplurals_1/1,
     duplicate_header_dropped/1,
     %% Coverage-targeted tests
@@ -110,6 +115,11 @@ all() ->
         parse_file_ok,
         parse_file_missing,
         hex_and_octal_escapes,
+        hex_escape_high_byte_utf8_rejected,
+        hex_escape_latin1_transcodes,
+        hex_escape_utf8_multibyte_ok,
+        octal_escape_high_byte,
+        ascii_escape_high_byte_rejected,
         degenerate_plural_nplurals_1,
         duplicate_header_dropped,
         %% Coverage-targeted tests
@@ -591,6 +601,114 @@ hex_and_octal_escapes(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, undefined, Msgid, _}] = maps:get(entries, Catalog),
     ?assertEqual(<<"AA">>, Msgid).
+
+%% Finding #11 (po-hex-octal-escape-emits-invalid-utf8): a UTF-8 catalog
+%% with a lone high-byte hex escape (`\xFF`) used to return `{ok, _}` with
+%% an INVALID-UTF-8 translation (`<<255>>` spliced raw past the UTF-8
+%% gate), which then crashed downstream unicode-aware ops with badarg.
+%% After the fix the escape byte is interpreted in the declared charset's
+%% code space and transcoded: a lone `\xFF` is not valid UTF-8, so parse
+%% surfaces a STRUCTURED `{escape_invalid_utf8, _}` syntax error instead
+%% of storing garbage — parity with msgfmt's "invalid multibyte sequence"
+%% rejection.
+hex_escape_high_byte_utf8_rejected(_Config) ->
+    Bin = <<
+        (minimal_header())/binary,
+        "msgid \"k\"\n"
+        "msgstr \"x\\xFFy\"\n"
+    >>,
+    ?assertMatch(
+        {error, {syntax_error, _, {escape_invalid_utf8, _}}},
+        erli18n_po:parse(Bin)
+    ).
+
+%% Finding #11: in an ISO-8859-1 catalog the escape byte is a Latin-1
+%% codepoint and MUST transcode to UTF-8 like any natural byte. `\xFF`
+%% means U+00FF, whose UTF-8 encoding is <<195,191>> — NOT the raw byte
+%% <<255>> the old code emitted. A natural latin1 byte 0xE9 (é) in the
+%% same field must coexist as <<195,169>>. This is the gettext two-phase
+%% model: escape bytes live in the declared charset's code space.
+hex_escape_latin1_transcodes(_Config) ->
+    Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=ISO-8859-1\\n\"\n"
+        "\n"
+        "msgid \"k\"\n"
+        "msgstr \"",
+        16#E9,
+        "\\xFFz\"\n"
+    >>,
+    {ok, Catalog} = erli18n_po:parse(Bin),
+    [{singular, undefined, <<"k">>, Translation}] =
+        maps:get(entries, Catalog),
+    %% é = <<195,169>> (natural byte transcoded) | \xFF = U+00FF =
+    %% <<195,191>> (escape transcoded) | z = <<122>>.
+    ?assertEqual(<<16#C3, 16#A9, 16#C3, 16#BF, $z>>, Translation),
+    %% The output is valid UTF-8 (the invariant the bug violated).
+    ?assert(is_binary(unicode:characters_to_binary(Translation, utf8, utf8))).
+
+%% Finding #11: a UTF-8 catalog may legitimately spell a multibyte
+%% codepoint as CONSECUTIVE high-byte escapes (`\xC3\xBF` = U+00FF). These
+%% must be grouped into one raw run and validated as UTF-8 together,
+%% yielding <<195,191>> — preserving gettext parity for valid escapes
+%% while rejecting only invalid ones.
+hex_escape_utf8_multibyte_ok(_Config) ->
+    Bin = <<
+        (minimal_header())/binary,
+        "msgid \"k\"\n"
+        "msgstr \"x\\xC3\\xBFy\"\n"
+    >>,
+    {ok, Catalog} = erli18n_po:parse(Bin),
+    [{singular, undefined, <<"k">>, Translation}] =
+        maps:get(entries, Catalog),
+    ?assertEqual(<<$x, 16#C3, 16#BF, $y>>, Translation),
+    ?assert(is_binary(unicode:characters_to_binary(Translation, utf8, utf8))).
+
+%% Finding #11: octal `\377` is the byte 0xFF and must behave exactly like
+%% `\xFF` in every charset — rejected (lone) in UTF-8, transcoded in
+%% latin1.
+octal_escape_high_byte(_Config) ->
+    Utf8Bin = <<
+        (minimal_header())/binary,
+        "msgid \"k\"\n"
+        "msgstr \"x\\377y\"\n"
+    >>,
+    ?assertMatch(
+        {error, {syntax_error, _, {escape_invalid_utf8, _}}},
+        erli18n_po:parse(Utf8Bin)
+    ),
+    Latin1Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=ISO-8859-1\\n\"\n"
+        "\n"
+        "msgid \"k\"\n"
+        "msgstr \"\\377z\"\n"
+    >>,
+    {ok, Catalog} = erli18n_po:parse(Latin1Bin),
+    [{singular, undefined, <<"k">>, Translation}] =
+        maps:get(entries, Catalog),
+    ?assertEqual(<<16#C3, 16#BF, $z>>, Translation).
+
+%% Finding #11: in a US-ASCII catalog a high byte is OUTSIDE the charset
+%% entirely. The escape characters (`\`,`x`,`F`,`F`) are all ASCII so the
+%% body passes the US-ASCII gate, but the decoded byte 0xFF >= 0x80 is not
+%% representable — surface a structured `{invalid_escape_charset, ...}`
+%% error rather than emit a non-ASCII byte in an ASCII catalog.
+ascii_escape_high_byte_rejected(_Config) ->
+    Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=US-ASCII\\n\"\n"
+        "\n"
+        "msgid \"k\"\n"
+        "msgstr \"x\\xFFy\"\n"
+    >>,
+    ?assertMatch(
+        {error, {syntax_error, _, {invalid_escape_charset, us_ascii, 16#FF}}},
+        erli18n_po:parse(Bin)
+    ).
 
 %% PSD-008: nplurals=1 (Japanese-style); single msgstr[0] is enough.
 degenerate_plural_nplurals_1(_Config) ->

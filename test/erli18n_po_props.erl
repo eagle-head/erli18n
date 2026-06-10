@@ -34,7 +34,8 @@
     prop_roundtrip_parse_dump/0,
     prop_idempotent_normalization/0,
     prop_ets_key_canonical/0,
-    prop_large_string_roundtrip/0
+    prop_large_string_roundtrip/0,
+    prop_parse_output_is_valid_utf8/0
 ]).
 
 %% Generators (exported so other property modules can compose them).
@@ -208,6 +209,40 @@ prop_large_string_roundtrip() ->
                         [Other, N]
                     ),
                     false
+            end
+        end
+    ).
+
+%% Finding #11 (po-hex-octal-escape-emits-invalid-utf8) — CLOSURE
+%% INVARIANT: parse output is always valid UTF-8.
+%%
+%% Claim: for any catalog source generated with an arbitrary charset
+%% (utf8 | latin1 | us_ascii) and arbitrary `\xHH`/`\OOO` escapes
+%% (including HH/OOO >= 0x80) injected into a msgstr, IF
+%% `erli18n_po:parse/1` returns `{ok, Cat}`, THEN every `translation()`,
+%% `msgid()` and `context()` in `Cat.entries` is valid UTF-8 — i.e.
+%% `unicode:characters_to_binary(B, utf8, utf8)` returns a binary.
+%%
+%% This is the invariant the bug VIOLATED: `\xFF` in a UTF-8 catalog used
+%% to make `parse` return `{ok, _}` with a translation containing the raw
+%% byte 0xFF (invalid UTF-8 despite charset=UTF-8), which crashed
+%% downstream unicode ops with badarg. The fix makes the parser either
+%% transcode the escape into valid UTF-8 or fail with a structured error;
+%% in NEITHER case may it return `{ok, _}` carrying invalid UTF-8.
+prop_parse_output_is_valid_utf8() ->
+    ?FORALL(
+        SrcGen,
+        po_source_with_escapes(),
+        begin
+            Src = eqwalizer:dynamic_cast(SrcGen),
+            case erli18n_po:parse(Src) of
+                {ok, #{entries := Entries}} ->
+                    lists:all(fun entry_fields_valid_utf8/1, Entries);
+                {error, _} ->
+                    %% A structured error is an acceptable (and for
+                    %% out-of-charset escapes, the correct) outcome — the
+                    %% invariant only constrains the `{ok, _}` case.
+                    true
             end
         end
     ).
@@ -490,3 +525,102 @@ canonicalize_parsed(#{header := Header, entries := Entries}) ->
         header => Kept,
         entries => canonicalize_entries(Entries)
     }.
+
+%% =========================
+%% Finding #11 generators/helpers — escape injection across charsets
+%% =========================
+
+%% Generate the SOURCE BYTES of a minimal single-entry catalog whose
+%% header declares a charset and whose msgstr contains an
+%% adversarially-chosen escape sequence. Unlike the other generators
+%% (which build a parsed map), this one produces the raw `.po` text so the
+%% parser's escape-decode path is exercised end-to-end.
+po_source_with_escapes() ->
+    ?LET(
+        {CharsetGen, EscapeGen},
+        {oneof([<<"UTF-8">>, <<"ISO-8859-1">>, <<"US-ASCII">>]), escape_fragment()},
+        begin
+            Charset = eqwalizer:dynamic_cast(CharsetGen),
+            Escape = eqwalizer:dynamic_cast(EscapeGen),
+            <<
+                "msgid \"\"\n"
+                "msgstr \"\"\n"
+                "\"Content-Type: text/plain; charset=",
+                Charset/binary,
+                "\\n\"\n"
+                "\n"
+                "msgid \"k\"\n"
+                "msgstr \"x",
+                Escape/binary,
+                "y\"\n"
+            >>
+        end
+    ).
+
+%% A fragment of escape sequence(s) spliced into a msgstr. Mixes
+%% always-ASCII escapes (`\n`, `\t`, `\x41`, `\101`) with high-byte
+%% escapes (`\x80..\xFF`, `\200..\377`) and consecutive high-byte runs
+%% (e.g. `\xC3\xBF`, a valid UTF-8 multibyte) so both the rejection and
+%% the transcode paths are hit. Every character of the fragment is itself
+%% ASCII, so the catalog body always survives the charset gate; only the
+%% DECODED byte can be high.
+escape_fragment() ->
+    oneof([
+        <<"\\n">>,
+        <<"\\t">>,
+        <<"\\x41">>,
+        <<"\\101">>,
+        ?LET(
+            BGen,
+            choose(16#80, 16#FF),
+            hex_escape_bin(eqwalizer:dynamic_cast(BGen))
+        ),
+        ?LET(
+            BGen,
+            choose(16#80, 16#FF),
+            octal_escape_bin(eqwalizer:dynamic_cast(BGen))
+        ),
+        %% Consecutive high-byte hex escapes forming a UTF-8 multibyte
+        %% codepoint (U+0080..U+07FF -> two bytes 0xC2..0xDF, 0x80..0xBF).
+        ?LET(
+            {HiGen, LoGen},
+            {choose(16#C2, 16#DF), choose(16#80, 16#BF)},
+            <<
+                (hex_escape_bin(eqwalizer:dynamic_cast(HiGen)))/binary,
+                (hex_escape_bin(eqwalizer:dynamic_cast(LoGen)))/binary
+            >>
+        )
+    ]).
+
+%% Render a byte as a `\xHH` escape (two uppercase hex digits).
+hex_escape_bin(Byte) when is_integer(Byte), Byte >= 0, Byte =< 16#FF ->
+    Hex = string:uppercase(
+        list_to_binary(io_lib:format("~2.16.0b", [Byte]))
+    ),
+    <<"\\x", Hex/binary>>.
+
+%% Render a byte as a `\OOO` escape (three octal digits).
+octal_escape_bin(Byte) when is_integer(Byte), Byte >= 0, Byte =< 16#FF ->
+    Oct = list_to_binary(io_lib:format("~3.8.0b", [Byte])),
+    <<"\\", Oct/binary>>.
+
+%% Every text field of a parsed entry must be valid UTF-8.
+entry_fields_valid_utf8({singular, Ctx, Msgid, Translation}) ->
+    is_valid_utf8(Ctx) andalso
+        is_valid_utf8(Msgid) andalso
+        is_valid_utf8(Translation);
+entry_fields_valid_utf8({plural, Ctx, Msgid, Forms}) ->
+    is_valid_utf8(Ctx) andalso
+        is_valid_utf8(Msgid) andalso
+        lists:all(
+            fun({_Idx, T}) -> is_valid_utf8(T) end,
+            Forms
+        ).
+
+%% `undefined` context is vacuously valid; otherwise round-trip the binary
+%% through the UTF-8 validator (the exact op a unicode-aware consumer runs
+%% and the op that crashed with badarg on the pre-fix raw byte).
+is_valid_utf8(undefined) ->
+    true;
+is_valid_utf8(B) when is_binary(B) ->
+    is_binary(unicode:characters_to_binary(B, utf8, utf8)).

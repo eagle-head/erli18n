@@ -60,8 +60,41 @@
     {unsupported_charset, binary()}
     | {charset_conversion, binary(), term()}
     | {plural_count_mismatch, msgid(), Expected :: non_neg_integer(), Got :: [non_neg_integer()]}
+    %% The `Reason` of a `{syntax_error, Line, Reason}` is `term()`, so the
+    %% escape-decode failures introduced for finding #11
+    %% (po-hex-octal-escape-emits-invalid-utf8) — `escape_error()` below —
+    %% travel inside this envelope without widening the exported tuple
+    %% shape.
     | {syntax_error, Line :: pos_integer(), Reason :: term()}
     | {file_error, file_read_error()}.
+
+%% Normalized charset (PSD-002), reused as the code space in which `\xHH`
+%% / `\OOO` escape bytes are interpreted before being transcoded to UTF-8
+%% (finding #11). Mirrors the `charset` key of `header_map/0`.
+-type charset() :: utf8 | latin1 | us_ascii.
+
+%% A chunk produced while decoding one quoted string, BEFORE the
+%% charset->UTF-8 transcode. `{utf8, Bin}` is already valid UTF-8 (literal
+%% text that survived the phase-1 gate of `normalize_input/2`, plus the
+%% always-ASCII C escapes like `\n`/`\t`). `{raw, B}` is ONE byte in the
+%% declared charset's code space, produced by a `\xHH` / `\OOO` escape —
+%% exactly how the GNU gettext lexer stacks raw escape bytes before the
+%% whole-string charset conversion.
+-type chunk() :: {utf8, binary()} | {raw, byte()}.
+
+%% Structured escape-decode errors (finding #11). Emitted as the `Reason`
+%% of a `{syntax_error, Line, Reason}`; restores the UTF-8 gate as a true
+%% guarantee (no `{ok, _}` carrying invalid UTF-8) and gives parity with
+%% msgfmt's "invalid multibyte sequence" rejection.
+%% `Rest` is whatever `unicode:characters_to_binary/3` hands back as the
+%% undecodable tail — documented as `unicode:chardata()` (it may be a deep
+%% iolist, not just a flat binary), so we carry that type verbatim rather
+%% than narrowing to `binary()`.
+-type escape_error() ::
+    {invalid_escape_charset, charset(), Byte :: byte()}
+    | {escape_invalid_utf8, Rest :: unicode:chardata()}
+    | {escape_incomplete_utf8, Rest :: unicode:chardata()}
+    | {octal_escape_out_of_range, pos_integer()}.
 
 %% =========================
 %% Internal parser state
@@ -92,7 +125,13 @@
     %% reversed during accumulation
     entries = [] :: [entry()],
     header :: undefined | header_map(),
-    nplurals :: undefined | non_neg_integer()
+    nplurals :: undefined | non_neg_integer(),
+    %% Declared catalog charset (finding #11). Defaults to utf8 so any
+    %% legacy internal call building a `#pst{}` without it keeps the prior
+    %% already-UTF-8 behaviour. Threaded into every `decode_quoted_string`
+    %% call site so `\xHH`/`\OOO` escape bytes are transcoded through the
+    %% right code space.
+    charset = utf8 :: charset()
 }).
 
 %% Maximum number of decimal digits accepted for an attacker-controlled
@@ -129,7 +168,10 @@ parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
         {ok, Charset} ->
             case normalize_input(Stripped, Charset) of
                 {ok, Utf8Bin} ->
-                    do_parse(Utf8Bin, Opts);
+                    %% Finding #11: thread the discovered charset into the
+                    %% body parse so escape bytes can be transcoded through
+                    %% it instead of being spliced raw.
+                    do_parse(Utf8Bin, Charset, Opts);
                 {error, _} = Err ->
                     Err
             end;
@@ -396,10 +438,12 @@ validate_ascii(<<_, Rest/binary>>) ->
 %% Main parser (PO grammar, hand-rolled recursive descent)
 %% =========================
 
-do_parse(Utf8Bin, Opts) ->
+-spec do_parse(binary(), charset(), parse_opts()) ->
+    {ok, parsed_catalog()} | {error, parse_error()}.
+do_parse(Utf8Bin, Charset, Opts) ->
     IncludeFuzzy = maps:get(include_fuzzy, Opts, false),
     Lines = split_lines(Utf8Bin),
-    St0 = #pst{include_fuzzy = IncludeFuzzy},
+    St0 = #pst{include_fuzzy = IncludeFuzzy, charset = Charset},
     case parse_lines(Lines, 1, fresh_entry(1), St0) of
         {ok, #pst{header = undefined, entries = Entries}} ->
             %% No header entry — synthesize an empty header with utf8.
@@ -478,7 +522,7 @@ parse_lines([Line | Rest], Ln, Cur, St) ->
         {msgstr_n, Idx, Content} ->
             handle_string_field({msgstr, Idx}, Content, Rest, Ln, Cur, St);
         {continuation, Content} ->
-            case decode_quoted_string(Content) of
+            case decode_quoted_string(Content, St#pst.charset) of
                 {ok, Bin} ->
                     Cur2 = append_to_last(Cur, Bin),
                     parse_lines(Rest, Ln + 1, Cur2, St);
@@ -490,7 +534,7 @@ parse_lines([Line | Rest], Ln, Cur, St) ->
     end.
 
 handle_string_field(Field, Content, Rest, Ln, Cur, St) ->
-    case decode_quoted_string(Content) of
+    case decode_quoted_string(Content, St#pst.charset) of
         {ok, Bin} ->
             Cur2 = set_field(Field, Bin, Cur),
             parse_lines(Rest, Ln + 1, Cur2, St);
@@ -946,56 +990,84 @@ trim_leading_ws(Bin) -> Bin.
 %% <<$", _/binary>> via strip_keyword_space or a guard pattern, so the
 %% leading quote is an enforced precondition. Passing anything else is
 %% a contract violation and will crash with function_clause.
+%% Arity-1 shim for the header prepass call sites
+%% (`collect_header_msgstr/2`, `consume_continuations/2`). The header is
+%% ASCII-safe per the GNU spec and is decoded BEFORE the body charset is
+%% applied, so utf8 (the already-UTF-8 identity, matching the legacy
+%% behaviour for ASCII) is the correct code space there.
 -spec decode_quoted_string(binary()) ->
     {ok, binary()} | {error, term()}.
-decode_quoted_string(<<$", Rest/binary>>) ->
-    decode_chars(Rest, []).
+decode_quoted_string(Bin) ->
+    decode_quoted_string(Bin, utf8).
 
--spec decode_chars(binary(), [binary()]) ->
+%% Finding #11 — two-phase decode (mirrors the GNU gettext lexer):
+%% phase 1 walks the quoted string emitting tagged `chunk()`s (literal
+%% UTF-8 text vs. raw escape bytes); phase 2 (`reassemble_field/2`)
+%% transcodes contiguous raw runs through the declared charset, so
+%% `\xHH`/`\OOO` escape bytes end up as valid UTF-8 (or a structured
+%% error) instead of being spliced raw past the UTF-8 gate.
+-spec decode_quoted_string(binary(), charset()) ->
     {ok, binary()} | {error, term()}.
+decode_quoted_string(<<$", Rest/binary>>, Charset) ->
+    case decode_chars(Rest, []) of
+        {ok, ChunksRev} -> reassemble_field(ChunksRev, Charset);
+        {error, _} = E -> E
+    end.
+
+%% Accumulates `[chunk()]` in REVERSE order (newest first), like the rest
+%% of the module's accumulators.
+-spec decode_chars(binary(), [chunk()]) ->
+    {ok, [chunk()]} | {error, term()}.
 decode_chars(<<$">>, Acc) ->
-    {ok, bins_to_binary(Acc)};
+    {ok, Acc};
 decode_chars(<<$", Rest/binary>>, Acc) ->
     case is_only_trailing_ws(Rest) of
-        true -> {ok, bins_to_binary(Acc)};
+        true -> {ok, Acc};
         false -> {error, content_after_close_quote}
     end;
 decode_chars(<<$\\, Rest/binary>>, Acc) ->
     case decode_escape(Rest) of
-        {ok, Bytes, Rest2} -> decode_chars(Rest2, [Bytes | Acc]);
+        {ok, Chunk, Rest2} -> decode_chars(Rest2, [Chunk | Acc]);
         {error, _} = E -> E
     end;
 decode_chars(<<C/utf8, Rest/binary>>, Acc) ->
-    decode_chars(Rest, [<<C/utf8>> | Acc]);
+    %% Literal text already survived the phase-1 UTF-8 gate, so keep the
+    %% codepoint as a ready-made UTF-8 chunk.
+    decode_chars(Rest, [{utf8, <<C/utf8>>} | Acc]);
 decode_chars(<<>>, _Acc) ->
     {error, unterminated_string};
 decode_chars(<<_Byte, _/binary>>, _Acc) ->
     {error, invalid_utf8}.
 
+%% "Literal" C escapes (\n \t \" ...) are ASCII, so they are trivially
+%% valid UTF-8 and become `{utf8, _}` chunks. Only `\xHH`/`\OOO` produce a
+%% `{raw, Byte}` chunk interpreted later in the declared charset.
+-spec decode_escape(binary()) ->
+    {ok, chunk(), binary()} | {error, term()}.
 decode_escape(<<$n, R/binary>>) ->
-    {ok, <<$\n>>, R};
+    {ok, {utf8, <<$\n>>}, R};
 decode_escape(<<$t, R/binary>>) ->
-    {ok, <<$\t>>, R};
+    {ok, {utf8, <<$\t>>}, R};
 decode_escape(<<$r, R/binary>>) ->
-    {ok, <<$\r>>, R};
+    {ok, {utf8, <<$\r>>}, R};
 decode_escape(<<$", R/binary>>) ->
-    {ok, <<$">>, R};
+    {ok, {utf8, <<$">>}, R};
 decode_escape(<<$\\, R/binary>>) ->
-    {ok, <<$\\>>, R};
+    {ok, {utf8, <<$\\>>}, R};
 decode_escape(<<$b, R/binary>>) ->
-    {ok, <<$\b>>, R};
+    {ok, {utf8, <<$\b>>}, R};
 decode_escape(<<$f, R/binary>>) ->
-    {ok, <<$\f>>, R};
+    {ok, {utf8, <<$\f>>}, R};
 decode_escape(<<$v, R/binary>>) ->
-    {ok, <<$\v>>, R};
+    {ok, {utf8, <<$\v>>}, R};
 decode_escape(<<$a, R/binary>>) ->
-    {ok, <<7>>, R};
+    {ok, {utf8, <<7>>}, R};
 decode_escape(<<$/, R/binary>>) ->
-    {ok, <<$/>>, R};
+    {ok, {utf8, <<$/>>}, R};
 decode_escape(<<$?, R/binary>>) ->
-    {ok, <<$?>>, R};
+    {ok, {utf8, <<$?>>}, R};
 decode_escape(<<$', R/binary>>) ->
-    {ok, <<$'>>, R};
+    {ok, {utf8, <<$'>>}, R};
 decode_escape(<<$x, R/binary>>) ->
     decode_hex_escape(R, <<>>, 0);
 decode_escape(<<C, R/binary>>) when C >= $0, C =< $7 ->
@@ -1005,6 +1077,10 @@ decode_escape(<<C, _/binary>>) ->
 decode_escape(<<>>) ->
     {error, dangling_backslash}.
 
+%% `\xHH` -> {raw, Byte}: the byte is interpreted later in the declared
+%% charset (`reassemble_field/2`), not spliced raw.
+-spec decode_hex_escape(binary(), binary(), 0..2) ->
+    {ok, {raw, byte()}, binary()} | {error, term()}.
 decode_hex_escape(<<C, R/binary>>, Acc, N) when
     N < 2,
     ((C >= $0 andalso C =< $9) orelse
@@ -1014,17 +1090,102 @@ decode_hex_escape(<<C, R/binary>>, Acc, N) when
     decode_hex_escape(R, <<Acc/binary, C>>, N + 1);
 decode_hex_escape(R, Acc, _N) when byte_size(Acc) > 0 ->
     Byte = binary_to_integer(Acc, 16),
-    {ok, <<Byte>>, R};
+    {ok, {raw, Byte}, R};
 decode_hex_escape(_, _, _) ->
     {error, invalid_hex_escape}.
 
+%% `\OOO` -> {raw, Byte}. In PO a `\OOO` escape is BY DEFINITION a single
+%% byte; three octal digits reach 0777 (511), so values > 0xFF are a
+%% malformed-escape error rather than a wrap.
+-spec decode_octal_escape(binary(), binary(), 1..3) ->
+    {ok, {raw, byte()}, binary()} | {error, term()}.
 decode_octal_escape(<<C, R/binary>>, Acc, N) when
     N < 3, C >= $0, C =< $7
 ->
     decode_octal_escape(R, <<Acc/binary, C>>, N + 1);
 decode_octal_escape(R, Acc, _N) ->
-    Byte = binary_to_integer(Acc, 8),
-    {ok, <<Byte>>, R}.
+    Int = binary_to_integer(Acc, 8),
+    case Int =< 16#FF of
+        true -> {ok, {raw, Int}, R};
+        false -> {error, {octal_escape_out_of_range, Int}}
+    end.
+
+%% =========================
+%% Phase 2: charset->UTF-8 transcode of escape bytes (finding #11)
+%% =========================
+
+%% Takes the reversed chunk list from `decode_chars/2`, groups contiguous
+%% raw bytes into runs, transcodes each run through the declared charset,
+%% and interleaves with the ready UTF-8 chunks. Grouping is essential: in
+%% a UTF-8 catalog a multibyte codepoint is written as CONSECUTIVE escapes
+%% (`\xC3\xBF` = U+00FF) and must be validated as one unit.
+-spec reassemble_field([chunk()], charset()) ->
+    {ok, binary()} | {error, escape_error()}.
+reassemble_field(ChunksRev, Charset) ->
+    reassemble(lists:reverse(ChunksRev), Charset, [], []).
+
+%% `RawAcc` collects contiguous raw bytes (reverse order); `Out` collects
+%% finished UTF-8 segments (reverse order).
+-spec reassemble([chunk()], charset(), [byte()], [binary()]) ->
+    {ok, binary()} | {error, escape_error()}.
+reassemble([{raw, B} | Rest], Charset, RawAcc, Out) ->
+    reassemble(Rest, Charset, [B | RawAcc], Out);
+reassemble([{utf8, Bin} | Rest], Charset, RawAcc, Out) ->
+    case flush_raw(RawAcc, Charset) of
+        {ok, Flushed} ->
+            reassemble(Rest, Charset, [], [Bin, Flushed | Out]);
+        {error, _} = E ->
+            E
+    end;
+reassemble([], Charset, RawAcc, Out) ->
+    case flush_raw(RawAcc, Charset) of
+        {ok, Flushed} ->
+            {ok, iolist_to_binary(lists:reverse([Flushed | Out]))};
+        {error, _} = E ->
+            E
+    end.
+
+%% Transcode one run of charset-native raw bytes into UTF-8.
+-spec flush_raw([byte()], charset()) ->
+    {ok, binary()} | {error, escape_error()}.
+flush_raw([], _Charset) ->
+    {ok, <<>>};
+flush_raw(RawAccRev, Charset) ->
+    Bytes = list_to_binary(lists:reverse(RawAccRev)),
+    transcode_escape_bytes(Bytes, Charset).
+
+-spec transcode_escape_bytes(binary(), charset()) ->
+    {ok, binary()} | {error, escape_error()}.
+transcode_escape_bytes(Bytes, latin1) ->
+    %% Every byte 0..255 is a valid Latin-1 codepoint; latin1 -> utf8
+    %% never fails (same contract as `normalize_input/2`).
+    Out = unicode:characters_to_binary(Bytes, latin1, utf8),
+    true = is_binary(Out),
+    {ok, Out};
+transcode_escape_bytes(Bytes, us_ascii) ->
+    %% US-ASCII: a byte >= 0x80 is outside the charset. gettext rejects;
+    %% we surface a structured error instead of emitting a non-ASCII byte.
+    case first_non_ascii(Bytes) of
+        none -> {ok, Bytes};
+        Bad -> {error, {invalid_escape_charset, us_ascii, Bad}}
+    end;
+transcode_escape_bytes(Bytes, utf8) ->
+    %% UTF-8 catalog: the raw run MUST itself be valid UTF-8 (e.g.
+    %% `\xC3\xBF` = U+00FF). A lone `\xFF` -> structured error, parity
+    %% with msgfmt's "invalid multibyte sequence".
+    case unicode:characters_to_binary(Bytes, utf8, utf8) of
+        Out when is_binary(Out) ->
+            {ok, Out};
+        {error, _Converted, Rest} ->
+            {error, {escape_invalid_utf8, Rest}};
+        {incomplete, _Converted, Rest} ->
+            {error, {escape_incomplete_utf8, Rest}}
+    end.
+
+-spec first_non_ascii(binary()) -> none | byte().
+first_non_ascii(<<>>) -> none;
+first_non_ascii(<<B, _/binary>>) when B > 127 -> B;
+first_non_ascii(<<_, R/binary>>) -> first_non_ascii(R).
 
 is_only_trailing_ws(<<>>) ->
     true;
