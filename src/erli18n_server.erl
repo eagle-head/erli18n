@@ -734,14 +734,27 @@ default_po_path(App, Domain, Locale) when
 %% gen_server callbacks
 %% =========================
 
+-spec init([]) -> {ok, map()}.
 init([]) ->
-    _ = ets:new(?ETS_TABLE, [
-        set,
-        protected,
-        named_table,
-        {read_concurrency, true},
-        {keypos, 1}
-    ]),
+    %% Finding #10: the server no longer CREATES the table. It asks the
+    %% dedicated owner (`erli18n_table_owner', started before us under
+    %% `rest_for_one') to hand it over via `give_away/3'. `claim_table/0'
+    %% is synchronous; once it returns, the initial `'ETS-TRANSFER'' is on
+    %% its way. We become the table proprietor (writer of the protected
+    %% table) by consuming it below. This way an abrupt crash of this
+    %% worker transfers the table back to the owner (heir) with all rows
+    %% intact instead of destroying every loaded catalog.
+    ok = erli18n_table_owner:claim_table(),
+    receive
+        {'ETS-TRANSFER', ?ETS_TABLE, _OwnerPid, ?ETS_HANDOFF_DATA} ->
+            ok
+    after 5000 ->
+        %% The owner is a sibling child started BEFORE us (rest_for_one);
+        %% if it has not handed the table over within 5s something is
+        %% structurally broken — crashing is the correct OTP behaviour
+        %% (the supervisor re-evaluates).
+        error({ets_handoff_timeout, ?ETS_TABLE})
+    end,
     {ok, #{}}.
 
 handle_call({insert_singular, D, L, Ctx, Msgid, T}, _From, State) ->

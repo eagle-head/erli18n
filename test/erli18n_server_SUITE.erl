@@ -26,7 +26,8 @@
     unknown_cast_does_not_crash/1,
     unknown_info_does_not_crash/1,
     terminate_called_on_app_stop/1,
-    code_change_no_op/1
+    code_change_no_op/1,
+    catalog_survives_worker_kill/1
 ]).
 
 all() ->
@@ -45,7 +46,8 @@ all() ->
         unknown_cast_does_not_crash,
         unknown_info_does_not_crash,
         terminate_called_on_app_stop,
-        code_change_no_op
+        code_change_no_op,
+        catalog_survives_worker_kill
     ].
 
 init_per_suite(Config) ->
@@ -488,3 +490,82 @@ code_change_no_op(_Config) ->
             <<"y">>
         )
     ).
+
+%% Finding #10 (ets-owned-by-server-no-heir-crash-loses-all-catalogs):
+%% an abrupt crash of the writer worker MUST NOT destroy the loaded
+%% catalogs. The dedicated table owner holds the ETS table as `heir`, so
+%% an `exit(Pid, kill)` of the worker triggers ETS-TRANSFER back to the
+%% owner with every row intact; the restarted worker re-claims the SAME
+%% table. The deterministic CT twin of the live reproduction in
+%% REVISAO_TECNICA.md §10.
+%%
+%% Under the pre-fix code (server owns the table, no heir) the table dies
+%% with the worker: after the supervisor restart `ets:info(size)=0`,
+%% `lookup_singular = undefined`, `loaded_catalogs() = []`.
+catalog_survives_worker_kill(_Config) ->
+    ok = erli18n_server:insert_singular(
+        default,
+        <<"fr">>,
+        undefined,
+        <<"Hello">>,
+        <<"Bonjour">>
+    ),
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"fr">>, undefined, <<"Hello">>
+        )
+    ),
+    Pid =
+        case whereis(erli18n_server) of
+            P when is_pid(P) -> P;
+            Other -> error({erli18n_server_not_running, Other})
+        end,
+    Ref = monitor(process, Pid),
+    %% Abrupt, unhandleable kill — the worst case the finding describes.
+    exit(Pid, kill),
+    receive
+        {'DOWN', Ref, process, Pid, _Reason} -> ok
+    after 5000 ->
+        ct:fail({worker_kill_timeout, Pid})
+    end,
+    %% Wait for the supervisor to restart the worker with a NEW pid.
+    NewPid = wait_for_new_worker(Pid, 100),
+    ?assert(is_pid(NewPid)),
+    ?assertNotEqual(Pid, NewPid),
+    %% The catalog must have survived the crash via the heir handoff.
+    ?assertEqual(
+        {ok, <<"Bonjour">>},
+        erli18n_server:lookup_singular(
+            default, <<"fr">>, undefined, <<"Hello">>
+        )
+    ),
+    ?assertNotEqual([], erli18n_server:loaded_catalogs()),
+    %% The restarted worker must still be a functional writer.
+    ok = erli18n_server:insert_singular(
+        default,
+        <<"fr">>,
+        undefined,
+        <<"Bye">>,
+        <<"Au revoir">>
+    ),
+    ?assertEqual(
+        {ok, <<"Au revoir">>},
+        erli18n_server:lookup_singular(
+            default, <<"fr">>, undefined, <<"Bye">>
+        )
+    ).
+
+%% Poll until the registered worker is a live pid different from the one
+%% that was killed. Bounded retries keep the case from hanging if the
+%% supervisor never brings the worker back.
+wait_for_new_worker(_OldPid, 0) ->
+    error(worker_not_restarted);
+wait_for_new_worker(OldPid, Retries) ->
+    case whereis(erli18n_server) of
+        P when is_pid(P), P =/= OldPid ->
+            P;
+        _ ->
+            timer:sleep(20),
+            wait_for_new_worker(OldPid, Retries - 1)
+    end.
