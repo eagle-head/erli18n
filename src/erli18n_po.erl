@@ -95,6 +95,19 @@
     nplurals :: undefined | non_neg_integer()
 }).
 
+%% Maximum number of decimal digits accepted for an attacker-controlled
+%% integer run before `binary_to_integer` is called (finding #8,
+%% po-plural-unbounded-binary-to-integer-bignum). Two sites read such
+%% runs out of untrusted `.po` input: the `nplurals=<digits>` header
+%% cross-check (`collect_digits/2`) and the `msgstr[<digits>]` index
+%% (`parse_msgstr_index/2`). Both cap the run by DIGIT COUNT first, so a
+%% thousands-digit adversarial run is rejected in O(1) without ever
+%% building an O(d^2) bignum or reaching the >=~1.3M-digit
+%% `error:system_limit` path. 7 digits (max 9_999_999) is far above any
+%% legitimate plural-form count (real locales top out at 6) or msgstr
+%% index.
+-define(MAX_INT_DIGITS, 7).
+
 %% =========================
 %% Public API
 %% =========================
@@ -742,6 +755,17 @@ extract_nplurals_value(Bin) ->
             collect_digits(After, <<>>)
     end.
 
+%% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): cap the
+%% digit run by COUNT before `binary_to_integer`. This is a tolerant
+%% cross-check of the header's `nplurals=` value (used only to validate
+%% plural-form counts downstream), so an over-long run is treated as "no
+%% usable nplurals declared" — `undefined`, the same fail-open outcome as
+%% a missing field — rather than crashing the parse. The bignum is never
+%% materialised, so the O(d^2) cost and the >=~1.3M-digit `system_limit`
+%% exception are both avoided.
+-spec collect_digits(binary(), binary()) -> undefined | non_neg_integer().
+collect_digits(_, Acc) when byte_size(Acc) > ?MAX_INT_DIGITS ->
+    undefined;
 collect_digits(<<C, Rest/binary>>, Acc) when C >= $0, C =< $9 ->
     collect_digits(Rest, <<Acc/binary, C>>);
 collect_digits(_, <<>>) ->
@@ -778,6 +802,10 @@ classify_raw_line(<<"msgstr", Rest/binary>>) ->
     case classify_msgstr(Rest) of
         {ok, Content} -> {msgstr, Content};
         {ok, Idx, Content} -> {msgstr_n, Idx, Content};
+        %% Prepass only extracts the header charset; a malformed or
+        %% over-long msgstr index (finding #8) is irrelevant here and is
+        %% treated like any other unclassified line.
+        {error, _} -> other;
         error -> other
     end;
 classify_raw_line(<<$", _/binary>>) ->
@@ -833,6 +861,10 @@ classify_line(<<"msgstr", Rest/binary>>, _Cur) ->
     case classify_msgstr(Rest) of
         {ok, Content} -> {msgstr, Content};
         {ok, Idx, Content} -> {msgstr_n, Idx, Content};
+        %% Finding #8: an over-long `msgstr[<digits>]` index surfaces a
+        %% structured reason so the parse fails closed with a precise
+        %% diagnostic instead of crashing on a giant `binary_to_integer`.
+        {error, Reason} -> {syntax_error, Reason};
         error -> {syntax_error, expected_msgstr_string}
     end;
 classify_line(<<$", _/binary>> = Line, #po_st{last_field = LF}) when LF =/= undefined ->
@@ -855,6 +887,8 @@ classify_msgstr(<<$[, Rest/binary>>) ->
                 {ok, Content} -> {ok, Idx, Content};
                 error -> error
             end;
+        {error, _} = Err ->
+            Err;
         error ->
             error
     end;
@@ -864,6 +898,18 @@ classify_msgstr(Rest) ->
         error -> error
     end.
 
+%% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): cap the
+%% `msgstr[<digits>]` index run by DIGIT COUNT before `binary_to_integer`
+%% builds the bignum. An over-long run is surfaced as a structured
+%% `{error, {index_too_long, Max}}` (the rejected run is kept OUT of the
+%% payload), which the caller turns into a `{syntax_error, _, _}` parse
+%% error — never an O(d^2) bignum and never an uncaught `system_limit`.
+-spec parse_msgstr_index(binary(), binary()) ->
+    {ok, non_neg_integer(), binary()}
+    | {error, {index_too_long, pos_integer()}}
+    | error.
+parse_msgstr_index(_, Acc) when byte_size(Acc) > ?MAX_INT_DIGITS ->
+    {error, {index_too_long, ?MAX_INT_DIGITS}};
 parse_msgstr_index(<<$], Rest/binary>>, Acc) when byte_size(Acc) > 0 ->
     {ok, binary_to_integer(Acc), Rest};
 parse_msgstr_index(<<C, Rest/binary>>, Acc) when C >= $0, C =< $9 ->

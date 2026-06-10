@@ -108,7 +108,15 @@
     %% nodes that `evaluate/2` walks — growing an `n^k` bignum — on every
     %% lookup. An AST above `?AST_MAX_NODES` is rejected fail-closed so
     %% the per-lookup cost stays O(1)-bounded by construction.
-    | {expr_too_complex, Nodes :: pos_integer(), Max :: pos_integer()}.
+    | {expr_too_complex, Nodes :: pos_integer(), Max :: pos_integer()}
+    %% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): the
+    %% `nplurals=<digits>` run is capped by DIGIT COUNT before any
+    %% `binary_to_integer` materialises the bignum. The rejected value is
+    %% deliberately kept OUT of the payload (only the digit count and the
+    %% cap are reported) so a thousands-digit adversarial run cannot
+    %% amplify memory/logs, and the >=~1.3M-digit `system_limit` path is
+    %% never reached.
+    | {nplurals_too_many_digits, Digits :: pos_integer(), Max :: pos_integer()}.
 
 %% Anomaly observed while evaluating a compiled plural rule. Surfaced as
 %% data by `evaluate_checked/2` and as the payload of a Layer 3
@@ -152,6 +160,16 @@
 %% Sanity bound for nplurals. Real-world locales top out at 6 (Arabic).
 %% Any header declaring more than a thousand forms is malformed input.
 -define(NPLURALS_MAX, 1000).
+
+%% Maximum number of decimal digits accepted for the `nplurals=<digits>`
+%% field (finding #8, po-plural-unbounded-binary-to-integer-bignum). The
+%% range check is `[1, ?NPLURALS_MAX=1000]`, so 4 digits already covers
+%% every legal value; 7 leaves generous headroom for realistic indices
+%% while keeping the bignum tiny. Capping by digit COUNT *before*
+%% `binary_to_integer` means a thousands-digit adversarial run is
+%% rejected in O(1) without ever materialising an O(d^2) bignum or
+%% reaching the >=~1.3M-digit `error:system_limit` path.
+-define(MAX_INT_DIGITS, 7).
 
 %% Bounds for the `Plural-Forms` expression itself (finding #2,
 %% plural-compile-superlinear-unbounded). `?NPLURALS_MAX` bounds the
@@ -381,9 +399,16 @@ extract_nplurals(Header) ->
     case locate_field(Header, <<"nplurals">>) of
         {ok, Tail} ->
             {Digits, _} = consume_integer(skip_ws(Tail)),
-            case Digits of
-                <<>> ->
+            case byte_size(Digits) of
+                0 ->
                     {error, {missing_nplurals, Header}};
+                D when D > ?MAX_INT_DIGITS ->
+                    %% Finding #8: cap by DIGIT COUNT before
+                    %% `binary_to_integer` materialises the bignum, and
+                    %% keep the rejected value OUT of the payload (only
+                    %% the digit count + cap are reported) to avoid
+                    %% memory/log amplification and the system_limit path.
+                    {error, {nplurals_too_many_digits, D, ?MAX_INT_DIGITS}};
                 _ ->
                     N = binary_to_integer(Digits),
                     case N >= 1 andalso N =< ?NPLURALS_MAX of

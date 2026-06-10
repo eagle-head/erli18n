@@ -31,7 +31,8 @@
     fuzz_encoding_mismatch/1,
     fuzz_extreme_inputs/1,
     fuzz_decode_is_linear/1,
-    fuzz_end_to_end/1
+    fuzz_end_to_end/1,
+    fuzz_giant_integer_runs/1
 ]).
 
 -define(NUMTESTS, 500).
@@ -45,7 +46,8 @@ all() ->
         fuzz_encoding_mismatch,
         fuzz_extreme_inputs,
         fuzz_decode_is_linear,
-        fuzz_end_to_end
+        fuzz_end_to_end,
+        fuzz_giant_integer_runs
     ].
 
 init_per_suite(Config) ->
@@ -108,6 +110,21 @@ fuzz_end_to_end(_Config) ->
         proper:quickcheck(
             erli18n_po_fuzz:prop_end_to_end_no_supervisor_restart(),
             [{numtests, 200}, {to_file, user}]
+        ),
+    ?assert(Result =:= true).
+
+fuzz_giant_integer_runs(_Config) ->
+    %% F8 — Finding #8 regression guard
+    %% (po-plural-unbounded-binary-to-integer-bignum). Each variant is a
+    %% deterministic fixed input (giant / system_limit-sized digit runs),
+    %% so a handful of iterations exercises every `oneof/1` branch.
+    %% Building a 1.4M-digit blob per iteration is the cost driver, so we
+    %% keep numtests modest while staying well above the per-variant
+    %% coverage floor.
+    Result =
+        proper:quickcheck(
+            erli18n_po_fuzz:prop_giant_integer_runs_bounded(),
+            [{numtests, 50}, {to_file, user}]
         ),
     ?assert(Result =:= true).
 

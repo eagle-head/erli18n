@@ -27,7 +27,8 @@
     prop_encoding_mismatch/0,
     prop_extreme_inputs/0,
     prop_end_to_end_no_supervisor_restart/0,
-    prop_decode_is_linear/0
+    prop_decode_is_linear/0,
+    prop_giant_integer_runs_bounded/0
 ]).
 
 -define(FUZZ_DOMAIN, fuzz_test_dom).
@@ -356,6 +357,156 @@ active_child_count() ->
         {active, N} when is_integer(N) -> N;
         Other -> error({supervisor_active_missing, Other})
     end.
+
+%% =========================
+%% F8 — Unbounded `binary_to_integer` on digit runs (Finding #8)
+%% =========================
+%%
+%% Regression guard for `po-plural-unbounded-binary-to-integer-bignum`.
+%% Three sites converted attacker-controlled digit runs via
+%% `binary_to_integer` BEFORE any range check:
+%%   * `erli18n_po:collect_digits/2`  — the `nplurals=<digits>` field
+%%     read back out of the parsed header (no cap at all today);
+%%   * `erli18n_po:parse_msgstr_index/2` — the `msgstr[<digits>]` index;
+%%   * `erli18n_plural:extract_nplurals/1` — the same `nplurals` field on
+%%     the compile path, whose `{nplurals_out_of_range, N}` rejection
+%%     echoed the ENTIRE bignum back into the error payload (log/memory
+%%     amplification).
+%%
+%% Two failure classes are asserted away:
+%%   1. amplification — a 5000-digit run must not produce a 5000-digit
+%%      error payload (the rejected value stays OUT of the payload), and
+%%   2. uncaught `system_limit` — at >=~1.3M digits `binary_to_integer`
+%%      raises `error:system_limit`; the public `parse/1` API must STILL
+%%      return a structured `{error, _}`, never let the exception escape.
+%%
+%% Inputs are fixed (deterministic), but we wrap them as a PropEr
+%% property so they run through the same `proper:quickcheck/2` harness as
+%% the F-siblings. Each variant carries its own assertion; the property
+%% body is `true` only when every variant holds.
+-define(GIANT_DIGIT_RUN, 5000).
+%% Past the OTP `binary_to_integer` `system_limit` threshold (~1.3M
+%% decimal digits). Picking a value comfortably above it exercises the
+%% raw-exception path the fix must convert into `{error, _}`.
+-define(SYSTEM_LIMIT_DIGIT_RUN, 1_400_000).
+%% A rejected-value payload must not echo the giant run back. 256 bytes
+%% is far above any structured `{atom, pos_integer, pos_integer}` tag
+%% (the bounded `Max` constants are <=7 digits) yet far below a
+%% thousands-digit bignum, so it sharply separates capped from echoed.
+-define(MAX_ERROR_PAYLOAD_BYTES, 256).
+
+prop_giant_integer_runs_bounded() ->
+    ?FORALL(
+        Variant,
+        oneof([
+            nplurals_giant,
+            nplurals_system_limit,
+            msgstr_index_giant,
+            msgstr_index_system_limit,
+            plural_literal_giant
+        ]),
+        check_giant_integer_run(Variant)
+    ).
+
+%% nplurals with a 5000-digit run: structured error (or ok), no crash,
+%% and the rejected bignum must NOT appear in any error payload.
+check_giant_integer_run(nplurals_giant) ->
+    Po = po_with_nplurals(?GIANT_DIGIT_RUN),
+    assert_bounded_parse(Po);
+%% nplurals with a system_limit-sized run: the raw `error:system_limit`
+%% must be converted to a structured `{error, _}` (never escape).
+check_giant_integer_run(nplurals_system_limit) ->
+    Po = po_with_nplurals(?SYSTEM_LIMIT_DIGIT_RUN),
+    assert_bounded_parse(Po);
+%% `msgstr[<5000 digits>]` index: structured, no amplification.
+check_giant_integer_run(msgstr_index_giant) ->
+    Po = po_with_msgstr_index(?GIANT_DIGIT_RUN),
+    assert_bounded_parse(Po);
+%% `msgstr[<1.4M digits>]` index: must not crash with system_limit.
+check_giant_integer_run(msgstr_index_system_limit) ->
+    Po = po_with_msgstr_index(?SYSTEM_LIMIT_DIGIT_RUN),
+    assert_bounded_parse(Po);
+%% A giant integer literal inside the `plural=` expression compiled via
+%% `erli18n_plural:compile/1`. The byte cap (finding #2) already bounds
+%% the run, but assert the contract holds at the module boundary too.
+check_giant_integer_run(plural_literal_giant) ->
+    Header = <<
+        "nplurals=2; plural=",
+        (binary:copy(<<"9">>, ?GIANT_DIGIT_RUN))/binary,
+        ";"
+    >>,
+    case erli18n_plural:compile(Header) of
+        {ok, _} ->
+            true;
+        {error, Reason} ->
+            payload_is_bounded(Reason)
+    end.
+
+%% Parse must (a) not crash, (b) return a structured `{ok,_}`/`{error,_}`,
+%% and (c) keep any rejected giant value out of the error payload.
+assert_bounded_parse(Po) ->
+    try erli18n_po:parse(Po) of
+        {ok, _} ->
+            true;
+        {error, Reason} ->
+            case payload_is_bounded(Reason) of
+                true ->
+                    true;
+                false ->
+                    ct:pal(
+                        "giant-int: error payload not bounded (~p bytes): ~p~n",
+                        [error_payload_bytes(Reason), Reason]
+                    ),
+                    false
+            end;
+        Other ->
+            ct:pal("giant-int: non-structured return ~p~n", [Other]),
+            false
+    catch
+        Class:CrashReason:Stack ->
+            ct:pal(
+                "giant-int: parse/1 crashed ~p:~p~n~p~n",
+                [Class, CrashReason, Stack]
+            ),
+            false
+    end.
+
+%% The serialized error term must not carry the multi-thousand-digit
+%% rejected value (memory/log amplification). We measure the printed
+%% size of the whole reason; a bounded structured tag stays tiny.
+payload_is_bounded(Reason) ->
+    error_payload_bytes(Reason) =< ?MAX_ERROR_PAYLOAD_BYTES.
+
+error_payload_bytes(Reason) ->
+    iolist_size(io_lib:format("~p", [Reason])).
+
+%% A PO whose header declares `nplurals=<DigitCount digits>`.
+po_with_nplurals(DigitCount) ->
+    Digits = binary:copy(<<"9">>, DigitCount),
+    <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
+        "\"Plural-Forms: nplurals=",
+        Digits/binary,
+        "; plural=0;\\n\"\n"
+        "\n"
+        "msgid \"x\"\n"
+        "msgstr \"y\"\n"
+    >>.
+
+%% A PO with a plural entry whose `msgstr[<DigitCount digits>]` index is
+%% an enormous digit run.
+po_with_msgstr_index(DigitCount) ->
+    Digits = binary:copy(<<"9">>, DigitCount),
+    <<
+        (minimal_valid_po_header())/binary,
+        "msgid \"a\"\n"
+        "msgid_plural \"b\"\n"
+        "msgstr[",
+        Digits/binary,
+        "] \"z\"\n"
+    >>.
 
 %% =========================
 %% Helpers
