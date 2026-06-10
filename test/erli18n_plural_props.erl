@@ -87,8 +87,16 @@ prop_index_in_range() ->
                         [NPlurals, ExprText, N, Other]
                     ),
                     false;
+                {error, {unsafe_plural_rule, _}} ->
+                    %% Layer 3 static rejection (finding #1): the
+                    %% generator can emit a rule that is *statically*
+                    %% guaranteed to fault (e.g. a literal `x / 0`
+                    %% subtree). `compile/1` rejecting it fail-closed is
+                    %% the desired behaviour — the poisoned catalog never
+                    %% loads — so this is a PASS, not a parser bug.
+                    true;
                 {error, Reason} ->
-                    %% A compile-error on a syntactically valid
+                    %% Any OTHER compile-error on a syntactically valid
                     %% generated expression indicates a parser bug.
                     ct:pal(
                         "P3 compile-error: NPlurals=~p Expr=~s N=~p err=~p~n",
@@ -97,32 +105,21 @@ prop_index_in_range() ->
                     false
             catch
                 Class:Reason:Stack ->
-                    %% Division-by-zero in a generated expression is the
-                    %% one expected runtime fault — Erlang `div`/`rem`
-                    %% propagate `badarith`. Treat it as a *generator*
-                    %% problem (the rule is malformed) and skip via
-                    %% `?WHENFAIL`-style discard rather than failing the
-                    %% property. See `evaluate/2` comment in
-                    %% erli18n_plural.erl about division-by-zero policy.
-                    case {Class, Reason} of
-                        {error, badarith} ->
-                            true;
-                        {error, {plural_form_out_of_range, _, _}} ->
-                            %% Wrapped expression cannot exceed NPlurals
-                            %% if the modulo is correctly applied. Reach
-                            %% here only if Nplurals is 0 (impossible —
-                            %% generator guarantees >=1) or evaluator
-                            %% bug.
-                            ct:pal("P3 runtime out-of-range: ~p~n", [Reason]),
-                            false;
-                        _ ->
-                            ct:pal(
-                                "P3 unexpected crash: ~p:~p~n~p~n"
-                                "Expr=~s N=~p~n",
-                                [Class, Reason, Stack, ExprText, N]
-                            ),
-                            false
-                    end
+                    %% Finding #1 (plural-eval-throws-per-lookup-dos):
+                    %% `evaluate/2` is the hot path of every ngettext
+                    %% lookup and MUST be total. A malformed rule — even
+                    %% one containing division/modulo by zero, now that
+                    %% `/` and `%` are in the operator pool — must clamp
+                    %% (to form 0 / a defined value), never crash the
+                    %% caller. So ANY exception here is a property
+                    %% violation, including the `badarith` that the old
+                    %% test treated as a PASS.
+                    ct:pal(
+                        "P3 evaluate/2 must be total but crashed: ~p:~p~n~p~n"
+                        "Expr=~s N=~p~n",
+                        [Class, Reason, Stack, ExprText, N]
+                    ),
+                    false
             end
         end
     ).
@@ -216,16 +213,15 @@ c_plural_expr(Size) ->
         {2, ?LET(E, Smaller, {paren, E})}
     ]).
 
-%% Binary operators. We omit `/` and `%` from the random pool — those
-%% are the operators that introduce division-by-zero risk, and the
-%% generator has no easy way to guarantee the right operand is non-zero
-%% inside an arbitrarily deep subtree. The two operators are still
-%% well-covered by the corpus of CLDR-canonical rules baked into
-%% `cldr_data/0` (which the EUnit suite already exercises) and by the
-%% `prop_compile_or_error/0` property which does include them via the
-%% literal-bias path.
+%% Binary operators. We INCLUDE `/` and `%` in the random pool: per
+%% finding #1 (plural-eval-throws-per-lookup-dos) the evaluator must be
+%% total, so a generated subtree like `n / (n - n)` (division by zero)
+%% must clamp to a defined value rather than raise `badarith`. The
+%% property below asserts no exception escapes `evaluate/2`, so these
+%% two operators directly exercise the zero-divisor guard
+%% (`eval_div/2` / `eval_rem/2`).
 c_op() ->
-    oneof(['+', '-', '*', '==', '!=', '<', '>', '<=', '>=', '&&', '||']).
+    oneof(['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=', '&&', '||']).
 
 %% =========================
 %% AST -> text

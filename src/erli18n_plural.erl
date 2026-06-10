@@ -37,9 +37,14 @@
 %%     division by zero (e.g. `n != 0 && (10/n) > 1`) behave as in C.
 %%   * Modulo (`%`) uses Erlang `rem`, which matches C99 truncation toward
 %%     zero — the only behaviour `.po` plural rules ever rely on.
-%%   * Division by zero is treated as a programming error in the `.po`:
-%%     `evaluate/2` propagates the Erlang `badarith` rather than silencing
-%%     a malformed rule.
+%%   * Division by zero in untrusted `.po` input is handled, not
+%%     propagated (finding #1, plural-eval-throws-per-lookup-dos):
+%%     `evaluate/2` is TOTAL on the per-request hot path. A zero divisor
+%%     is pinned to 0 (`eval_div/2` / `eval_rem/2`) and an out-of-range
+%%     form is clamped to 0, matching GNU libintl's `dcigettext.c`
+%%     instead of raising `badarith`. Statically-faulty rules are
+%%     rejected up front by `compile/1`; `evaluate_checked/2` surfaces
+%%     the anomaly as data for callers that want to observe it.
 %%   * CLDR data is hard-coded inline (~45 locales, see `cldr_rule/1`).
 %%     For v0.1 the alternatives were rejected:
 %%
@@ -53,6 +58,7 @@
 -export([
     compile/1,
     evaluate/2,
+    evaluate_checked/2,
     plural_by_po_header/2,
     cldr_rule/1,
     validate_against_cldr/2,
@@ -62,6 +68,7 @@
 -export_type([
     plural_compiled/0,
     compile_error/0,
+    plural_eval_error/0,
     ast/0,
     op/0
 ]).
@@ -80,7 +87,21 @@
     {syntax_error, Reason :: term(), Position :: non_neg_integer()}
     | {missing_nplurals, binary()}
     | {missing_plural_expr, binary()}
-    | {nplurals_out_of_range, integer()}.
+    | {nplurals_out_of_range, integer()}
+    %% Layer 3 (finding #1): a rule that is STATICALLY guaranteed to
+    %% fault — a literal division/modulo by zero, or a constant form
+    %% index provably outside [0, NPlurals) — is rejected at load time
+    %% so the poisoned catalog is refused by `ensure_loaded` rather than
+    %% loading as `{ok, _}` and crashing every later lookup.
+    | {unsafe_plural_rule, plural_eval_error()}.
+
+%% Anomaly observed while evaluating a compiled plural rule. Surfaced as
+%% data by `evaluate_checked/2` and as the payload of a Layer 3
+%% `{unsafe_plural_rule, _}` compile rejection. The total `evaluate/2`
+%% never raises these — it clamps instead (libintl parity).
+-type plural_eval_error() ::
+    {division_by_zero, '/' | '%'}
+    | {form_out_of_range, Form :: integer(), NPlurals :: pos_integer()}.
 
 %% literal
 -type ast() ::
@@ -141,11 +162,19 @@ compile(Header) when is_binary(Header) ->
                 {ok, ExprBin} ->
                     case parse_expr_bin(ExprBin) of
                         {ok, Ast} ->
-                            {ok, #{
-                                nplurals => NPlurals,
-                                expr => Ast,
-                                raw => Header
-                            }};
+                            %% Layer 3 (finding #1): reject rules that are
+                            %% statically guaranteed to fault before they
+                            %% can be stored and crash every later lookup.
+                            case validate_safe(Ast, NPlurals) of
+                                ok ->
+                                    {ok, #{
+                                        nplurals => NPlurals,
+                                        expr => Ast,
+                                        raw => Header
+                                    }};
+                                {error, EvalErr} ->
+                                    {error, {unsafe_plural_rule, EvalErr}}
+                            end;
                         {error, _} = Err ->
                             Err
                     end;
@@ -161,17 +190,54 @@ compile(Header) when is_binary(Header) ->
 %% accepted; the C runtime in libintl applies abs() on the integer, but
 %% gettext .po rules are all defined over non-negative N. We pass N
 %% through unchanged so the rule's own semantics decide.
+%%
+%% TOTALITY (finding #1, plural-eval-throws-per-lookup-dos). `.po` input
+%% is untrusted (ADR-0003) and this function runs in the CALLER process
+%% on every `ngettext`/`npgettext` lookup, so it MUST NOT raise. Two
+%% failure modes that a malformed rule could otherwise trigger are
+%% neutralised here, matching the GNU libintl runtime:
+%%
+%%   * division / modulo by zero — `eval_div/2` and `eval_rem/2` coerce
+%%     a zero divisor to a defined value (C undefined behaviour pinned to
+%%     0) instead of letting Erlang `div`/`rem` raise `badarith`.
+%%   * out-of-range form index — clamped to form 0, exactly as
+%%     `dcigettext.c` (`plural_lookup`) does: `if (index >= nplurals)
+%%     index = 0;` ("this should never happen" -> clamp, NOT crash).
+%%
+%% The `-spec` is therefore HONEST: the result is provably
+%% `non_neg_integer()` for every N and every AST. Callers that want to
+%% OBSERVE the anomaly as data use `evaluate_checked/2` instead.
 -spec evaluate(plural_compiled(), integer()) -> non_neg_integer().
 evaluate(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
     Form = to_integer(eval_ast(Ast, N)),
-    %% A malformed rule could theoretically return a value outside
-    %% 0..NPlurals-1. Clamp via assertion to surface bugs in the .po
-    %% rather than silently returning a stale index that hits an empty
-    %% ETS slot.
-    case Form >= 0 andalso Form < NPlurals of
-        true -> Form;
-        false -> erlang:error({plural_form_out_of_range, Form, NPlurals})
+    clamp_form(Form, NPlurals).
+
+%% Structured sibling of `evaluate/2`: instead of clamping silently, it
+%% reports a malformed rule as `{error, plural_eval_error()}` so a
+%% consumer can log/alert on the anomaly. Still total — never raises.
+%% (Finding #1, Layer 2.)
+-spec evaluate_checked(plural_compiled(), integer()) ->
+    {ok, non_neg_integer()} | {error, plural_eval_error()}.
+evaluate_checked(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
+    case eval_ast_checked(Ast, N) of
+        {error, _} = Err ->
+            Err;
+        {ok, Value} ->
+            Form = to_integer(Value),
+            case Form >= 0 andalso Form < NPlurals of
+                true -> {ok, Form};
+                false -> {error, {form_out_of_range, Form, NPlurals}}
+            end
     end.
+
+%% Clamp a candidate form index into [0, NPlurals) à la libintl. NPlurals
+%% is `pos_integer()` (validated at compile), so 0 is always a valid
+%% form.
+-spec clamp_form(integer(), pos_integer()) -> non_neg_integer().
+clamp_form(Form, NPlurals) when Form >= 0, Form < NPlurals ->
+    Form;
+clamp_form(_Form, _NPlurals) ->
+    0.
 
 %% Convenience: compile + evaluate in one go. Re-parses every call, so
 %% this is intended for one-off use; callers on the hot path should
@@ -701,17 +767,229 @@ eval_ast({ternary, C, T, E}, N) ->
         false -> eval_ast(E, N)
     end.
 
+-spec apply_binop(op(), integer(), integer()) -> integer() | boolean().
 apply_binop('+', L, R) -> L + R;
 apply_binop('-', L, R) -> L - R;
 apply_binop('*', L, R) -> L * R;
-apply_binop('/', L, R) -> L div R;
-apply_binop('%', L, R) -> L rem R;
+apply_binop('/', L, R) -> eval_div(L, R);
+apply_binop('%', L, R) -> eval_rem(L, R);
 apply_binop('==', L, R) -> L =:= R;
 apply_binop('!=', L, R) -> L =/= R;
 apply_binop('<', L, R) -> L < R;
 apply_binop('>', L, R) -> L > R;
 apply_binop('<=', L, R) -> L =< R;
 apply_binop('>=', L, R) -> L >= R.
+
+%% Total division / modulo (finding #1, Layer 1). A zero divisor is C
+%% undefined behaviour; rather than let Erlang `div`/`rem` raise
+%% `badarith` in the caller process, we pin the result to 0 — the
+%% expression result is still clamped into range afterwards. Real `.po`
+%% rules never divide by a value that reaches zero (they guard with
+%% short-circuit `&&`/`||`), so this only ever fires on malformed input.
+-spec eval_div(integer(), integer()) -> integer().
+eval_div(_L, 0) -> 0;
+eval_div(L, R) -> L div R.
+
+-spec eval_rem(integer(), integer()) -> integer().
+eval_rem(_L, 0) -> 0;
+eval_rem(L, R) -> L rem R.
+
+%% =========================
+%% Checked interpreter (finding #1, Layer 2)
+%% =========================
+%%
+%% Mirror of `eval_ast/2` that surfaces the two unsafe conditions as
+%% structured data instead of clamping: division/modulo by zero and
+%% (handled by the caller `evaluate_checked/2`) an out-of-range form.
+%% Short-circuit semantics for `&&`/`||` are preserved, so a zero
+%% divisor guarded behind a false branch is never reported — matching
+%% the dynamic evaluator. Total: never raises.
+
+-spec eval_ast_checked(ast(), integer()) ->
+    {ok, integer() | boolean()} | {error, plural_eval_error()}.
+eval_ast_checked(N, _N) when is_integer(N) ->
+    {ok, N};
+eval_ast_checked(n, N) ->
+    {ok, N};
+eval_ast_checked({unop, '!', E}, N) ->
+    case eval_ast_checked(E, N) of
+        {ok, V} -> {ok, not to_boolean(V)};
+        {error, _} = Err -> Err
+    end;
+eval_ast_checked({binop, '&&', L, R}, N) ->
+    case eval_ast_checked(L, N) of
+        {error, _} = Err ->
+            Err;
+        {ok, LV} ->
+            case to_boolean(LV) of
+                false -> {ok, false};
+                true -> to_boolean_checked(eval_ast_checked(R, N))
+            end
+    end;
+eval_ast_checked({binop, '||', L, R}, N) ->
+    case eval_ast_checked(L, N) of
+        {error, _} = Err ->
+            Err;
+        {ok, LV} ->
+            case to_boolean(LV) of
+                true -> {ok, true};
+                false -> to_boolean_checked(eval_ast_checked(R, N))
+            end
+    end;
+eval_ast_checked({binop, Op, L, R}, N) ->
+    case eval_ast_checked(L, N) of
+        {error, _} = ErrL ->
+            ErrL;
+        {ok, LV0} ->
+            case eval_ast_checked(R, N) of
+                {error, _} = ErrR ->
+                    ErrR;
+                {ok, RV0} ->
+                    apply_binop_checked(Op, to_integer(LV0), to_integer(RV0))
+            end
+    end;
+eval_ast_checked({ternary, C, T, E}, N) ->
+    case eval_ast_checked(C, N) of
+        {error, _} = Err ->
+            Err;
+        {ok, CV} ->
+            case to_boolean(CV) of
+                true -> eval_ast_checked(T, N);
+                false -> eval_ast_checked(E, N)
+            end
+    end.
+
+%% Coerce the right operand of a short-circuit op to a boolean result,
+%% propagating any error from the underlying evaluation.
+-spec to_boolean_checked({ok, integer() | boolean()} | {error, plural_eval_error()}) ->
+    {ok, boolean()} | {error, plural_eval_error()}.
+to_boolean_checked({error, _} = Err) -> Err;
+to_boolean_checked({ok, V}) -> {ok, to_boolean(V)}.
+
+-spec apply_binop_checked(op(), integer(), integer()) ->
+    {ok, integer() | boolean()} | {error, plural_eval_error()}.
+apply_binop_checked('/', _L, 0) -> {error, {division_by_zero, '/'}};
+apply_binop_checked('%', _L, 0) -> {error, {division_by_zero, '%'}};
+apply_binop_checked(Op, L, R) -> {ok, apply_binop(Op, L, R)}.
+
+%% =========================
+%% Static safety validation (finding #1, Layer 3)
+%% =========================
+%%
+%% Reject — at compile/load time — rules that are STATICALLY guaranteed
+%% to fault for every N, so the poisoned catalog is refused by
+%% `ensure_loaded` instead of loading as `{ok, _}` and crashing each
+%% later lookup. We only reject what is *provably* faulty regardless of
+%% input; conditions that fault only for a specific N (e.g. `n / (n-5)`)
+%% are left to the dynamic clamp in Layer 1.
+%%
+%% Two static faults are detected:
+%%   * a `/` or `%` whose divisor is a constant subexpression (no `n`)
+%%     evaluating to 0 — fails for all N;
+%%   * a fully-constant rule (no `n` anywhere) whose value lands outside
+%%     [0, NPlurals) — selects a non-existent form for all N.
+
+-spec validate_safe(ast(), pos_integer()) -> ok | {error, plural_eval_error()}.
+validate_safe(Ast, NPlurals) ->
+    case static_div_zero(Ast) of
+        {error, _} = Err ->
+            Err;
+        ok ->
+            case is_constant(Ast) of
+                false ->
+                    %% Depends on N — Layer 1 covers any dynamic fault.
+                    ok;
+                true ->
+                    %% N is irrelevant for a constant rule; 0 is a fine
+                    %% probe. A constant out-of-range result is a static
+                    %% fault. We evaluate the AST directly (not via
+                    %% evaluate_checked/2) to avoid materialising a partial
+                    %% plural_compiled() map just for the probe.
+                    static_form_in_range(Ast, NPlurals)
+            end
+    end.
+
+%% Probe a constant rule's form index and reject it if it lands outside
+%% [0, NPlurals). `static_div_zero/1` has already cleared the AST of
+%% division-by-zero, so the only error reachable here is an out-of-range
+%% form; the {error, _} arm just propagates any future eval anomaly.
+-spec static_form_in_range(ast(), pos_integer()) -> ok | {error, plural_eval_error()}.
+static_form_in_range(Ast, NPlurals) ->
+    case eval_ast_checked(Ast, 0) of
+        {ok, Value} ->
+            Form = to_integer(Value),
+            case Form >= 0 andalso Form < NPlurals of
+                true -> ok;
+                false -> {error, {form_out_of_range, Form, NPlurals}}
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% Walk the AST for a `/` or `%` whose divisor is statically zero. The
+%% divisor counts as statically zero only when it is constant (contains
+%% no `n`) and evaluates to 0 — a divisor that depends on N is not a
+%% static fault.
+-spec static_div_zero(ast()) -> ok | {error, plural_eval_error()}.
+static_div_zero(N) when is_integer(N) ->
+    ok;
+static_div_zero(n) ->
+    ok;
+static_div_zero({unop, '!', E}) ->
+    static_div_zero(E);
+static_div_zero({binop, Op, L, R}) when Op =:= '/'; Op =:= '%' ->
+    case static_div_zero(L) of
+        {error, _} = Err ->
+            Err;
+        ok ->
+            case static_div_zero(R) of
+                {error, _} = Err -> Err;
+                ok -> check_static_divisor(Op, R)
+            end
+    end;
+static_div_zero({binop, _Op, L, R}) ->
+    case static_div_zero(L) of
+        {error, _} = Err -> Err;
+        ok -> static_div_zero(R)
+    end;
+static_div_zero({ternary, C, T, E}) ->
+    case static_div_zero(C) of
+        {error, _} = Err ->
+            Err;
+        ok ->
+            case static_div_zero(T) of
+                {error, _} = Err -> Err;
+                ok -> static_div_zero(E)
+            end
+    end.
+
+-spec check_static_divisor('/' | '%', ast()) -> ok | {error, plural_eval_error()}.
+check_static_divisor(Op, Divisor) ->
+    case is_constant(Divisor) of
+        false ->
+            ok;
+        true ->
+            case eval_ast_checked(Divisor, 0) of
+                {ok, V} ->
+                    case to_integer(V) of
+                        0 -> {error, {division_by_zero, Op}};
+                        _ -> ok
+                    end;
+                %% A nested static div-by-zero inside the divisor is
+                %% already reported by the recursive walk above.
+                {error, _} = Err ->
+                    Err
+            end
+    end.
+
+%% True when the AST contains no reference to the variable `n`, so its
+%% value is independent of the lookup count.
+-spec is_constant(ast()) -> boolean().
+is_constant(N) when is_integer(N) -> true;
+is_constant(n) -> false;
+is_constant({unop, '!', E}) -> is_constant(E);
+is_constant({binop, _Op, L, R}) -> is_constant(L) andalso is_constant(R);
+is_constant({ternary, C, T, E}) -> is_constant(C) andalso is_constant(T) andalso is_constant(E).
 
 %% =========================
 %% CLDR canonical rules

@@ -210,7 +210,19 @@ lookup_plural_form(Domain, Locale, Context, Msgid, N) when
             Index = fallback_form_index(N),
             lookup_plural(Domain, Locale, Context, Msgid, Index);
         {ok, #{plural := Compiled}} ->
-            Index = erli18n_plural:evaluate(Compiled, N),
+            %% Boundary guard (finding #1, plural-eval-throws-per-lookup-
+            %% dos, Layer 4). `evaluate/2` is now total — it clamps
+            %% malformed rules instead of raising — so this `try` never
+            %% fires in practice. It is belt-and-suspenders: should a
+            %% future regression reintroduce a throw on this per-request
+            %% hot path, we degrade to the default Germanic form index
+            %% rather than crash the calling request process.
+            Index =
+                try
+                    erli18n_plural:evaluate(Compiled, N)
+                catch
+                    error:_ -> fallback_form_index(N)
+                end,
             lookup_plural(Domain, Locale, Context, Msgid, Index);
         undefined ->
             undefined

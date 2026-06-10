@@ -50,7 +50,10 @@
     arabic_six_forms/1,
     polish_three_forms/1,
     whitespace_tolerance/1,
-    form_out_of_range_crashes/1,
+    form_out_of_range_clamps_to_zero/1,
+    divide_by_zero_clamps_no_crash/1,
+    evaluate_checked_reports_anomalies/1,
+    compile_rejects_statically_unsafe_rule/1,
     %% Coverage additions — header malformed paths
     empty_nplurals_value/1,
     empty_plural_value/1,
@@ -113,7 +116,10 @@ all() ->
         arabic_six_forms,
         polish_three_forms,
         whitespace_tolerance,
-        form_out_of_range_crashes,
+        form_out_of_range_clamps_to_zero,
+        divide_by_zero_clamps_no_crash,
+        evaluate_checked_reports_anomalies,
+        compile_rejects_statically_unsafe_rule,
         %% Coverage additions
         empty_nplurals_value,
         empty_plural_value,
@@ -531,14 +537,100 @@ whitespace_tolerance(_Config) ->
     ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
 
 %% A malformed .po that produces a form index outside [0, NPlurals)
-%% crashes loud — the loader gets a clear error rather than silently
-%% returning a stale msgstr from a different index.
-form_out_of_range_crashes(_Config) ->
-    %% Header declares 2 forms but the expression always returns 5.
-    C = compile_ok(<<"nplurals=2; plural=5;">>),
-    ?assertError(
-        {plural_form_out_of_range, 5, 2},
-        erli18n_plural:evaluate(C, 0)
+%% must NOT crash the caller — per finding #1 (plural-eval-throws-per-
+%% lookup-dos), `evaluate/2` is the hot path of every ngettext lookup,
+%% so it has to be total. The reference runtime (GNU libintl
+%% `dcigettext.c` / `plural_lookup`) clamps an out-of-range index to
+%% form 0 ("this should never happen" -> clamp, NOT crash) rather than
+%% raising. We mirror that: any value outside [0, NPlurals) clamps to 0.
+form_out_of_range_clamps_to_zero(_Config) ->
+    %% Header declares 2 forms but `n + 4` returns 4 at N=0 — out of
+    %% range. The rule depends on `n`, so it is NOT statically rejected
+    %% at compile (that path is covered by
+    %% compile_rejects_statically_unsafe_rule/1); it reaches the runtime
+    %% clamp instead. N=0 -> 4 -> clamp to 0.
+    C = compile_ok(<<"nplurals=2; plural=n + 4;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
+    %% A negative form index (`n - 1` at N=0 -> -1) also clamps to 0,
+    %% not a crash. nplurals must exceed any legitimate result, so we
+    %% declare 3 and feed N=0 -> n - 1 = -1 -> clamp to 0.
+    CNeg = compile_ok(<<"nplurals=3; plural=n - 1;">>),
+    ?assertEqual(0, erli18n_plural:evaluate(CNeg, 0)),
+    %% In-range results are returned unchanged.
+    ?assertEqual(2, erli18n_plural:evaluate(CNeg, 3)).
+
+%% Division / modulo by zero in an untrusted plural rule must NOT raise
+%% `badarith` in the caller (finding #1, failure mode (a)). The total
+%% evaluator coerces a zero divisor to a defined result (C UB pinned to
+%% 0) so the lookup degrades gracefully instead of killing the request
+%% process. The whole expression result is still clamped into range.
+divide_by_zero_clamps_no_crash(_Config) ->
+    %% Divisor that is zero only for a specific N — `n / (n - 5)` at N=5.
+    %% The divisor depends on `n`, so this is NOT statically rejected at
+    %% compile (a literal `/ 0` would be — see
+    %% compile_rejects_statically_unsafe_rule/1); it reaches the runtime
+    %% guard `eval_div/2`, which pins the zero-divisor result to 0.
+    CDiv = compile_ok(<<"nplurals=2; plural=n / (n - 5);">>),
+    ?assertEqual(0, erli18n_plural:evaluate(CDiv, 5)),
+    %% and well-defined elsewhere: N=15 -> 15 / 10 = 1.
+    ?assertEqual(1, erli18n_plural:evaluate(CDiv, 15)),
+    %% Modulo by a dynamically-zero divisor — `n % (n - 5)` at N=5 —
+    %% likewise degrades via `eval_rem/2` instead of raising badarith.
+    CRem = compile_ok(<<"nplurals=2; plural=n % (n - 5);">>),
+    ?assertEqual(0, erli18n_plural:evaluate(CRem, 5)),
+    %% N=7 -> 7 % 2 = 1 (in range).
+    ?assertEqual(1, erli18n_plural:evaluate(CRem, 7)).
+
+%% `evaluate_checked/2` is the structured, honest sibling of the total
+%% `evaluate/2`: callers that want to OBSERVE an unsafe rule as data
+%% (rather than have it silently clamped) get `{ok, Index}` on success
+%% and `{error, plural_eval_error()}` on division-by-zero / out-of-range.
+evaluate_checked_reports_anomalies(_Config) ->
+    %% Well-formed rule: {ok, Index}.
+    COk = compile_ok(eng()),
+    ?assertEqual({ok, 0}, erli18n_plural:evaluate_checked(COk, 1)),
+    ?assertEqual({ok, 1}, erli18n_plural:evaluate_checked(COk, 2)),
+    %% Out-of-range form (dynamic — `n + 4` at N=0 -> 4) reported as a
+    %% structured error rather than clamped or crashed.
+    COor = compile_ok(<<"nplurals=2; plural=n + 4;">>),
+    ?assertEqual(
+        {error, {form_out_of_range, 4, 2}},
+        erli18n_plural:evaluate_checked(COor, 0)
+    ),
+    %% Division by zero (dynamic — divisor is 0 only at N=5) -> structured
+    %% error naming the operator.
+    CDiv = compile_ok(<<"nplurals=2; plural=n / (n - 5);">>),
+    ?assertEqual(
+        {error, {division_by_zero, '/'}},
+        erli18n_plural:evaluate_checked(CDiv, 5)
+    ),
+    CRem = compile_ok(<<"nplurals=2; plural=n % (n - 5);">>),
+    ?assertEqual(
+        {error, {division_by_zero, '%'}},
+        erli18n_plural:evaluate_checked(CRem, 5)
+    ),
+    %% And the same rules return {ok, Index} where well-defined.
+    ?assertEqual({ok, 1}, erli18n_plural:evaluate_checked(CDiv, 15)).
+
+%% Layer 3 (static rejection at load): a rule that is STATICALLY
+%% guaranteed to fault — a literal division by zero or a constant form
+%% provably out of range — is rejected by `compile/1` with a structured
+%% `{unsafe_plural_rule, _}` error, so the poisoned catalog is refused
+%% at `ensure_loaded` time rather than loading as `{ok, _}`.
+compile_rejects_statically_unsafe_rule(_Config) ->
+    %% Literal division by zero.
+    ?assertMatch(
+        {error, {unsafe_plural_rule, {division_by_zero, '/'}}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n / 0;">>)
+    ),
+    ?assertMatch(
+        {error, {unsafe_plural_rule, {division_by_zero, '%'}}},
+        erli18n_plural:compile(<<"nplurals=2; plural=n % 0;">>)
+    ),
+    %% Constant form index provably out of range.
+    ?assertMatch(
+        {error, {unsafe_plural_rule, {form_out_of_range, 5, 2}}},
+        erli18n_plural:compile(<<"nplurals=2; plural=5;">>)
     ).
 
 %% =========================
