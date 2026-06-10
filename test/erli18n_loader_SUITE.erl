@@ -626,7 +626,9 @@ which_keys_returns_unique_msgids(_Config) ->
         {singular, undefined, <<"a">>, <<"A">>},
         {singular, undefined, <<"b">>, <<"B">>},
         {singular, undefined, <<"c">>, <<"C">>},
-        {plural, undefined, <<"tree">>, [{0, <<"arbre">>}, {1, <<"arbres">>}]}
+        {plural, undefined, <<"tree">>, <<"trees">>, [
+            {0, <<"arbre">>}, {1, <<"arbres">>}
+        ]}
     ],
     ok = erli18n_server:insert_catalog(default, <<"fr">>, Entries),
     Keys = erli18n_server:which_keys(default, <<"fr">>),

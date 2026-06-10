@@ -35,7 +35,8 @@
     prop_idempotent_normalization/0,
     prop_ets_key_canonical/0,
     prop_large_string_roundtrip/0,
-    prop_parse_output_is_valid_utf8/0
+    prop_parse_output_is_valid_utf8/0,
+    prop_msgid_plural_roundtrip/0
 ]).
 
 %% Generators (exported so other property modules can compose them).
@@ -247,10 +248,85 @@ prop_parse_output_is_valid_utf8() ->
         end
     ).
 
+%% Finding #14 (dump-drops-msgid-plural-silently) — CLOSURE INVARIANT:
+%% `dump/1` must round-trip `msgid_plural` faithfully.
+%%
+%% Claim: for any well-formed plural catalog whose `.po` SOURCE declares a
+%% `msgid_plural` form text DISTINCT from the singular `msgid`, the
+%% `parse -> dump -> parse` cycle preserves that `msgid_plural` byte for
+%% byte. The bug: the parsed `entry/0' plural shape dropped `msgid_plural'
+%% entirely, so `dump/1' re-emitted the singular `msgid' in the
+%% `msgid_plural' slot — silently corrupting the plural-form source text.
+%%
+%% We assert the invariant from the OUTSIDE: parse the generated source,
+%% dump it, and verify the dumped `.po' carries the ORIGINAL
+%% `msgid_plural' line (not the singular `msgid'). A re-parse round-trip
+%% then confirms the value survives a full cycle. Using `ru'/`pl'/`ar'
+%% style real plural rules per the finding's test note.
+prop_msgid_plural_roundtrip() ->
+    ?FORALL(
+        SpecGen,
+        plural_source_spec(),
+        begin
+            #{
+                src := Src,
+                msgid := Msgid,
+                msgid_plural := MsgidPlural
+            } = eqwalizer:dynamic_cast(SpecGen),
+            %% Precondition: the two forms differ, so emitting the wrong
+            %% one is observable.
+            true = (Msgid =/= MsgidPlural),
+            case erli18n_po:parse(Src) of
+                {ok, Parsed} ->
+                    %% (1) the parsed model must RETAIN the original plural
+                    %% form (the bug dropped it). (2) a full parse∘dump∘parse
+                    %% cycle must preserve it byte for byte. Comparing through
+                    %% the parser sidesteps escaper-specific text-matching.
+                    Retained = msgid_plural_of(Parsed) =:= MsgidPlural,
+                    Dumped = erli18n_po:dump(Parsed),
+                    case erli18n_po:parse(Dumped) of
+                        {ok, Reparsed} ->
+                            Stable =
+                                msgid_plural_of(Reparsed) =:= MsgidPlural,
+                            case Retained andalso Stable of
+                                true ->
+                                    true;
+                                false ->
+                                    ct:pal(
+                                        "msgid_plural_roundtrip: expected "
+                                        "~p~nretained=~p stable=~p~n"
+                                        "dumped=~p~n",
+                                        [
+                                            MsgidPlural,
+                                            Retained,
+                                            Stable,
+                                            Dumped
+                                        ]
+                                    ),
+                                    false
+                            end;
+                        {error, _} = Err ->
+                            ct:pal(
+                                "msgid_plural_roundtrip: reparse failed "
+                                "~p~ndumped=~p~n",
+                                [Err, Dumped]
+                            ),
+                            false
+                    end;
+                {error, _} = Err ->
+                    ct:pal(
+                        "msgid_plural_roundtrip: first parse failed ~p~n"
+                        "src=~p~n",
+                        [Err, Src]
+                    ),
+                    false
+            end
+        end
+    ).
+
 %% =========================
 %% Generators
 %% =========================
-
 %% A well-formed catalog with header + 0..20 entries. The header's
 %% `nplurals` count is fixed first, then entries are generated so plural
 %% entries respect that count (parser would otherwise reject them per
@@ -287,9 +363,16 @@ valid_singular() ->
 
 valid_plural(NPlurals) ->
     ?LET(
-        {Ctx, Msgid, Forms},
-        {valid_context(), valid_msgid(), plural_forms(NPlurals)},
-        {plural, Ctx, Msgid, Forms}
+        {Ctx, Msgid, MsgidPlural, Forms},
+        {valid_context(), valid_msgid(), valid_msgid(), plural_forms(NPlurals)},
+        %% Finding #14: the parsed plural entry retains `msgid_plural`
+        %% (4th element). The generator produces a concrete plural form
+        %% (reusing `valid_msgid/0`, which yields a non-empty UTF-8 binary)
+        %% so `parse∘dump` is byte-exact: the parser always materializes a
+        %% concrete `msgid_plural` from the source `msgid_plural` line, and
+        %% the dumper re-emits it verbatim. The `undefined` (no explicit
+        %% plural-form) fallback is covered by a dedicated unit test.
+        {plural, Ctx, Msgid, MsgidPlural, Forms}
     ).
 
 %% Plural translations: exactly NPlurals entries, indexed 0..NPlurals-1.
@@ -448,6 +531,53 @@ raw_header_bin(NPlurals) ->
         "\n"
     >>.
 
+%% Finding #14 generator: a minimal plural catalog SOURCE whose
+%% `msgid_plural` form is DISTINCT from the singular `msgid`. We draw
+%% from `ru`/`pl`/`ar`-style plural rules (real, multi-form) so the round
+%% trip exercises 3..6 plural indices. The source is produced by the
+%% library's own `dump/1` from a hand-built parsed map, guaranteeing a
+%% valid `.po` regardless of which control bytes the string generators
+%% emit. Returns the source plus the two canonical forms so the property
+%% can assert preservation.
+plural_source_spec() ->
+    ?LET(
+        {NPluralsGen, MsgidGen, MsgidPluralGen},
+        {oneof([3, 6]), valid_msgid(), valid_msgid()},
+        begin
+            NPlurals = eqwalizer:dynamic_cast(NPluralsGen),
+            Msgid = eqwalizer:dynamic_cast(MsgidGen),
+            MsgidPluralBase = eqwalizer:dynamic_cast(MsgidPluralGen),
+            %% Force distinctness: prepend a sentinel that cannot collide
+            %% with the singular form (which never starts with this run).
+            MsgidPlural = <<"PLURAL-", MsgidPluralBase/binary>>,
+            Forms = [
+                {I, <<"t", (integer_to_binary(I))/binary>>}
+             || I <- lists:seq(0, NPlurals - 1)
+            ],
+            Catalog = #{
+                header => #{
+                    plural_forms => plural_header_bin(NPlurals),
+                    content_type => <<"text/plain; charset=UTF-8">>,
+                    charset => utf8,
+                    raw => raw_header_bin(NPlurals)
+                },
+                entries => [{plural, undefined, Msgid, MsgidPlural, Forms}]
+            },
+            CatalogCast = eqwalizer:dynamic_cast(Catalog),
+            Src = erli18n_po:dump(CatalogCast),
+            #{src => Src, msgid => Msgid, msgid_plural => MsgidPlural}
+        end
+    ).
+
+%% Extract the `msgid_plural` carried by the single plural entry of a
+%% parsed catalog. Returns the binary, or `not_found` if the parsed model
+%% still drops it.
+msgid_plural_of(#{entries := Entries}) ->
+    case [P || {plural, _Ctx, _Msgid, P, _Forms} <- Entries] of
+        [MsgidPlural | _] -> MsgidPlural;
+        [] -> not_found
+    end.
+
 %% =========================
 %% Helpers
 %% =========================
@@ -514,7 +644,7 @@ cmp_entry(A, B) ->
     key_for_sort(A) =< key_for_sort(B).
 
 key_for_sort({singular, Ctx, Msgid, _}) -> {0, Ctx, Msgid};
-key_for_sort({plural, Ctx, Msgid, _}) -> {1, Ctx, Msgid}.
+key_for_sort({plural, Ctx, Msgid, _MsgidPlural, _}) -> {1, Ctx, Msgid}.
 
 %% Canonicalize a full parsed catalog: keep only the semantic fields,
 %% so transient `raw` differences (e.g. trailing newline normalization)
@@ -609,9 +739,10 @@ entry_fields_valid_utf8({singular, Ctx, Msgid, Translation}) ->
     is_valid_utf8(Ctx) andalso
         is_valid_utf8(Msgid) andalso
         is_valid_utf8(Translation);
-entry_fields_valid_utf8({plural, Ctx, Msgid, Forms}) ->
+entry_fields_valid_utf8({plural, Ctx, Msgid, MsgidPlural, Forms}) ->
     is_valid_utf8(Ctx) andalso
         is_valid_utf8(Msgid) andalso
+        is_valid_utf8(MsgidPlural) andalso
         lists:all(
             fun({_Idx, T}) -> is_valid_utf8(T) end,
             Forms

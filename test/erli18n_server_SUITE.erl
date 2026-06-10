@@ -135,7 +135,9 @@ insert_catalog_mixed(_Config) ->
     Entries = [
         {singular, undefined, <<"Hello">>, <<"Bonjour">>},
         {singular, <<"menu">>, <<"File">>, <<"Fichier">>},
-        {plural, undefined, <<"tree">>, [{0, <<"arbre">>}, {1, <<"arbres">>}]}
+        {plural, undefined, <<"tree">>, <<"trees">>, [
+            {0, <<"arbre">>}, {1, <<"arbres">>}
+        ]}
     ],
     ok = erli18n_server:insert_catalog(default, <<"fr">>, Entries),
     ?assertEqual(

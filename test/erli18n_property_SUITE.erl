@@ -34,6 +34,7 @@
     ets_key_canonical/1,
     large_string_roundtrip/1,
     parse_output_is_valid_utf8/1,
+    msgid_plural_roundtrip/1,
     plural_index_in_range/1,
     plural_compile_or_error/1,
     plural_compile_bounded/1,
@@ -55,6 +56,7 @@ all() ->
         ets_key_canonical,
         large_string_roundtrip,
         parse_output_is_valid_utf8,
+        msgid_plural_roundtrip,
         plural_index_in_range,
         plural_compile_or_error,
         plural_compile_bounded,
@@ -99,6 +101,9 @@ large_string_roundtrip(_Config) ->
 
 parse_output_is_valid_utf8(_Config) ->
     run_property(erli18n_po_props:prop_parse_output_is_valid_utf8()).
+
+msgid_plural_roundtrip(_Config) ->
+    run_property(erli18n_po_props:prop_msgid_plural_roundtrip()).
 
 plural_index_in_range(_Config) ->
     run_property(erli18n_plural_props:prop_index_in_range()).

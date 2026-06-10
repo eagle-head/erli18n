@@ -16,6 +16,7 @@
     entry/0,
     context/0,
     msgid/0,
+    msgid_plural/0,
     translation/0,
     plural_index/0,
     parse_error/0
@@ -42,11 +43,18 @@
 }.
 
 %% Per PSD-006: context is a separate field, never byte-glued with msgid.
+%%
+%% Finding #14 (dump-drops-msgid-plural-silently): the plural shape retains
+%% the `msgid_plural` form text so `dump/1` can re-emit it faithfully. A
+%% catalog with no explicit `msgid_plural` (only a singular `msgid` plus
+%% `msgstr[N]` lines — unusual but accepted) carries `undefined`, and the
+%% dumper falls back to the singular `msgid` for that one slot.
 -type entry() ::
     {singular, context(), msgid(), translation()}
-    | {plural, context(), msgid(), [{plural_index(), translation()}]}.
+    | {plural, context(), msgid(), msgid_plural(), [{plural_index(), translation()}]}.
 -type context() :: undefined | binary().
 -type msgid() :: binary().
+-type msgid_plural() :: undefined | binary().
 -type translation() :: binary().
 -type plural_index() :: non_neg_integer().
 
@@ -678,7 +686,7 @@ emit_entry(
     {ok, St#pst{entries = [Entry | St#pst.entries]}};
 emit_entry(
     #po_st{
-        msgid_plural = _Plural,
+        msgid_plural = MsgidPlural,
         msgid = Msgid,
         context = Ctx,
         msgstr_plurals = Plurals
@@ -692,7 +700,9 @@ emit_entry(
     Indices = [I || {I, _} <- SortedPlurals],
     case validate_plural_indices(Msgid, St#pst.nplurals, Indices) of
         ok ->
-            Entry = {plural, Ctx, Msgid, SortedPlurals},
+            %% Finding #14: retain `msgid_plural` so `dump/1` re-emits the
+            %% real plural-form source text instead of substituting `Msgid`.
+            Entry = {plural, Ctx, Msgid, MsgidPlural, SortedPlurals},
             {ok, St#pst{entries = [Entry | St#pst.entries]}};
         {error, _} = Err ->
             Err
@@ -1229,16 +1239,21 @@ dump_entry({singular, Ctx, Msgid, Translation}) ->
     MsgidBin = dump_field(<<"msgid">>, Msgid),
     MsgstrBin = dump_field(<<"msgstr">>, Translation),
     <<CtxBin/binary, MsgidBin/binary, MsgstrBin/binary, "\n">>;
-dump_entry({plural, Ctx, Msgid, Plurals}) ->
+dump_entry({plural, Ctx, Msgid, MsgidPlural, Plurals}) ->
     CtxBin = dump_msgctxt(Ctx),
     MsgidBin = dump_field(<<"msgid">>, Msgid),
-    %% msgid_plural is not preserved on parse — synthesize from the last
-    %% plural index. The data model carries the singular text only; for
-    %% roundtrip the consumer is expected to also store msgid_plural if
-    %% required. For our purposes (P1: parse∘dump fixpoint), the
-    %% catalog representation already drops msgid_plural — so we emit
-    %% msgid as msgid_plural placeholder.
-    PluralIdBin = dump_field(<<"msgid_plural">>, Msgid),
+    %% Finding #14 (dump-drops-msgid-plural-silently): emit the RETAINED
+    %% `msgid_plural` form text. The parsed `entry/0` now carries it
+    %% verbatim, so `parse∘dump` preserves the plural source. When the
+    %% source had no explicit `msgid_plural` (carried as `undefined`), we
+    %% fall back to the singular `Msgid` — the only sensible stand-in, and
+    %% the historical behaviour for that degenerate case.
+    PluralIdSrc =
+        case MsgidPlural of
+            undefined -> Msgid;
+            _ -> MsgidPlural
+        end,
+    PluralIdBin = dump_field(<<"msgid_plural">>, PluralIdSrc),
     PluralsBin = iolist_to_binary([
         dump_plural_form(I, T)
      || {I, T} <- Plurals

@@ -229,7 +229,11 @@ setup_singular_catalog(Ctx, Msgid, Translation) ->
 setup_plural_catalog(Msgid, SingularT, PluralT) ->
     ok = ensure_app_started(),
     teardown(),
-    Po = synthesize_po([{plural, undefined, Msgid, [{0, SingularT}, {1, PluralT}]}]),
+    Po = synthesize_po([
+        {plural, undefined, Msgid, <<Msgid/binary, "s">>, [
+            {0, SingularT}, {1, PluralT}
+        ]}
+    ]),
     load_temp_po(Po),
     ok.
 

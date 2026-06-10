@@ -59,8 +59,15 @@
 -type translation() :: binary().
 -type plural_index() :: non_neg_integer().
 -type plural_entries() :: [{plural_index(), translation()}].
+-type msgid_plural() :: undefined | binary().
 -type singular_entry() :: {singular, context(), msgid(), translation()}.
--type plural_entry() :: {plural, context(), msgid(), plural_entries()}.
+%% Finding #14: the parsed plural entry now carries the `msgid_plural` form
+%% text (4th element). The server only materializes the ETS lookup objects,
+%% which are keyed by `{Domain, Locale, Context, Msgid, Index}` — the
+%% `msgid_plural` is irrelevant to lookup and is dropped at materialization
+%% (it exists purely so `erli18n_po:dump/1` round-trips faithfully).
+-type plural_entry() ::
+    {plural, context(), msgid(), msgid_plural(), plural_entries()}.
 -type catalog_entry() :: singular_entry() | plural_entry().
 
 %% Finding #13: a single data (non-header) ETS key as stored in the catalog
@@ -1758,7 +1765,10 @@ fallback_form_index(_) -> 1.
 -spec entry_to_objects(domain(), locale(), catalog_entry()) -> [tuple()].
 entry_to_objects(D, L, {singular, Ctx, Msgid, T}) ->
     [{?SINGULAR_KEY(D, L, Ctx, Msgid), T}];
-entry_to_objects(D, L, {plural, Ctx, Msgid, Entries}) ->
+entry_to_objects(D, L, {plural, Ctx, Msgid, _MsgidPlural, Entries}) ->
+    %% Finding #14: `_MsgidPlural` is retained on the parsed entry for
+    %% faithful `dump/1` round-trips but plays no part in lookup keying,
+    %% so it is intentionally dropped during materialization.
     build_plural_objects(D, L, Ctx, Msgid, Entries).
 
 %% =========================

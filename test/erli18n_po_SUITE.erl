@@ -32,6 +32,7 @@
     empty_msgstr_plural_preserved/1,
     dump_roundtrip_singular/1,
     dump_roundtrip_plural/1,
+    dump_plural_msgid_plural_undefined_fallback/1,
     dump_roundtrip_with_context/1,
     comments_skipped/1,
     flags_other_than_fuzzy_ignored/1,
@@ -109,6 +110,7 @@ all() ->
         empty_msgstr_plural_preserved,
         dump_roundtrip_singular,
         dump_roundtrip_plural,
+        dump_plural_msgid_plural_undefined_fallback,
         dump_roundtrip_with_context,
         comments_skipped,
         flags_other_than_fuzzy_ignored,
@@ -343,7 +345,11 @@ plural_entry(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{plural, undefined, <<"tree">>, [{0, <<"arbre">>}, {1, <<"arbres">>}]}],
+        [
+            {plural, undefined, <<"tree">>, <<"trees">>, [
+                {0, <<"arbre">>}, {1, <<"arbres">>}
+            ]}
+        ],
         maps:get(entries, Catalog)
     ).
 
@@ -485,7 +491,7 @@ empty_msgstr_plural_preserved(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{plural, undefined, <<"tree">>, [{0, <<>>}, {1, <<>>}]}],
+        [{plural, undefined, <<"tree">>, <<"trees">>, [{0, <<>>}, {1, <<>>}]}],
         maps:get(entries, Catalog)
     ).
 
@@ -519,8 +525,46 @@ dump_roundtrip_plural(_Config) ->
     >>,
     {ok, C1} = erli18n_po:parse(Bin),
     Dumped = erli18n_po:dump(C1),
+    %% Finding #14: the dumped `.po` must carry the REAL `msgid_plural`
+    %% form (`trees`), not the singular `msgid` (`tree`) it used to
+    %% substitute silently.
+    ?assertNotEqual(
+        nomatch, binary:match(Dumped, <<"msgid_plural \"trees\"">>)
+    ),
     {ok, C2} = erli18n_po:parse(Dumped),
-    ?assertEqual(maps:get(entries, C1), maps:get(entries, C2)).
+    ?assertEqual(maps:get(entries, C1), maps:get(entries, C2)),
+    %% And the retained `msgid_plural` survives the full cycle.
+    [{plural, undefined, <<"tree">>, <<"trees">>, _}] =
+        maps:get(entries, C2).
+
+%% Finding #14: when a parsed plural entry carries `undefined` as its
+%% `msgid_plural` (a degenerate catalog with `msgstr[N]` lines but no
+%% explicit `msgid_plural` source line — built here in-memory), `dump/1`
+%% falls back to the singular `Msgid` for that slot rather than crashing.
+dump_plural_msgid_plural_undefined_fallback(_Config) ->
+    Catalog = #{
+        header => #{
+            plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+            charset => utf8,
+            raw => <<
+                "Content-Type: text/plain; charset=UTF-8\n"
+                "Plural-Forms: nplurals=2; plural=(n != 1);\n"
+            >>
+        },
+        entries => [
+            {plural, undefined, <<"tree">>, undefined, [
+                {0, <<"arbre">>}, {1, <<"arbres">>}
+            ]}
+        ]
+    },
+    Dumped = erli18n_po:dump(Catalog),
+    %% Fallback: singular `msgid` reused as the `msgid_plural` source.
+    ?assertNotEqual(
+        nomatch, binary:match(Dumped, <<"msgid_plural \"tree\"">>)
+    ),
+    {ok, C2} = erli18n_po:parse(Dumped),
+    [{plural, undefined, <<"tree">>, <<"tree">>, _}] =
+        maps:get(entries, C2).
 
 dump_roundtrip_with_context(_Config) ->
     Bin = <<
@@ -724,7 +768,7 @@ degenerate_plural_nplurals_1(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{plural, undefined, <<"Fish">>, [{0, <<"sakana">>}]}],
+        [{plural, undefined, <<"Fish">>, <<"Fishes">>, [{0, <<"sakana">>}]}],
         maps:get(entries, Catalog)
     ).
 
@@ -932,8 +976,9 @@ msgid_plural_multiline_continuation(_Config) ->
         "msgstr[1] \"b\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{plural, undefined, <<"tree">>, Plurals}] =
+    [{plural, undefined, <<"tree">>, MsgidPlural, Plurals}] =
         maps:get(entries, Catalog),
+    ?assertEqual(<<"long trees">>, MsgidPlural),
     ?assertEqual([{0, <<"a">>}, {1, <<"b">>}], Plurals).
 
 %% Cover L440-441: msgstr[N] spread across continuation lines. The
@@ -948,7 +993,7 @@ msgstr_index_multiline_continuation(_Config) ->
         "msgstr[1] \"b\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{plural, undefined, <<"tree">>, Plurals}] =
+    [{plural, undefined, <<"tree">>, <<"trees">>, Plurals}] =
         maps:get(entries, Catalog),
     ?assertEqual([{0, <<"first continued">>}, {1, <<"b">>}], Plurals).
 
