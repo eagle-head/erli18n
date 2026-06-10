@@ -32,7 +32,8 @@
     fuzz_extreme_inputs/1,
     fuzz_decode_is_linear/1,
     fuzz_end_to_end/1,
-    fuzz_giant_integer_runs/1
+    fuzz_giant_integer_runs/1,
+    fuzz_header_content_type_whitespace/1
 ]).
 
 -define(NUMTESTS, 500).
@@ -47,7 +48,8 @@ all() ->
         fuzz_extreme_inputs,
         fuzz_decode_is_linear,
         fuzz_end_to_end,
-        fuzz_giant_integer_runs
+        fuzz_giant_integer_runs,
+        fuzz_header_content_type_whitespace
     ].
 
 init_per_suite(Config) ->
@@ -127,6 +129,13 @@ fuzz_giant_integer_runs(_Config) ->
             [{numtests, 50}, {to_file, user}]
         ),
     ?assert(Result =:= true).
+
+fuzz_header_content_type_whitespace(_Config) ->
+    %% F9 — Finding #5 regression guard
+    %% (po-header-malformed-content-type-badmatch-crash). The generator
+    %% space is small (a handful of whitespace/charset combos), so the
+    %% default 500 iterations covers it densely.
+    run(erli18n_po_fuzz:prop_header_content_type_whitespace_no_crash()).
 
 %% =========================
 %% Helpers

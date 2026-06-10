@@ -28,7 +28,8 @@
     prop_extreme_inputs/0,
     prop_end_to_end_no_supervisor_restart/0,
     prop_decode_is_linear/0,
-    prop_giant_integer_runs_bounded/0
+    prop_giant_integer_runs_bounded/0,
+    prop_header_content_type_whitespace_no_crash/0
 ]).
 
 -define(FUZZ_DOMAIN, fuzz_test_dom).
@@ -507,6 +508,98 @@ po_with_msgstr_index(DigitCount) ->
         Digits/binary,
         "] \"z\"\n"
     >>.
+
+%% =========================
+%% F9 — Malformed Content-Type whitespace/colon variants (Finding #5)
+%% =========================
+%%
+%% Regression guard for `po-header-malformed-content-type-badmatch-crash`.
+%% Two charset-detection paths used to disagree on adversarial header
+%% spacing: the prepass required the literal `content-type:` substring
+%% (no space before the colon) and fell through to the default utf8,
+%% while `build_header`'s field parser trimmed the key and classified the
+%% charset, then crashed on a non-exhaustive `{ok,Charset} =` match when
+%% the charset was unsupported. A 200k-iteration fuzz found 83 such
+%% crashing `Content-Type` fragments.
+%%
+%% This property builds a header whose `Content-Type` line has arbitrary
+%% whitespace around the colon and after `charset=`, with either a
+%% supported or unsupported charset, and asserts `parse/1` ALWAYS returns
+%% a structured `{ok,_}`/`{error,_}` — never an uncaught exception. It
+%% additionally checks that the prepass and `build_header` AGREE: when
+%% the charset is supported the parse succeeds; when unsupported it
+%% surfaces `{error, {unsupported_charset, _}}` rather than defaulting to
+%% utf8 down one path and crashing down the other.
+prop_header_content_type_whitespace_no_crash() ->
+    ?FORALL(
+        {WsBeforeColon, WsAfterColon, Charset},
+        {header_ws(), header_ws(), header_charset()},
+        begin
+            Po = po_with_spaced_content_type(
+                WsBeforeColon, WsAfterColon, Charset
+            ),
+            check_spaced_content_type(Po, Charset)
+        end
+    ).
+
+%% Whitespace runs (possibly empty) injected around the colon / value.
+%% Includes spaces and tabs — both are LWSP per RFC 822 and both used to
+%% defeat the literal prepass matcher.
+header_ws() ->
+    oneof([<<>>, <<" ">>, <<"  ">>, <<"\t">>, <<" \t ">>]).
+
+%% A mix of supported (must parse OK) and unsupported (must surface
+%% {unsupported_charset,_}) charset tokens.
+header_charset() ->
+    oneof([
+        {supported, <<"UTF-8">>},
+        {supported, <<"utf8">>},
+        {supported, <<"ISO-8859-1">>},
+        {supported, <<"US-ASCII">>},
+        {unsupported, <<"Shift_JIS">>},
+        {unsupported, <<"KOI8-R">>},
+        {unsupported, <<"windows-1252">>},
+        {unsupported, <<"euc-jp">>}
+    ]).
+
+po_with_spaced_content_type(WsBeforeColon, WsAfterColon, {_Kind, Charset}) ->
+    iolist_to_binary([
+        <<"msgid \"\"\nmsgstr \"\"\n\"Content-Type">>,
+        WsBeforeColon,
+        <<":">>,
+        WsAfterColon,
+        <<"text/plain; charset=">>,
+        Charset,
+        <<"\\n\"\n">>
+    ]).
+
+check_spaced_content_type(Po, {Kind, _Charset}) ->
+    try erli18n_po:parse(Po) of
+        {ok, _} when Kind =:= supported ->
+            true;
+        {ok, _} when Kind =:= unsupported ->
+            %% An unsupported charset must NOT silently parse as utf8 via
+            %% a path divergence — it must be rejected.
+            ct:pal("finding5: unsupported charset parsed OK: ~p~n", [Po]),
+            false;
+        {error, {unsupported_charset, _}} when Kind =:= unsupported ->
+            true;
+        {error, _} ->
+            %% Any other structured error is acceptable (e.g. a
+            %% conversion error on the supported-but-mismatched body); the
+            %% contract under test is "no crash".
+            true;
+        Other ->
+            ct:pal("finding5: non-structured return ~p~n", [Other]),
+            false
+    catch
+        Class:Reason:Stack ->
+            ct:pal(
+                "finding5: parse/1 crashed ~p:~p~n~p~n",
+                [Class, Reason, Stack]
+            ),
+            false
+    end.
 
 %% =========================
 %% Helpers

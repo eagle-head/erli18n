@@ -290,42 +290,32 @@ bins_to_binary(Bins) when is_list(Bins) ->
 %% Per PSD-002: accept utf8 (and aliases), latin1 / iso-8859-1, us-ascii.
 %% Case-insensitive match per RFC 2978 (charset names are
 %% case-insensitive). Anything else: hard fail.
+%%
+%% Finding #5 (po-header-malformed-content-type-badmatch-crash): this
+%% prepass MUST agree with `build_header/1` on every input, or an
+%% adversarial header (e.g. `Content-Type : ...; charset=Shift_JIS` with
+%% a space before the colon) makes the two paths disagree — the prepass
+%% defaulting to utf8 while `build_header` classifies and crashes on a
+%% non-exhaustive match. We guarantee agreement by deriving the charset
+%% from the SAME normalized field list (`parse_header_fields/1`, which
+%% splits each header line on the first colon and trims/lowercases the
+%% key per RFC 822 LWSP) and the SAME classifier (`field_charset/1`) that
+%% `build_header/1` uses. One reconciler, one whitespace policy, no
+%% divergence.
+-spec charset_from_header(binary()) ->
+    {ok, utf8 | latin1 | us_ascii} | {error, parse_error()}.
 charset_from_header(HeaderText) ->
-    case find_charset(HeaderText) of
-        undefined -> {ok, utf8};
-        Bin -> classify_charset(Bin)
-    end.
+    field_charset(parse_header_fields(HeaderText)).
 
-find_charset(HeaderText) ->
-    Lines = binary:split(HeaderText, <<"\n">>, [global]),
-    find_charset_line(Lines).
-
-find_charset_line([]) ->
-    undefined;
-find_charset_line([Line | Rest]) ->
-    %% `string:lowercase/1` returns `unicode:chardata()` (which can be a
-    %% deep iolist). `binary:match/2` requires a binary. Materialize
-    %% once at the boundary; the input came from `binary:split/3` so
-    %% it's always a valid binary.
-    Lower = to_binary(string:lowercase(Line)),
-    case binary:match(Lower, <<"content-type:">>) of
-        nomatch ->
-            find_charset_line(Rest);
-        _ ->
-            case binary:match(Lower, <<"charset=">>) of
-                nomatch ->
-                    %% Content-Type without charset — default utf8 per
-                    %% GNU spec.
-                    undefined;
-                {Start, _Len} ->
-                    Rest0 = binary:part(
-                        Line,
-                        Start + 8,
-                        byte_size(Line) - (Start + 8)
-                    ),
-                    extract_charset_token(Rest0)
-            end
-    end.
+%% Single charset reconciler shared by the prepass (`charset_from_header/1`)
+%% and the header builder (`build_header/1`). Both pass the normalized
+%% field list from `parse_header_fields/1`, so they can never disagree.
+-spec field_charset([{binary(), binary()}]) ->
+    {ok, utf8 | latin1 | us_ascii} | {error, parse_error()}.
+field_charset(Fields) ->
+    classify_charset_from_content_type(
+        proplists:get_value(<<"content-type">>, Fields, <<>>)
+    ).
 
 %% Narrow `unicode:chardata()` (potentially a deep iolist) into a flat
 %% binary. The header is ASCII-only by GNU gettext spec, so this
@@ -593,12 +583,21 @@ finalize_entry(#po_st{msgid = undefined}, St) ->
     %% comment-only blocks, etc.).
     {ok, St};
 finalize_entry(#po_st{msgid = <<>>} = Cur, #pst{header = undefined} = St) ->
-    %% Header entry: msgid == "". build_header/1 always succeeds because
-    %% charset validation already happened in the prepass.
+    %% Header entry: msgid == "". `build_header/1` is total (finding #5):
+    %% it reconciles the charset through the same `field_charset/1` the
+    %% prepass uses, so an unsupported charset surfaces as a structured
+    %% `{error, parse_error()}` rather than a badmatch crash. In the
+    %% normal flow the prepass already short-circuited that case, so the
+    %% `{ok, _}` arm is taken; the `{error, _}` arm is belt-and-suspenders
+    %% that keeps the failure structured if the paths ever diverge.
     HeaderText = best_header_text(Cur),
-    Header = build_header(HeaderText),
-    Nplurals = nplurals_from_header(Header),
-    {ok, St#pst{header = Header, nplurals = Nplurals}};
+    case build_header(HeaderText) of
+        {ok, Header} ->
+            Nplurals = nplurals_from_header(Header),
+            {ok, St#pst{header = Header, nplurals = Nplurals}};
+        {error, _} = Err ->
+            Err
+    end;
 finalize_entry(#po_st{msgid = <<>>}, St) ->
     %% Duplicate header entry — preserve the first one (parity with
     %% msgfmt which uses the first one). Drop silently.
@@ -669,25 +668,34 @@ validate_plural_indices(Msgid, Nplurals, Indices) ->
 %% Header parsing
 %% =========================
 
+%% Finding #5 (po-header-malformed-content-type-badmatch-crash):
+%% `build_header/1` is now TOTAL — it returns `{error, parse_error()}`
+%% instead of crashing on an unsupported charset. The charset is
+%% reconciled through `field_charset/1`, the SAME path the prepass uses,
+%% so in practice the prepass has already short-circuited an unsupported
+%% charset before we get here. Returning the structured error (rather
+%% than the old non-exhaustive `{ok,Charset} =` match) closes the
+%% badmatch class for good: any future divergence degrades to a clean
+%% `{error, _}` propagated by `finalize_entry/2`, never an uncaught
+%% exception that terminates the loader gen_server.
+-spec build_header(binary()) -> {ok, header_map()} | {error, parse_error()}.
 build_header(<<>>) ->
-    empty_header();
+    {ok, empty_header()};
 build_header(HeaderText) when is_binary(HeaderText) ->
     Fields = parse_header_fields(HeaderText),
     PluralForms = proplists:get_value(<<"plural-forms">>, Fields, <<>>),
     ContentType = proplists:get_value(<<"content-type">>, Fields, <<>>),
-    %% The prepass (charset_from_header -> classify_charset) already
-    %% rejected unsupported charsets and short-circuited the parse, so
-    %% by the time build_header runs the same ContentType must classify
-    %% successfully. The {ok, _} match is therefore exhaustive; an
-    %% unsupported_charset here would be a contract violation and crash
-    %% visibly with case_clause.
-    {ok, Charset} = classify_charset_from_content_type(ContentType),
-    #{
-        plural_forms => PluralForms,
-        content_type => ContentType,
-        charset => Charset,
-        raw => HeaderText
-    }.
+    case field_charset(Fields) of
+        {ok, Charset} ->
+            {ok, #{
+                plural_forms => PluralForms,
+                content_type => ContentType,
+                charset => Charset,
+                raw => HeaderText
+            }};
+        {error, _} = Err ->
+            Err
+    end.
 
 %% Header lines have the shape "Key: Value\n". Keys are stored lowercased
 %% for case-insensitive lookup.
@@ -707,10 +715,13 @@ parse_header_line(Line) ->
             []
     end.
 
+-spec classify_charset_from_content_type(binary()) ->
+    {ok, utf8 | latin1 | us_ascii} | {error, {unsupported_charset, binary()}}.
 classify_charset_from_content_type(<<>>) ->
     {ok, utf8};
 classify_charset_from_content_type(ContentType) ->
-    %% Same `chardata() -> binary()` narrow as `find_charset_line/1`.
+    %% Narrow `chardata() -> binary()` at the boundary so `binary:match/2`
+    %% is type-checked.
     Lower = to_binary(string:lowercase(ContentType)),
     case binary:match(Lower, <<"charset=">>) of
         nomatch ->

@@ -12,6 +12,9 @@
 -export([
     header_minimal_utf8/1,
     header_unsupported_charset/1,
+    header_unsupported_charset_space_before_colon/1,
+    header_supported_charset_space_before_colon/1,
+    header_unsupported_charset_tab_before_colon/1,
     header_latin1/1,
     header_missing_content_type/1,
     bom_utf8_stripped/1,
@@ -81,6 +84,9 @@ all() ->
     [
         header_minimal_utf8,
         header_unsupported_charset,
+        header_unsupported_charset_space_before_colon,
+        header_supported_charset_space_before_colon,
+        header_unsupported_charset_tab_before_colon,
         header_latin1,
         header_missing_content_type,
         bom_utf8_stripped,
@@ -190,6 +196,55 @@ header_unsupported_charset(_Config) ->
     >>,
     ?assertEqual(
         {error, {unsupported_charset, <<"SHIFT_JIS">>}},
+        erli18n_po:parse(Bin)
+    ).
+
+%% Finding #5 (po-header-malformed-content-type-badmatch-crash): a
+%% `Content-Type` header with a SINGLE SPACE before the colon must
+%% surface a structured `{error, {unsupported_charset, _}}` for an
+%% unsupported charset — never a `badmatch` crash. Before the fix the
+%% two charset detection paths diverged: the prepass `find_charset_line`
+%% required the literal `content-type:` substring (no space), so it
+%% missed this line and fell through to the default utf8, while
+%% `build_header`'s field parser trimmed the key to `content-type`,
+%% classified the charset, hit `{error,_}` on the non-exhaustive
+%% `{ok,Charset} =` match, and crashed the loader gen_server.
+header_unsupported_charset_space_before_colon(_Config) ->
+    Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type : text/plain; charset=Shift_JIS\\n\"\n"
+    >>,
+    ?assertEqual(
+        {error, {unsupported_charset, <<"Shift_JIS">>}},
+        erli18n_po:parse(Bin)
+    ).
+
+%% Companion to the above: a SUPPORTED charset with a space before the
+%% colon must parse OK and detect the declared charset (latin1 here),
+%% proving the prepass and `build_header` now AGREE on the same
+%% whitespace-tolerant field parse instead of diverging. Before the fix
+%% the prepass missed the spaced `Content-Type ` line and defaulted to
+%% utf8, so the charset was silently wrong.
+header_supported_charset_space_before_colon(_Config) ->
+    Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type : text/plain; charset=ISO-8859-1\\n\"\n"
+    >>,
+    {ok, Catalog} = erli18n_po:parse(Bin),
+    ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
+
+%% A TAB before the colon is another adversarial spacing the literal
+%% prepass matcher missed. Same contract: structured error, no crash.
+header_unsupported_charset_tab_before_colon(_Config) ->
+    Bin = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type\t: text/plain; charset=Shift_JIS\\n\"\n"
+    >>,
+    ?assertEqual(
+        {error, {unsupported_charset, <<"Shift_JIS">>}},
         erli18n_po:parse(Bin)
     ).
 
