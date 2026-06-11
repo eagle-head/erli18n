@@ -1,5 +1,20 @@
 -module(erli18n_po).
 
+-moduledoc """
+Parser e serializador do formato GNU gettext PO/POT.
+
+Implementa um descida-recursiva escrito a mao que honra as nove decisoes de
+semantica PO (PSD-001..009): detecta e normaliza o charset declarado no
+`Content-Type` do header (utf8 | latin1 | us_ascii), descarta entradas fuzzy e
+obsoletas por padrao, separa `msgctxt` do `msgid`, preserva `Plural-Forms` cru
+e valida o conjunto de indices `msgstr[N]` contra `nplurals`. Erros de parsing
+viram `parse_error()` estruturados (charset nao suportado, conversao,
+divergencia de plural, `syntax_error` por linha, erro de arquivo) — nunca
+crashes silenciosos. O decode de escapes (`\\xHH`/`\\OOO`) e transcodificado
+pelo charset declarado antes do gate UTF-8, e `dump/1` faz o caminho inverso
+para roundtrip.
+""".
+
 %% Public API.
 -export([
     parse/1,
@@ -159,10 +174,37 @@
 %% Public API
 %% =========================
 
+-doc """
+Faz o parse de um catalogo PO a partir de um binario, com opcoes padrao
+(`include_fuzzy => false`).
+
+Equivale a `parse(Bin, #{})`. Retorna `{ok, parsed_catalog()}` com o header
+normalizado e a lista de entradas (na ordem do arquivo), ou
+`{error, parse_error()}` se o charset for invalido, a conversao falhar, houver
+erro de sintaxe ou os indices de plural divergirem de `nplurals`.
+""".
 -spec parse(binary()) -> {ok, parsed_catalog()} | {error, parse_error()}.
 parse(Bin) ->
     parse(Bin, #{}).
 
+-doc """
+Faz o parse de um catalogo PO a partir de um binario, respeitando `Opts`.
+
+`Bin` e o conteudo bruto do `.po`; `Opts` e um `parse_opts()` — hoje so
+`include_fuzzy => boolean()` (default `false`: entradas marcadas `#, fuzzy` sao
+descartadas, parity com `msgfmt`). O fluxo: (1) strip silencioso do BOM UTF-8
+(PSD-005); (2) prepass que extrai o charset do header `Content-Type` via o mesmo
+reconciliador de campos do `build_header/1`, garantindo que prepass e builder
+nunca divirjam (finding #5 — fecha o `badmatch` em `Content-Type ` com espaco
+antes do `:`); (3) normaliza o corpo inteiro para UTF-8 no charset descoberto;
+(4) parse linha-a-linha com o charset threaded para que escapes `\\xHH`/`\\OOO`
+sejam transcodificados pelo code space correto.
+
+Retorna `{ok, parsed_catalog()}` (`#{header => header_map(), entries =>
+[entry()]}`) ou `{error, parse_error()}`. Sem header explicito, sintetiza um
+header vazio com charset `utf8`. Aceita finais de linha LF, CRLF e lone-CR
+(finding #15).
+""".
 -spec parse(binary(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
 parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
@@ -187,11 +229,25 @@ parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
             Err
     end.
 
+-doc """
+Le e faz o parse de um arquivo `.po` do disco, com opcoes padrao.
+
+Equivale a `parse_file(Path, #{})`. Le `Path` com `file:read_file/1` e delega a
+`parse/2`. Erros de leitura viram `{error, {file_error, file_read_error()}}`.
+""".
 -spec parse_file(file:filename()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
 parse_file(Path) ->
     parse_file(Path, #{}).
 
+-doc """
+Le e faz o parse de um arquivo `.po` do disco, respeitando `Opts`.
+
+Le `Path` com `file:read_file/1`; em caso de sucesso delega o binario a
+`parse/2` com `Opts` (ver `parse/2` para a semantica das opcoes e do retorno).
+Se a leitura falhar, retorna `{error, {file_error, Posix}}`, onde `Posix`
+percorre `file:posix() | badarg | terminated | system_limit`.
+""".
 -spec parse_file(file:filename(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
 parse_file(Path, Opts) ->
@@ -200,6 +256,18 @@ parse_file(Path, Opts) ->
         {error, Posix} -> {error, {file_error, Posix}}
     end.
 
+-doc """
+Serializa um `parsed_catalog()` de volta para o texto PO (binario UTF-8).
+
+Emite primeiro o bloco de header (`msgid ""` / `msgstr ""` mais o `raw` do
+header, ou um header minimo `Content-Type: text/plain; charset=UTF-8` quando o
+`raw` esta vazio ou ausente) e depois cada entrada. Entradas `singular`
+produzem `msgctxt`/`msgid`/`msgstr`; entradas `plural` re-emitem o
+`msgid_plural` retido (finding #14 — quando ele e `undefined`, o `msgid`
+singular e usado como stand-in) e uma linha `msgstr[N]` por forma. As strings
+sao re-escapadas (`\\\\`, `\\"`, `\\n`, `\\t`, `\\r`) para que `parse(dump(C))`
+preserve o catalogo. Funcao total: sempre retorna um `binary()`.
+""".
 -spec dump(parsed_catalog()) -> binary().
 dump(#{header := Header, entries := Entries}) ->
     HeaderBin = dump_header(Header),

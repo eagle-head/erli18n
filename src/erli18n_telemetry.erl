@@ -1,5 +1,17 @@
 -module(erli18n_telemetry).
 
+-moduledoc """
+Wrapper fino sobre a biblioteca `:telemetry` para a observabilidade do
+erli18n. Encapsula a presença/ausência do módulo `telemetry` em runtime —
+quando ele não está carregado, `emit/3` e `span/3` viram no-ops sem crash —,
+centraliza os nomes de evento (`event_*/0`) como contrato público da
+superfície de observabilidade, faz o gating opt-in dos eventos de alta
+frequência de lookup (flag de app env `emit_lookup_telemetry`) e oferece o
+check de memory_warning rate-limited (no máximo uma emissão por janela
+configurada). O resultado do `code:ensure_loaded(telemetry)` é cacheado em
+`persistent_term` (sticky em caso positivo).
+""".
+
 %% ============================================================================
 %%  erli18n_telemetry — thin wrapper over the `:telemetry` library.
 %%
@@ -121,30 +133,37 @@
 %% Event names
 %% =========================
 
+-doc "Nome do evento de span de carga de catálogo: `[erli18n, catalog, load]`.".
 -spec event_catalog_load() -> event_name().
 event_catalog_load() ->
     [erli18n, catalog, load].
 
+-doc "Nome do evento de span de recarga atômica de catálogo: `[erli18n, catalog, reload]`.".
 -spec event_catalog_reload() -> event_name().
 event_catalog_reload() ->
     [erli18n, catalog, reload].
 
+-doc "Nome do evento de descarregamento de catálogo: `[erli18n, catalog, unload]`.".
 -spec event_catalog_unload() -> event_name().
 event_catalog_unload() ->
     [erli18n, catalog, unload].
 
+-doc "Nome do evento de miss de lookup (alta frequência, opt-in): `[erli18n, lookup, miss]`.".
 -spec event_lookup_miss() -> event_name().
 event_lookup_miss() ->
     [erli18n, lookup, miss].
 
+-doc "Nome do evento de skip de entrada fuzzy no lookup (alta frequência, opt-in): `[erli18n, lookup, fuzzy_skip]`.".
 -spec event_lookup_fuzzy_skip() -> event_name().
 event_lookup_fuzzy_skip() ->
     [erli18n, lookup, fuzzy_skip].
 
+-doc "Nome do evento de aviso de divergência de plural: `[erli18n, plural, divergence_warning]`.".
 -spec event_plural_divergence() -> event_name().
 event_plural_divergence() ->
     [erli18n, plural, divergence_warning].
 
+-doc "Nome do evento de aviso de memória (rate-limited): `[erli18n, catalog, memory_warning]`.".
 -spec event_catalog_memory_warning() -> event_name().
 event_catalog_memory_warning() ->
     [erli18n, catalog, memory_warning].
@@ -157,6 +176,13 @@ event_catalog_memory_warning() ->
 %% `erlang:apply/3` indirection is intentional: dialyzer treats the call
 %% as an unknown remote function when `telemetry` is genuinely absent
 %% from the PLT, which matches the runtime story exactly.
+-doc """
+Emite um evento pontual de telemetry. `EventName` é o nome do evento (lista de
+átomos, ex.: um dos `event_*/0`), `Measurements` o mapa de medições e
+`Metadata` o mapa de metadados. Se a biblioteca `telemetry` estiver carregada,
+delega para `telemetry:execute/3`; caso contrário é um no-op seguro. Retorna
+sempre `ok`.
+""".
 -spec emit(event_name(), measurements(), metadata()) -> ok.
 emit(EventName, Measurements, Metadata) when
     is_list(EventName), is_map(Measurements), is_map(Metadata)
@@ -192,6 +218,17 @@ emit(EventName, Measurements, Metadata) when
 %% No-op path (telemetry absent): we still run Fun (otherwise the lib
 %% would behave differently with vs without telemetry — unacceptable).
 %% We discard StopMetadata because there's nothing to emit it to.
+-doc """
+Executa `Fun` instrumentado como um span de telemetry, seguindo o contrato de
+`telemetry:span/3`. `EventPrefix` é o prefixo do evento, `StartMetadata` os
+metadados iniciais e `Fun` uma fun/0 que DEVE retornar `{Result, StopMetadata}`.
+
+Com `telemetry` carregado, delega a `telemetry:span/3`, que emite os eventos
+`start`/`stop` (ou `exception` em caso de erro) com as medições de tempo
+padrão. Sem `telemetry`, ainda executa `Fun` (para que o comportamento da lib
+seja idêntico com e sem telemetry), descartando `StopMetadata`. Em ambos os
+caminhos retorna o `Result` produzido por `Fun`.
+""".
 -spec span(event_name(), metadata(), span_fun()) -> span_result().
 span(EventPrefix, StartMetadata, Fun) when
     is_list(EventPrefix), is_map(StartMetadata), is_function(Fun, 0)
@@ -219,6 +256,12 @@ span(EventPrefix, StartMetadata, Fun) when
 %% overhead. See observability.md §6 ("a flag elimina o overhead de
 %% handler attached, não o overhead de lookup da flag — esse é o limite
 %% teórico do design").
+-doc """
+Indica se os eventos de lookup de alta frequência (`miss`/`fuzzy_skip`) estão
+habilitados, lendo a flag de app env `emit_lookup_telemetry` (default `false`,
+opt-in). Retorna `true`/`false`; um valor não-booleano configurado é erro de
+configuração e provoca crash explícito (`{invalid_config, ...}`).
+""".
 -spec lookup_telemetry_enabled() -> boolean().
 lookup_telemetry_enabled() ->
     case application:get_env(erli18n, emit_lookup_telemetry, false) of
@@ -229,6 +272,12 @@ lookup_telemetry_enabled() ->
 
 %% Bytes threshold for memory_warning. Default 100 MiB matches the
 %% sys.config example in observability.md §4.
+-doc """
+Limiar em bytes de uso de ETS acima do qual o memory_warning é elegível.
+Lê a app env `memory_warning_threshold` (default `104857600`, 100 MiB).
+Retorna um `non_neg_integer()`; valor inválido provoca crash
+(`{invalid_config, ...}`).
+""".
 -spec memory_warning_threshold() -> non_neg_integer().
 memory_warning_threshold() ->
     case application:get_env(erli18n, memory_warning_threshold, 104857600) of
@@ -241,6 +290,11 @@ memory_warning_threshold() ->
     end.
 
 %% Window (seconds) between successive memory_warning emits.
+-doc """
+Janela (em segundos) entre emissões sucessivas de memory_warning. Lê a app env
+`memory_warning_rate_limit_seconds` (default `60`). Retorna um
+`non_neg_integer()`; valor inválido provoca crash (`{invalid_config, ...}`).
+""".
 -spec memory_warning_rate_limit_seconds() -> non_neg_integer().
 memory_warning_rate_limit_seconds() ->
     case application:get_env(erli18n, memory_warning_rate_limit_seconds, 60) of
@@ -266,6 +320,21 @@ memory_warning_rate_limit_seconds() ->
 %% from any process. The cost of storing a single integer is one VM
 %% global GC at update time — acceptable because the update only happens
 %% on actual emit (rare, by design).
+-doc """
+Inspeciona o `MemInfo` fornecido e emite no máximo um evento
+`[erli18n, catalog, memory_warning]` quando o `ets_bytes` ultrapassa o limiar
+(`memory_warning_threshold/0`) E a janela de rate-limit
+(`memory_warning_rate_limit_seconds/0`) já decorreu desde a última emissão. A
+âncora de rate-limit é mantida em `persistent_term` (lock-free a partir de
+qualquer processo) e só é atualizada na emissão efetiva.
+
+Retorna:
+- `not_warned` — limiar não cruzado;
+- `rate_limited` — limiar cruzado, mas ainda dentro da janela desde o último aviso;
+- `warned` — um evento de memory_warning acabou de ser emitido (com medições
+  `ets_bytes`/`threshold_bytes`/`num_catalogs`/`num_keys` e metadado
+  `domain_locales_sample` de até 10 pares `{Domain, Locale}`).
+""".
 -spec memory_warning_check(map()) -> not_warned | rate_limited | warned.
 memory_warning_check(MemInfo) when is_map(MemInfo) ->
     Threshold = memory_warning_threshold(),
@@ -341,6 +410,11 @@ collect_domain_locales_sample() ->
 
 %% Clear both caches so a test can simulate a fresh VM. Not part of the
 %% documented API.
+-doc """
+Apenas para testes: limpa os caches em `persistent_term` (check de telemetry
+carregada e âncora de rate-limit do memory_warning) para simular uma VM nova.
+Não faz parte da superfície de API documentada. Retorna `ok`.
+""".
 -spec reset_caches() -> ok.
 reset_caches() ->
     _ = persistent_term:erase(?LOADED_KEY),

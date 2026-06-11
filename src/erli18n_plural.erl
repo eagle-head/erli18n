@@ -1,5 +1,24 @@
 -module(erli18n_plural).
 
+-moduledoc """
+Avaliador e validador das regras de plural do gettext/CLDR usadas pelo
+erli18n.
+
+Compila a expressão C do cabeçalho `Plural-Forms:` de um `.po`
+(`nplurals=N; plural=EXPR;`) num pequeno AST e a avalia para escolher a
+forma plural de um dado N — é o que sustenta `ngettext`/`npgettext`. O
+cabeçalho do `.po` é a fonte-de-verdade em runtime (PSD-004); a tabela
+CLDR embutida (~45 locales, `cldr_rule/1`) é consultada apenas no load
+para emitir avisos de divergência e como fallback quando o cabeçalho
+falta.
+
+Endurecido para entrada não-confiável (ADR-0003): `compile/1` roda
+fail-closed com limites de tamanho/profundidade/nós e rejeita regras
+estaticamente faltosas, enquanto `evaluate/2` é TOTAL (nunca levanta) —
+faz clamp à forma 0 e coage divisão/módulo por zero a 0, espelhando o
+runtime do GNU libintl.
+""".
+
 %% Evaluator for the GNU gettext `Plural-Forms:` header C-expression
 %% (per https://www.gnu.org/software/gettext/manual/gettext.html#Translating-plural-forms)
 %% and CLDR-canonical-rule validator
@@ -216,9 +235,32 @@
 %% Public API
 %% =========================
 
-%% Compile a `.po` Plural-Forms header expression into a callable AST
-%% bundle. The bundle is what gets stored in the per-locale catalog map
-%% and is reused for every `evaluate/2` lookup.
+-doc """
+Compila a expressão do cabeçalho `Plural-Forms:` de um `.po` num bundle
+`plural_compiled()` (mapa `nplurals`/`expr`/`raw`) reutilizado por cada
+`evaluate/2`.
+
+`Header` é a string do cabeçalho (`nplurals=N; plural=EXPR;`); os campos
+são localizados de forma tolerante a espaços. Retorna `{ok, Compiled}` ou
+`{error, compile_error()}`, sempre fail-closed (nunca levanta), pois roda
+sobre `.po` não-confiável dentro do `handle_call` do gen_server.
+
+Rejeições estruturais relevantes:
+- `{expr_too_long, Size, Max}` — expressão acima de `?PLURAL_EXPR_MAX_BYTES`
+  (2048), recusada antes do parsing;
+- `{expr_too_deep, Depth, Pos}` — aninhamento acima de
+  `?PLURAL_EXPR_MAX_DEPTH` (64);
+- `{expr_too_complex, Nodes, Max}` — AST com mais nós que `?AST_MAX_NODES`
+  (256), barrando cadeias planas largas (`n*n*...*n`) que cresceriam um
+  bignum por lookup;
+- `{unsafe_plural_rule, Reason}` — regra ESTATICAMENTE faltosa: divisão/
+  módulo por divisor constante 0, ou regra constante cuja forma cai fora
+  de `[0, NPlurals)`. Casos que só falham para um N específico ficam para
+  o clamp dinâmico de `evaluate/2`;
+- `{nplurals_too_many_digits, _, _}`, `{nplurals_out_of_range, _}`,
+  `{missing_nplurals, _}`, `{missing_plural_expr, _}` e `{syntax_error,
+  Reason, Pos}` para os demais defeitos do cabeçalho.
+""".
 -spec compile(binary()) -> {ok, plural_compiled()} | {error, compile_error()}.
 compile(Header) when is_binary(Header) ->
     case extract_nplurals(Header) of
@@ -289,15 +331,38 @@ compile_validated(Header, NPlurals, Ast) ->
 %% The `-spec` is therefore HONEST: the result is provably
 %% `non_neg_integer()` for every N and every AST. Callers that want to
 %% OBSERVE the anomaly as data use `evaluate_checked/2` instead.
+-doc """
+Avalia uma regra de plural compilada para um dado `N` e devolve o índice
+da forma plural — função TOTAL do caminho quente, usada por cada
+`ngettext`/`npgettext`.
+
+`Compiled` é o bundle de `compile/1`; `N` é a contagem (inteiro, pode ser
+negativo — a regra decide a semântica). O retorno é sempre um
+`non_neg_integer()` em `[0, NPlurals)`: a regra é interpretada e o
+resultado coagido a inteiro.
+
+Nunca levanta, mesmo sobre regra malformada (paridade com GNU libintl):
+divisão/módulo por zero é coagida a 0 (`eval_div/2`/`eval_rem/2` em vez de
+deixar `div`/`rem` lançar `badarith`) e uma forma fora de `[0, NPlurals)`
+sofre clamp para 0 (`if index >= nplurals -> index = 0`).
+""".
 -spec evaluate(plural_compiled(), integer()) -> non_neg_integer().
 evaluate(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
     Form = to_integer(eval_ast(Ast, N)),
     clamp_form(Form, NPlurals).
 
-%% Structured sibling of `evaluate/2`: instead of clamping silently, it
-%% reports a malformed rule as `{error, plural_eval_error()}` so a
-%% consumer can log/alert on the anomaly. Still total — never raises.
-%% (Finding #1, Layer 2.)
+-doc """
+Irmã estruturada de `evaluate/2`: em vez de fazer clamp silencioso,
+reporta uma regra malformada como dado para que o consumidor possa
+logar/alertar.
+
+`Compiled` e `N` são como em `evaluate/2`. Retorna `{ok, Form}` com a
+forma em `[0, NPlurals)`, ou `{error, plural_eval_error()}`:
+`{division_by_zero, '/' | '%'}` quando o divisor avaliado é 0, ou
+`{form_out_of_range, Form, NPlurals}` quando a forma sai da faixa. Mantém
+o curto-circuito de `&&`/`||` (um divisor zero atrás de ramo falso não é
+reportado) e, como `evaluate/2`, é total — nunca levanta.
+""".
 -spec evaluate_checked(plural_compiled(), integer()) ->
     {ok, non_neg_integer()} | {error, plural_eval_error()}.
 evaluate_checked(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
@@ -321,9 +386,14 @@ clamp_form(Form, NPlurals) when Form >= 0, Form < NPlurals ->
 clamp_form(_Form, _NPlurals) ->
     0.
 
-%% Convenience: compile + evaluate in one go. Re-parses every call, so
-%% this is intended for one-off use; callers on the hot path should
-%% `compile/1` once at load and store the result.
+-doc """
+Conveniência que compila e avalia num só passo: dado o cabeçalho bruto
+`Header` e a contagem `N`, retorna `{ok, Form}` ou propaga o
+`{error, compile_error()}` de `compile/1`.
+
+Recompila a cada chamada, então é para uso pontual; no caminho quente,
+chame `compile/1` uma vez no load e reuse o bundle com `evaluate/2`.
+""".
 -spec plural_by_po_header(binary(), integer()) ->
     {ok, non_neg_integer()} | {error, compile_error()}.
 plural_by_po_header(Header, N) when is_binary(Header), is_integer(N) ->
@@ -332,11 +402,16 @@ plural_by_po_header(Header, N) when is_binary(Header), is_integer(N) ->
         {error, _} = E -> E
     end.
 
-%% Look up the CLDR canonical Plural-Forms expression for a locale. The
-%% returned binary is the canonical `nplurals=N; plural=EXPR;` header
-%% string equivalent to the CLDR rule for that locale. Locale matches
-%% are case-sensitive; region tags fall back to the base language tag
-%% if the region itself is not in the table (e.g. `fr_CA` -> `fr`).
+-doc """
+Procura a expressão canônica CLDR de plural para `Locale` na tabela
+embutida.
+
+Retorna `{ok, Expr}`, onde `Expr` é o binário da expressão C de plural
+equivalente à regra CLDR daquele locale, ou `undefined` se nem o locale
+nem sua língua-base estiverem na tabela. O casamento é sensível a
+maiúsculas; tags de região caem na língua-base quando a própria região
+não está listada (ex.: `fr_CA` -> `fr`).
+""".
 -spec cldr_rule(binary()) -> {ok, binary()} | undefined.
 cldr_rule(Locale) when is_binary(Locale) ->
     case lookup_locale(Locale) of
@@ -360,12 +435,23 @@ cldr_rule(Locale) when is_binary(Locale) ->
 %% in a way that would affect runtime form selection. Per PSD-004 the
 %% header always wins at runtime — this only produces observability.
 %%
-%% This binary-string form is the convenience entry point (callers that
-%% have only the raw header). It compiles the header ONCE and then defers
-%% to `validate_against_cldr_ast/2`. The catalog loader, which already
-%% holds the compiled bundle, MUST use `validate_against_cldr_ast/2`
-%% directly so the header is never recompiled on the load path
-%% (finding #17, compute-divergence-recompiles-header-and-cldr-each-load).
+-doc """
+Compara a expressão de plural do cabeçalho `HeaderRule` (forma bruta)
+contra a regra canônica CLDR de `Locale`, produzindo apenas
+observabilidade — em runtime o cabeçalho sempre vence (PSD-004).
+
+Compila `HeaderRule` UMA vez e delega a `validate_against_cldr_ast/2`.
+Retorna `ok` quando os ASTs `(nplurals, expr)` são estruturalmente
+iguais (insensível a espaços/parênteses) ou quando o locale não tem
+entrada CLDR; retorna
+`{warning, {plural_divergence, Locale, HeaderRule, CldrRaw}}` quando
+divergem — inclusive quando o cabeçalho é inválido mas o locale consta no
+CLDR.
+
+Ponto de entrada de conveniência para quem só tem o cabeçalho bruto. O
+loader de catálogo, que já guarda o bundle compilado, deve usar
+`validate_against_cldr_ast/2` para não recompilar o cabeçalho no load.
+""".
 -spec validate_against_cldr(binary(), binary()) ->
     ok
     | {warning, {plural_divergence, binary(), binary(), binary()}}.
@@ -400,6 +486,18 @@ validate_against_cldr(Locale, HeaderRule) when
 %% old `ast_equivalent/2` computed, but with both sides already parsed.
 %% The warning payload keeps the raw header string (the bundle's `raw`
 %% field) and the raw CLDR expression, matching `validate_against_cldr/2`.
+-doc """
+Variante baseada em AST de `validate_against_cldr/2`: recebe o bundle JÁ
+compilado (`plural_compiled()`) e compara contra a regra CLDR de `Locale`
+sem recompilar nada (finding #17).
+
+Reusa o AST do cabeçalho como está e toma o lado CLDR de uma tabela
+memoizada de bundles compilados, então nenhuma regra é re-parseada no
+load. Retorna `ok` se os pares `(nplurals, expr)` coincidem ou se o locale
+não tem entrada CLDR; caso contrário
+`{warning, {plural_divergence, Locale, HeaderRaw, CldrRaw}}`, com o
+cabeçalho bruto (campo `raw` do bundle) e a expressão CLDR bruta.
+""".
 -spec validate_against_cldr_ast(binary(), plural_compiled()) ->
     ok
     | {warning, {plural_divergence, binary(), binary(), binary()}}.
@@ -418,10 +516,13 @@ validate_against_cldr_ast(Locale, #{nplurals := NH, expr := EH, raw := HeaderRaw
             end
     end.
 
-%% Fallback rule used when a `.po` catalog ships without any
-%% `Plural-Forms:` header at all (degenerate-but-tolerated input). This
-%% is the C / English Germanic default explicitly cited by the GNU
-%% gettext manual ("Translating plural forms" §"Plural forms").
+-doc """
+Regra de plural de fallback usada quando um catálogo `.po` não traz
+nenhum cabeçalho `Plural-Forms:` (entrada degenerada mas tolerada).
+
+Retorna `<<"nplurals=2; plural=n != 1;">>` — o default Germânico do C/
+inglês citado pelo manual do GNU gettext (§"Plural forms").
+""".
 -spec fallback_rule() -> binary().
 fallback_rule() ->
     <<"nplurals=2; plural=n != 1;">>.

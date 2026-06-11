@@ -21,6 +21,25 @@
 %% the way back up.
 -module(erli18n_table_owner).
 
+-moduledoc """
+Dono dedicado e longevo da tabela ETS de catálogos (`?ETS_TABLE`).
+
+Separa *propriedade* de *mutação* da tabela. O dono cria a tabela
+`protected`/`named_table` mantendo a si mesmo como `heir`, entrega-a ao
+worker (`erli18n_server`) via `ets:give_away/3` e a reaver — com todas as
+linhas intactas — quando o worker morre, recebendo o `{'ETS-TRANSFER', ...}`
+e aguardando o próximo `claim` do worker reiniciado.
+
+Padrão owner/heir (Finding #10): como a tabela é destruída pelo ETS quando
+seu dono morre, manter o worker (único mutador, processo mais propenso a
+crash) como dono perderia todos os catálogos a cada crash. Com o dono
+dedicado como heir e a topologia `rest_for_one` do `erli18n_sup` (dono
+antes do worker), um crash do worker NÃO derruba o dono: a tabela retorna
+ao heir e é repassada ao worker reiniciado, sobrevivendo ao crash. O worker
+continua o único writer (tabela `protected`); o dono nada muta, minimizando
+sua superfície de crash.
+""".
+
 -behaviour(gen_server).
 
 -include("erli18n.hrl").
@@ -43,6 +62,11 @@
     worker := undefined | {pid(), reference()}
 }.
 
+-doc """
+Inicia o gen_server dono da tabela, registrado localmente sob `?TABLE_OWNER`.
+Em `init/1` o dono cria a tabela ETS de catálogos e a mantém como heir.
+Retorna o resultado padrão de `gen_server:start_link/4`.
+""".
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
     gen_server:start_link({local, ?TABLE_OWNER}, ?MODULE, [], []).
@@ -51,10 +75,26 @@ start_link() ->
 %% the table over via `give_away/3'. Synchronous — once it returns `ok'
 %% the initial `'ETS-TRANSFER'' is (or is about to be) in the caller's
 %% mailbox. The owner only gives the table to a live, local worker.
+-doc """
+Chamada pelo `erli18n_server` dentro do próprio `init/1` para reivindicar a
+tabela: pede ao dono que a entregue via `ets:give_away/3` para o processo
+chamador (`self()`). Síncrona (`gen_server:call/3` com timeout `infinity`);
+ao retornar `ok` a mensagem `{'ETS-TRANSFER', ...}` inicial já está (ou está
+prestes a estar) na mailbox do chamador. O dono só entrega a um worker vivo
+e local.
+""".
 -spec claim_table() -> ok.
 claim_table() ->
     ok = gen_server:call(?TABLE_OWNER, {claim, self()}, infinity).
 
+-doc """
+Callback `gen_server:init/1`. CRIA a tabela ETS de catálogos (`?ETS_TABLE`)
+como `set`/`protected`/`named_table` com `read_concurrency`, `keypos` 1 e
+`{heir, self(), ?ETS_HEIR_DATA}`, fixando o dono como heir de si mesmo.
+Enquanto nenhum worker reivindicou a tabela, leituras já funcionam (tabela
+nomeada/protegida). Estado inicial sem worker: `#{table => Table,
+worker => undefined}`.
+""".
 -spec init([]) -> {ok, state()}.
 init([]) ->
     %% The owner CREATES the table and is its own heir. While no worker
@@ -70,6 +110,15 @@ init([]) ->
     ]),
     {ok, #{table => Table, worker => undefined}}.
 
+-doc """
+Callback `gen_server:handle_call/3`. Trata a mensagem `{claim, WorkerPid}`:
+descarta qualquer monitor de worker antigo, monitora o novo worker e tenta
+`ets:give_away/3` para ele. Se o give_away vinga, guarda `{WorkerPid, Mon}`
+no estado; se o worker morreu na janela de handoff (`give_away` falha), solta
+o monitor e mantém a tabela com o dono (`worker => undefined`) — o supervisor
+reinicia o worker, que chamará `claim_table/0` de novo. Sempre responde `ok`
+no caminho de claim; qualquer outra call responde `{error, unknown_call}`.
+""".
 -spec handle_call(term(), gen_server:from(), state()) ->
     {reply, ok | {error, unknown_call}, state()}.
 handle_call({claim, WorkerPid}, _From, #{table := Table} = State) when
@@ -98,10 +147,28 @@ handle_call({claim, WorkerPid}, _From, #{table := Table} = State) when
 handle_call(_Other, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
+-doc """
+Callback `gen_server:handle_cast/2`. O dono não usa casts; ignora qualquer
+mensagem e mantém o estado inalterado.
+""".
 -spec handle_cast(term(), state()) -> {noreply, state()}.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+-doc """
+Callback `gen_server:handle_info/2`. Tratamento central do padrão owner/heir:
+
+- `{'ETS-TRANSFER', Table, _From, ?ETS_HEIR_DATA}`: o worker que segurava a
+  tabela morreu e o ETS devolveu a propriedade ao dono (heir) com TODAS as
+  linhas intactas. Solta o monitor do worker, loga `catalog_table_reclaimed`
+  e re-arma (`worker => undefined`) aguardando o próximo `claim`.
+- `{'DOWN', Mon, process, Pid, _}` do worker corrente: o `'DOWN'` pode chegar
+  antes do `'ETS-TRANSFER'`; não toca na tabela (o ETS a transfere), apenas
+  marca `worker => undefined` para evitar um give_away duplo.
+- Qualquer outra mensagem (de gerações antigas ou ruído): ignorada com
+  segurança, pois a tabela é nomeada e seu dono é sempre este processo ou o
+  worker vivo.
+""".
 -spec handle_info(term(), state()) -> {noreply, state()}.
 handle_info(
     {'ETS-TRANSFER', Table, _FromPid, ?ETS_HEIR_DATA},
@@ -135,6 +202,12 @@ handle_info(_Info, State) ->
     %% its current owner is always this process or the live worker.
     {noreply, State}.
 
+-doc """
+Callback `gen_server:terminate/2`. No-op. Se o dono cai, a tabela cai com ele
+(dono/heir), o que é aceitável: sob `rest_for_one` o worker (posterior) é
+reiniciado também e o novo dono recria a tabela. Como o dono nada muta, sua
+superfície de crash é mínima.
+""".
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, _State) ->
     %% If the OWNER goes down the table goes with it (it is the
@@ -143,6 +216,10 @@ terminate(_Reason, _State) ->
     %% table. The owner mutates nothing, so its crash surface is minimal.
     ok.
 
+-doc """
+Callback `gen_server:code_change/3`. Sem migração de estado; devolve o estado
+inalterado.
+""".
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
