@@ -1,0 +1,15 @@
+{
+  "name": "erli18n-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site for erli18n — gettext-compatible i18n for Erlang/OTP.",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.0"
+  }
+}
