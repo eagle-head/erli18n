@@ -33,7 +33,9 @@
     catalog_index_rebuilt_after_worker_kill/1,
     unload_uses_key_index_not_full_scan/1,
     load_pipeline_runs_in_caller_only_commit_in_server/1,
-    commit_honours_tunable_timeout/1
+    commit_honours_tunable_timeout/1,
+    lookup_plural_5_not_exported/1,
+    read_api_guards_reject_bad_args/1
 ]).
 
 all() ->
@@ -58,7 +60,9 @@ all() ->
         catalog_index_rebuilt_after_worker_kill,
         unload_uses_key_index_not_full_scan,
         load_pipeline_runs_in_caller_only_commit_in_server,
-        commit_honours_tunable_timeout
+        commit_honours_tunable_timeout,
+        lookup_plural_5_not_exported,
+        read_api_guards_reject_bad_args
     ].
 
 init_per_suite(Config) ->
@@ -110,25 +114,17 @@ insert_lookup_plural(_Config) ->
         <<"tree">>,
         Entries
     ),
+    %% Finding #16: the raw index-based plural read is internal now, so the
+    %% inserted form rows are asserted directly at the ETS layer (the row
+    %% that `insert_plural` writes). The form-aware public read is covered
+    %% by erli18n_loader_SUITE where a real Plural-Forms header exists.
     ?assertEqual(
         {ok, <<"un arbre">>},
-        erli18n_server:lookup_plural(
-            default,
-            <<"fr">>,
-            undefined,
-            <<"tree">>,
-            0
-        )
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
     ),
     ?assertEqual(
         {ok, <<"des arbres">>},
-        erli18n_server:lookup_plural(
-            default,
-            <<"fr">>,
-            undefined,
-            <<"tree">>,
-            1
-        )
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 1)
     ).
 
 insert_catalog_mixed(_Config) ->
@@ -160,13 +156,7 @@ insert_catalog_mixed(_Config) ->
     ),
     ?assertEqual(
         {ok, <<"arbres">>},
-        erli18n_server:lookup_plural(
-            default,
-            <<"fr">>,
-            undefined,
-            <<"tree">>,
-            1
-        )
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 1)
     ).
 
 lookup_missing_returns_undefined(_Config) ->
@@ -181,13 +171,7 @@ lookup_missing_returns_undefined(_Config) ->
     ),
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_plural(
-            default,
-            <<"fr">>,
-            undefined,
-            <<"tree">>,
-            0
-        )
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
     ).
 
 unload_removes_only_target(_Config) ->
@@ -224,13 +208,7 @@ unload_removes_only_target(_Config) ->
     ),
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_plural(
-            default,
-            <<"fr">>,
-            undefined,
-            <<"tree">>,
-            0
-        )
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
     ),
     ?assertEqual(
         {ok, <<"Hola">>},
@@ -726,7 +704,7 @@ unload_uses_key_index_not_full_scan(_Config) ->
     ),
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_plural(default, <<"fr">>, undefined, <<"tree">>, 0)
+        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
     ),
     %% Neighbour catalog is fully intact.
     ?assertEqual(
@@ -824,6 +802,86 @@ commit_honours_tunable_timeout(_Config) ->
     after
         ok = erli18n_server:unload(default, <<"timeout_cat">>),
         _ = file:delete(Path)
+    end.
+
+%% Finding #16 (lookup-plural-5-exported-footgun-bypasses-form-evaluation).
+%% `lookup_plural/5` did a raw, index-based ETS lookup with NO Plural-Forms
+%% evaluation. Exporting it next to the form-aware `lookup_plural_form/5`
+%% invited callers to pass the raw count N as the form index and silently
+%% receive the wrong plural form. The fix keeps `lookup_plural/5` internal:
+%% the only supported plural read on the public surface is the form-aware
+%% `lookup_plural_form/5`. Pin the minimal public Read API here.
+lookup_plural_5_not_exported(_Config) ->
+    Exported = erli18n_server:module_info(exports),
+    ?assertNot(lists:member({lookup_plural, 5}, Exported)),
+    %% The form-aware entry point stays public — it encapsulates the
+    %% locale-specific Plural-Forms evaluation the library exists to own.
+    ?assert(lists:member({lookup_plural_form, 5}, Exported)),
+    %% The remaining Read API stays public and stable.
+    ?assert(lists:member({lookup_singular, 4}, Exported)),
+    ?assert(lists:member({lookup_header, 2}, Exported)).
+
+%% Finding #16, guard-consistency class. `lookup_plural_form/5` always
+%% guarded its arguments, but `lookup_singular/4` (and the now-internal
+%% `lookup_plural/5`) did not: a malformed argument returned `undefined`
+%% (a silent miss) instead of crashing. Pin that the public read takes the
+%% same `is_atom`/`is_binary` guards, so a contract break is a loud
+%% `function_clause`, never a silent wrong/empty answer.
+read_api_guards_reject_bad_args(_Config) ->
+    %% The arguments below intentionally violate the published spec to
+    %% exercise the runtime guards. eqwalizer would (correctly) reject them
+    %% statically, so we cast each ill-typed value at the boundary — the
+    %% same pattern used by `ensure_loaded_accepts_binary_path/1`. At
+    %% runtime `eqwalizer:dynamic_cast/1` is the identity, so the guard is
+    %% still hit with the original bad value.
+    BadDomain = eqwalizer:dynamic_cast(<<"not_an_atom">>),
+    BadLocale = eqwalizer:dynamic_cast(fr),
+    BadContext = eqwalizer:dynamic_cast(menu),
+    BadMsgid = eqwalizer:dynamic_cast(hello),
+    %% Non-atom domain.
+    ?assertError(
+        function_clause,
+        erli18n_server:lookup_singular(
+            BadDomain, <<"fr">>, undefined, <<"Hello">>
+        )
+    ),
+    %% Non-binary locale.
+    ?assertError(
+        function_clause,
+        erli18n_server:lookup_singular(default, BadLocale, undefined, <<"Hello">>)
+    ),
+    %% Context that is neither `undefined` nor a binary.
+    ?assertError(
+        function_clause,
+        erli18n_server:lookup_singular(default, <<"fr">>, BadContext, <<"Hello">>)
+    ),
+    %% Non-binary msgid.
+    ?assertError(
+        function_clause,
+        erli18n_server:lookup_singular(default, <<"fr">>, undefined, BadMsgid)
+    ),
+    %% A well-formed call on the same shape still works (guards do not
+    %% reject valid input).
+    ?assertEqual(
+        undefined,
+        erli18n_server:lookup_singular(
+            default, <<"fr">>, undefined, <<"Missing">>
+        )
+    ).
+
+%% Finding #16: read a raw plural form row directly at the ETS layer. The
+%% form-aware `lookup_plural_form/5` requires a Plural-Forms header to map
+%% N -> form index; these insert-path unit cases write rows by index with no
+%% header, so they assert the stored row directly (mirrors the row shape
+%% `insert_plural` writes). `?ETS_TABLE`/`?PLURAL_KEY` come from erli18n.hrl.
+plural_row(Domain, Locale, Context, Msgid, Index) ->
+    case
+        ets:lookup(
+            ?ETS_TABLE, ?PLURAL_KEY(Domain, Locale, Context, Msgid, Index)
+        )
+    of
+        [{_, Translation}] -> {ok, Translation};
+        [] -> undefined
     end.
 
 %% Write a minimal valid .po (one singular "Hello" -> "Bonjour") to a unique

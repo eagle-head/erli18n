@@ -564,15 +564,18 @@ reload_replaces_catalog(Config) ->
             <<"Hello">>
         )
     ),
-    %% New plural present.
+    %% New plural present. Finding #16: read through the form-aware public
+    %% entry point. `plural_fr.po` pins `plural=n > 1`, so N=2 selects form 1
+    %% ("arbres") — the same row the raw index 1 used to address, but now via
+    %% the evaluated Plural-Forms rule.
     ?assertEqual(
         {ok, <<"arbres">>},
-        erli18n_server:lookup_plural(
+        erli18n_server:lookup_plural_form(
             default,
             <<"fr">>,
             undefined,
             <<"tree">>,
-            1
+            2
         )
     ),
     %% Header now reflects the new file path.
@@ -915,15 +918,17 @@ ensure_loaded_plural_empty_forms_list(Config) ->
     ),
     {ok, HeaderState} = erli18n_server:lookup_header(default, <<"empty_pl">>),
     ?assertEqual(1, maps:get(num_entries, HeaderState)),
-    %% No plural form rows were inserted (empty list).
+    %% No plural form rows were inserted (empty list). Finding #16: read via
+    %% the public form-aware entry point — with no rows present it returns
+    %% `undefined` for any count N (here N=1, the fallback form 0).
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_plural(
+        erli18n_server:lookup_plural_form(
             default,
             <<"empty_pl">>,
             undefined,
             <<"x">>,
-            0
+            1
         )
     ),
     %% Clean up the orphan header row so subsequent tests start clean.
@@ -1280,10 +1285,12 @@ ensure_loaded_many_equals_n_singles(Config) ->
             default, <<"bulk_a">>, undefined, <<"Hello">>
         )
     ),
+    %% Finding #16: form-aware read. `plural_fr.po` pins `plural=n > 1`, so
+    %% N=2 selects form 1 ("arbres").
     ?assertEqual(
         {ok, <<"arbres">>},
-        erli18n_server:lookup_plural(
-            default, <<"bulk_b">>, undefined, <<"tree">>, 1
+        erli18n_server:lookup_plural_form(
+            default, <<"bulk_b">>, undefined, <<"tree">>, 2
         )
     ),
     %% Idempotent re-run: both report {ok, already}.

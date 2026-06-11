@@ -16,9 +16,18 @@
 
 %% Read API (direct ETS lookup from caller process — lock-free hot path,
 %% per RISK-012 anti-bottleneck pattern).
+%%
+%% Finding #16 (lookup-plural-5-exported-footgun-bypasses-form-evaluation):
+%% the plural read is exposed ONLY through the form-aware
+%% `lookup_plural_form/5`, which evaluates the catalog's compiled
+%% `Plural-Forms` rule against the count N before reading the row. The raw,
+%% index-based `lookup_plural/5` is intentionally NOT exported: it requires
+%% the caller to already know the form index for N — the locale-specific
+%% knowledge this library exists to encapsulate — so exporting it invited
+%% callers to pass the count N as the index and silently get the wrong
+%% plural form. It remains an internal helper used by `lookup_plural_form/5`.
 -export([
     lookup_singular/4,
-    lookup_plural/5,
     lookup_header/2,
     lookup_plural_form/5
 ]).
@@ -237,17 +246,36 @@ insert_catalog(Domain, Locale, Entries) when
 unload(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
     ok = gen_server:call(?MODULE, {unload, Domain, Locale}).
 
+%% Finding #16: guarded so a malformed argument is a loud `function_clause`
+%% (a contract break) rather than a silent `undefined` miss — consistent
+%% with `lookup_plural_form/5`.
 -spec lookup_singular(domain(), locale(), context(), msgid()) ->
     {ok, translation()} | undefined.
-lookup_singular(Domain, Locale, Context, Msgid) ->
+lookup_singular(Domain, Locale, Context, Msgid) when
+    is_atom(Domain),
+    is_binary(Locale),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid)
+->
     case ets:lookup(?ETS_TABLE, ?SINGULAR_KEY(Domain, Locale, Context, Msgid)) of
         [{_, Translation}] -> {ok, Translation};
         [] -> undefined
     end.
 
+%% Internal (finding #16): raw, index-based plural read with NO Plural-Forms
+%% evaluation. Reached only from `lookup_plural_form/5`, which has already
+%% evaluated the compiled rule against N to produce `Index`. Guarded for the
+%% same loud-failure contract as the public reads.
 -spec lookup_plural(domain(), locale(), context(), msgid(), plural_index()) ->
     {ok, translation()} | undefined.
-lookup_plural(Domain, Locale, Context, Msgid, Index) ->
+lookup_plural(Domain, Locale, Context, Msgid, Index) when
+    is_atom(Domain),
+    is_binary(Locale),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_integer(Index),
+    Index >= 0
+->
     case ets:lookup(?ETS_TABLE, ?PLURAL_KEY(Domain, Locale, Context, Msgid, Index)) of
         [{_, Translation}] -> {ok, Translation};
         [] -> undefined
