@@ -53,7 +53,8 @@
     ensure_loaded_bounds_default_to_legacy/1,
     ensure_loaded_does_not_block_concurrent_load/1,
     ensure_loaded_many_equals_n_singles/1,
-    ensure_loaded_many_reports_errors_per_spec/1
+    ensure_loaded_many_reports_errors_per_spec/1,
+    ensure_loaded_unknown_posix_is_structured_not_crash/1
 ]).
 
 %% Custom logger handler callback used by with_log_capture/1 to assert
@@ -95,7 +96,8 @@ all() ->
         ensure_loaded_bounds_default_to_legacy,
         ensure_loaded_does_not_block_concurrent_load,
         ensure_loaded_many_equals_n_singles,
-        ensure_loaded_many_reports_errors_per_spec
+        ensure_loaded_many_reports_errors_per_spec,
+        ensure_loaded_unknown_posix_is_structured_not_crash
     ].
 
 init_per_suite(Config) ->
@@ -161,6 +163,107 @@ with_log_capture(Body) ->
 log(LogEvent, #{config := #{tab := Tab}}) ->
     ets:insert(Tab, {erlang:unique_integer(), LogEvent}),
     ok.
+
+%% Shadow `file:read_file/1` so it returns `{error, Posix}` for the duration
+%% of a single test, delegating every OTHER `file` function to the genuine
+%% kernel implementation. Used by
+%% `ensure_loaded_unknown_posix_is_structured_not_crash/1` to inject a
+%% synthetic posix atom that today's OTP would never produce, exercising the
+%% load-error boundary's totality over the OPEN `file:posix()` union.
+%%
+%% Mechanism (no external mocking library): rename a verbatim copy of the
+%% real kernel `file' beam to `erli18n_real_file', then load a generated
+%% `file' shim whose `read_file/1' returns the injected error and whose every
+%% other exported function forwards to `erli18n_real_file'. The original
+%% module table entry is restored from the saved beam by
+%% `remove_read_file_shim/0'.
+install_read_file_shim(Posix) ->
+    {file, Filename} = code:is_loaded(file),
+    {ok, OrigBin} = file:read_file(Filename),
+    persistent_term:put({?MODULE, file_shim}, {Filename, OrigBin}),
+    %% Resident copy of the real `file' under a private name for delegation.
+    {ok, RealBin} = rename_beam_module(OrigBin, erli18n_real_file),
+    code:purge(erli18n_real_file),
+    {module, erli18n_real_file} =
+        code:load_binary(erli18n_real_file, "erli18n_real_file.beam", RealBin),
+    Exports = erli18n_real_file:module_info(exports),
+    ShimBin = compile_file_shim(Posix, Exports),
+    code:unstick_mod(file),
+    code:purge(file),
+    {module, file} = code:load_binary(file, "file_shim.beam", ShimBin),
+    ok.
+
+%% Restore the genuine kernel `file' module from the saved beam.
+remove_read_file_shim() ->
+    {Filename, Bin} = persistent_term:get({?MODULE, file_shim}),
+    code:purge(file),
+    {module, file} = code:load_binary(file, Filename, Bin),
+    code:stick_mod(file),
+    code:purge(erli18n_real_file),
+    code:delete(erli18n_real_file),
+    persistent_term:erase({?MODULE, file_shim}),
+    ok.
+
+%% Rewrite the module atom inside a compiled beam so a verbatim copy of the
+%% real `file' can co-reside under a private name for delegation.
+rename_beam_module(Bin, NewName) ->
+    {ok, {file, [{abstract_code, {raw_abstract_v1, Forms0}}]}} =
+        beam_lib:chunks(Bin, [abstract_code]),
+    Forms = [rename_module_attr(F, NewName) || F <- Forms0],
+    {ok, NewName, NewBin} = compile:forms(Forms, [binary, report_errors]),
+    {ok, NewBin}.
+
+rename_module_attr({attribute, A, module, _Old}, NewName) ->
+    {attribute, A, module, NewName};
+rename_module_attr(Form, _NewName) ->
+    Form.
+
+%% Generate the `file' shim: `read_file/1' returns the injected posix error;
+%% every other export forwards to `erli18n_real_file'.
+compile_file_shim(Posix, Exports) ->
+    Header =
+        "-module(file).\n"
+        "-compile([export_all, nowarn_export_all]).\n"
+        "read_file(_Name) -> {error, " ++ atom_to_list(Posix) ++ "}.\n",
+    Delegations =
+        [
+            delegation_src(F, A)
+         || {F, A} <- Exports,
+            not ({F, A} =:= {read_file, 1}),
+            not ({F, A} =:= {module_info, 0}),
+            not ({F, A} =:= {module_info, 1})
+        ],
+    Src = Header ++ lists:flatten(Delegations),
+    {ok, Tokens, _} = erl_scan:string(Src),
+    Forms = [
+        begin
+            {ok, Fm} = erl_parse:parse_form(Ts),
+            Fm
+        end
+     || Ts <- split_forms(Tokens)
+    ],
+    {ok, file, Bin} = compile:forms(Forms, [binary, report_errors]),
+    Bin.
+
+%% Source for one forwarding clause: `f(A1, ..., An) -> erli18n_real_file:f(...).'
+delegation_src(F, 0) ->
+    atom_to_list(F) ++ "() -> erli18n_real_file:" ++ atom_to_list(F) ++ "().\n";
+delegation_src(F, A) ->
+    Args = string:join(["A" ++ integer_to_list(I) || I <- lists:seq(1, A)], ","),
+    atom_to_list(F) ++ "(" ++ Args ++ ") -> erli18n_real_file:" ++
+        atom_to_list(F) ++ "(" ++ Args ++ ").\n".
+
+%% Split a flat token list into per-form token lists on `dot' tokens.
+split_forms(Tokens) ->
+    split_forms(Tokens, [], []).
+
+split_forms([], _Acc, Forms) ->
+    lists:reverse(Forms);
+split_forms([{dot, _} = Dot | Rest], Acc, Forms) ->
+    Form = lists:reverse([Dot | Acc]),
+    split_forms(Rest, [], [Form | Forms]);
+split_forms([Tok | Rest], Acc, Forms) ->
+    split_forms(Rest, [Tok | Acc], Forms).
 
 %% =========================
 %% Test cases
@@ -258,6 +361,41 @@ ensure_loaded_file_not_found(_Config) ->
         undefined,
         erli18n_server:lookup_header(default, <<"fr">>)
     ).
+
+%% Findings #12 / #18: the load-orchestration error boundary must be TOTAL
+%% over `file:posix()`. `file:posix()` is an OPEN union — OTP may add new
+%% posix atoms in future releases (file.html documents it as such). The old
+%% narrowing tree enumerated the 47 atoms known at the time of writing and
+%% fell through to `narrow_posix(Other) -> error({unknown_posix_atom, Other})`,
+%% which converts a *benign, structured* file error into a CALLER CRASH for
+%% any atom outside that hand-maintained list — directly contradicting
+%% SECURITY.md ("parsing/IO errors must become structured errors, never
+%% crashes"). The gap is empty on today's OTP, so the branch is latent/dead;
+%% we make a future-posix atom deterministically reachable by shadowing
+%% `file:read_file/1` with a shim that returns `ecanceled` (a real Linux
+%% errno that is a valid `file:posix()` value but is NOT in the enumerated
+%% list). The public boundary must surface `{error, {file_error, ecanceled}}`
+%% and MUST NOT crash the caller.
+ensure_loaded_unknown_posix_is_structured_not_crash(_Config) ->
+    install_read_file_shim(ecanceled),
+    try
+        Result =
+            try
+                erli18n_server:ensure_loaded(
+                    default, <<"posix_gap">>, "/any/path/the/shim/intercepts.po"
+                )
+            catch
+                Class:Reason:_ ->
+                    {caller_crashed, Class, Reason}
+            end,
+        ?assertEqual({error, {file_error, ecanceled}}, Result),
+        ?assertEqual(
+            undefined,
+            erli18n_server:lookup_header(default, <<"posix_gap">>)
+        )
+    after
+        remove_read_file_shim()
+    end.
 
 ensure_loaded_invalid_po(Config) ->
     Path = fixture(Config, "invalid_syntax.po"),

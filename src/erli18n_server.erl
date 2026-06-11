@@ -513,9 +513,11 @@ ensure_loaded(Domain, Locale, PoPath, Opts) when
     },
     %% `erli18n_telemetry:span/3' is specced `span_result() = term()' — it
     %% returns the first element of the closure tuple, which is always our
-    %% `ensure_result()'. Narrow it back at the boundary so the public
-    %% contract stays statically typed.
-    narrow_ensure_result(
+    %% `ensure_result()' (proven at the origin: `do_ensure_loaded/4' has a
+    %% precise `-spec'). Re-announce that type at the boundary with one typed
+    %% cast (findings #12/#18): the value is dynamic only because `span/3'
+    %% erases it to `term()', not because we need to reconstruct it.
+    cast_ensure_result(
         erli18n_telemetry:span(
             erli18n_telemetry:event_catalog_load(),
             StartMeta,
@@ -583,9 +585,9 @@ reload(Domain, Locale, PoPath, Opts) when
         po_path => to_binary_path(PoPath),
         fuzzy_included => IncludeFuzzy
     },
-    %% See `ensure_loaded/4': narrow the `span_result() = term()' back to
-    %% `ensure_result()' at the boundary.
-    narrow_ensure_result(
+    %% See `ensure_loaded/4': re-announce the `span_result() = term()' as
+    %% `ensure_result()' at the boundary with one typed cast.
+    cast_ensure_result(
         erli18n_telemetry:span(
             erli18n_telemetry:event_catalog_reload(),
             StartMeta,
@@ -611,7 +613,7 @@ reload(Domain, Locale, PoPath, Opts) when
 -spec commit_call(commit_msg(), opts()) -> ensure_result().
 commit_call(Msg, Opts) ->
     Timeout = maps:get(timeout, Opts, 5000),
-    narrow_ensure_result(gen_server:call(?MODULE, Msg, Timeout)).
+    cast_ensure_result(gen_server:call(?MODULE, Msg, Timeout)).
 
 -type commit_msg() ::
     {commit, ensure | reload, domain(), locale(), staged()}.
@@ -634,7 +636,7 @@ ensure_loaded_many(Specs) when is_list(Specs) ->
             [] ->
                 [];
             [_ | _] ->
-                narrow_commit_many(
+                cast_commit_many(
                     gen_server:call(?MODULE, {commit_many, ToCommit})
                 )
         end,
@@ -675,289 +677,43 @@ partition_one({D, L, {prepared, {ok, Payload}}}, {Commit, Done}) ->
 partition_one({D, L, {prepared, {error, _} = Err}}, {Commit, Done}) ->
     {Commit, [{D, L, Err} | Done]}.
 
-%% Narrow the `term()` reply from the `{commit, ...}' / `{commit_many, ...}'
-%% `gen_server:call/2,3' to the public `ensure_result()' contract. The
-%% commit callbacks deterministically return one of the three shapes
-%% pattern-matched below — any other shape is a contract violation and
-%% crashes with function_clause.
--spec narrow_ensure_result(term()) -> ensure_result().
-narrow_ensure_result({ok, already}) ->
-    {ok, already};
-narrow_ensure_result({ok, N}) when is_integer(N), N >= 0 ->
-    {ok, N};
-narrow_ensure_result({error, Reason}) ->
-    %% `ensure_error()` is a union of structured shapes plus the
-    %% catch-all `{load_failed, term()}`. The server callbacks only emit
-    %% the structured shapes, so a bare `term()` from `gen_server:call/2`
-    %% safely re-classifies as `load_failed` if it doesn't match any
-    %% known structured tag — this also future-proofs the API against new
-    %% server-side error shapes leaking out untyped.
-    {error, classify_ensure_error(Reason)}.
+%% Findings #12 / #18 — single typed boundary cast (replaces the former
+%% ~245-LOC `narrow_*'/`classify_*'/`is_known_*' tree).
+%%
+%% A `gen_server:call/2,3' reply (and an `erli18n_telemetry:span/3' result)
+%% is specced `term()' in OTP because the callback module is resolved at
+%% RUNTIME — the type-checker cannot carry the `handle_call/3' reply type
+%% across the call. For `erli18n_server' the call is always same-node,
+%% same-module, synchronous: every reply is an `ensure_result()' (proven at
+%% the ORIGIN — `do_ensure_loaded/4', `do_commit/4', `do_commit_many/1' and
+%% `install_staged/3' all carry precise `-spec's). So the boundary only has
+%% to re-announce a type that is already proven server-side, not reconstruct
+%% it. We use `eqwalizer:dynamic_cast/1' (spec: `term() -> dynamic()'), the
+%% idiom eqwalizer prescribes for message-passing boundaries (`dynamic()' is
+%% both sub- and supertype of every type, so it flows into `ensure_result()'
+%% with no type error). The same primitive is already used elsewhere in this
+%% module (`dynamic_cast_index_keyset/1') and across `src/'.
+%%
+%% This deletes the old hand-maintained enumeration (a 48-clause
+%% `narrow_posix/1' restating the entire `file:posix()' set, plus the
+%% `is_known'/`narrow_known' twins re-listing `ensure_error()') and the two
+%% dead defensive crash branches it embedded — `narrow_posix(Other) ->
+%% error({unknown_posix_atom, _})' and the `{load_failed, _}' catch-all —
+%% which could only ever fire on a contract the server itself never produces,
+%% yet turned a benign structured `file:posix()' error into a CALLER CRASH
+%% (finding #18). `file:posix()' is an open union; the cast is total over it
+%% by construction, so a future OTP posix atom now flows through as a
+%% structured `{error, {file_error, _}}' instead of crashing.
+-spec cast_ensure_result(term()) -> ensure_result().
+cast_ensure_result(Reply) ->
+    eqwalizer:dynamic_cast(Reply).
 
-%% Narrow the `term()` reply from the bulk `{commit_many, _}' call to the
-%% per-spec result list. The server callback deterministically returns a
-%% list of `{Domain, Locale, ensure_result()}', but `gen_server:call/2' is
-%% specced `term()'; we re-validate each row at the boundary so the public
-%% contract is statically typed. Any element that does not match the
-%% expected shape is a contract break and crashes with function_clause.
--spec narrow_commit_many(term()) -> [{domain(), locale(), ensure_result()}].
-narrow_commit_many(Results) when is_list(Results) ->
-    [narrow_commit_many_row(Row) || Row <- Results].
-
--spec narrow_commit_many_row(term()) -> {domain(), locale(), ensure_result()}.
-narrow_commit_many_row({D, L, Result}) when is_atom(D), is_binary(L) ->
-    {D, L, narrow_ensure_result(Result)}.
-
--spec classify_ensure_error(term()) -> ensure_error().
-classify_ensure_error(Reason) ->
-    %% The server only emits one of the structured `ensure_error()`
-    %% shapes (see `do_load/4` and friends), but eqwalizer cannot prove
-    %% that through a `gen_server:call/2` reply (specced `term()`).
-    %% Validate the shape at the boundary: known structured tags pass
-    %% through verbatim; anything else is wrapped in `{load_failed, _}`
-    %% so the caller always sees a typed `ensure_error()`.
-    case is_known_ensure_error(Reason) of
-        true ->
-            %% Known structured shape — narrow via runtime check above.
-            narrow_known_ensure_error(Reason);
-        false ->
-            {load_failed, Reason}
-    end.
-
-%% Discriminator: a Reason value is a known `ensure_error()` shape iff
-%% it matches one of the union members below. Keep in sync with the
-%% `ensure_error()` type.
--spec is_known_ensure_error(term()) -> boolean().
-is_known_ensure_error({unsupported_charset, B}) when is_binary(B) -> true;
-is_known_ensure_error({charset_conversion, B, _}) when is_binary(B) -> true;
-is_known_ensure_error({plural_count_mismatch, M, _, G}) when
-    is_binary(M), is_list(G)
-->
-    true;
-is_known_ensure_error({syntax_error, L, _}) when is_integer(L), L > 0 -> true;
-is_known_ensure_error({file_error, _}) ->
-    true;
-is_known_ensure_error({plural_compile_error, _}) ->
-    true;
-%% Finding #6 bound errors. Emitted caller-side before any commit, so they
-%% normally never travel through `gen_server:call/2'; classified here for
-%% defence-in-depth so the boundary narrow stays total.
-is_known_ensure_error({input_too_large, B, L}) when
-    is_integer(B), B >= 0, is_integer(L), L >= 0
-->
-    true;
-is_known_ensure_error({too_many_entries, C, L}) when
-    is_integer(C), C >= 0, is_integer(L), L >= 0
-->
-    true;
-is_known_ensure_error({load_failed, _}) ->
-    true;
-is_known_ensure_error(_) ->
-    false.
-
-%% Pre-condition: `is_known_ensure_error(Reason) =:= true`. We rebuild
-%% the value with explicit constructors so eqwalizer sees the precise
-%% union member, not the inferred `term()` from the reply pattern.
--spec narrow_known_ensure_error(term()) -> ensure_error().
-narrow_known_ensure_error({unsupported_charset, B}) when is_binary(B) ->
-    {unsupported_charset, B};
-narrow_known_ensure_error({charset_conversion, B, T}) when is_binary(B) ->
-    {charset_conversion, B, T};
-narrow_known_ensure_error({plural_count_mismatch, M, E, G}) when
-    is_binary(M), is_integer(E), is_list(G)
-->
-    %% Strengthen the indices field to a list of non-negative integers
-    %% by re-validating. Any element that fails the shape becomes
-    %% `{load_failed, _}` — this is the structural escape hatch that
-    %% keeps the function total.
-    case lists:all(fun(I) -> is_integer(I) andalso I >= 0 end, G) of
-        true -> {plural_count_mismatch, M, E, narrow_indices(G)};
-        false -> {load_failed, {plural_count_mismatch, M, E, G}}
-    end;
-narrow_known_ensure_error({syntax_error, L, R}) when is_integer(L), L > 0 ->
-    {syntax_error, L, R};
-narrow_known_ensure_error({file_error, Posix}) ->
-    %% `file:posix() | badarg | terminated | system_limit` is a closed
-    %% atom union. Classify at runtime via `is_atom/1` and fall through
-    %% to `load_failed` for non-atom shapes (defence-in-depth).
-    case is_atom(Posix) of
-        true -> {file_error, narrow_file_error(Posix)};
-        false -> {load_failed, {file_error, Posix}}
-    end;
-narrow_known_ensure_error({plural_compile_error, _CompileErr} = E) ->
-    %% `erli18n_plural:compile_error()` is opaque to this module; we
-    %% trust the upstream tag and wrap.
-    classify_plural_compile_error(E);
-narrow_known_ensure_error({input_too_large, B, L}) when
-    is_integer(B), B >= 0, is_integer(L), L >= 0
-->
-    {input_too_large, B, L};
-narrow_known_ensure_error({too_many_entries, C, L}) when
-    is_integer(C), C >= 0, is_integer(L), L >= 0
-->
-    {too_many_entries, C, L};
-narrow_known_ensure_error({load_failed, _Term} = E) ->
-    E.
-
-%% Cast `[term()]` known to be all `non_neg_integer()` (caller has
-%% already verified with `lists:all/2`) into `[non_neg_integer()]`.
--spec narrow_indices([term()]) -> [non_neg_integer()].
-narrow_indices([]) ->
-    [];
-narrow_indices([I | Rest]) when is_integer(I), I >= 0 ->
-    [I | narrow_indices(Rest)].
-
-%% Cast an atom known to be a posix-like error code into the
-%% `file:posix() | badarg | terminated | system_limit` union. The
-%% server only ever surfaces a real `file:read_file/1` error here, so
-%% the input atom is guaranteed to be one of the documented values.
--spec narrow_file_error(atom()) ->
-    file:posix() | badarg | terminated | system_limit.
-narrow_file_error(badarg) -> badarg;
-narrow_file_error(terminated) -> terminated;
-narrow_file_error(system_limit) -> system_limit;
-narrow_file_error(Posix) -> narrow_posix(Posix).
-
--spec narrow_posix(atom()) -> file:posix().
-narrow_posix(eacces) ->
-    eacces;
-narrow_posix(eagain) ->
-    eagain;
-narrow_posix(ebadf) ->
-    ebadf;
-narrow_posix(ebadmsg) ->
-    ebadmsg;
-narrow_posix(ebusy) ->
-    ebusy;
-narrow_posix(edeadlk) ->
-    edeadlk;
-narrow_posix(edeadlock) ->
-    edeadlock;
-narrow_posix(edquot) ->
-    edquot;
-narrow_posix(eexist) ->
-    eexist;
-narrow_posix(efault) ->
-    efault;
-narrow_posix(efbig) ->
-    efbig;
-narrow_posix(eftype) ->
-    eftype;
-narrow_posix(eintr) ->
-    eintr;
-narrow_posix(einval) ->
-    einval;
-narrow_posix(eio) ->
-    eio;
-narrow_posix(eisdir) ->
-    eisdir;
-narrow_posix(eloop) ->
-    eloop;
-narrow_posix(emfile) ->
-    emfile;
-narrow_posix(emlink) ->
-    emlink;
-narrow_posix(emultihop) ->
-    emultihop;
-narrow_posix(enametoolong) ->
-    enametoolong;
-narrow_posix(enfile) ->
-    enfile;
-narrow_posix(enobufs) ->
-    enobufs;
-narrow_posix(enodev) ->
-    enodev;
-narrow_posix(enolck) ->
-    enolck;
-narrow_posix(enolink) ->
-    enolink;
-narrow_posix(enoent) ->
-    enoent;
-narrow_posix(enomem) ->
-    enomem;
-narrow_posix(enospc) ->
-    enospc;
-narrow_posix(enosr) ->
-    enosr;
-narrow_posix(enostr) ->
-    enostr;
-narrow_posix(enosys) ->
-    enosys;
-narrow_posix(enotblk) ->
-    enotblk;
-narrow_posix(enotdir) ->
-    enotdir;
-narrow_posix(enotsup) ->
-    enotsup;
-narrow_posix(enxio) ->
-    enxio;
-narrow_posix(eopnotsupp) ->
-    eopnotsupp;
-narrow_posix(eoverflow) ->
-    eoverflow;
-narrow_posix(eperm) ->
-    eperm;
-narrow_posix(epipe) ->
-    epipe;
-narrow_posix(erange) ->
-    erange;
-narrow_posix(erofs) ->
-    erofs;
-narrow_posix(espipe) ->
-    espipe;
-narrow_posix(esrch) ->
-    esrch;
-narrow_posix(estale) ->
-    estale;
-narrow_posix(etxtbsy) ->
-    etxtbsy;
-narrow_posix(exdev) ->
-    exdev;
-narrow_posix(Other) ->
-    %% Unknown atom — surface as a load_failed so the caller still gets
-    %% a typed error value. Should never happen with a real file:posix()
-    %% from `file:read_file/1`.
-    error({unknown_posix_atom, Other}).
-
-%% Cast a `{plural_compile_error, Term}` payload where Term is opaque to
-%% this module into the `ensure_error()` union. We delegate the shape
-%% checking to `erli18n_plural` indirectly: if the inner term is a
-%% known `compile_error()` shape, the union holds; otherwise we
-%% conservatively wrap in `load_failed`. eqwalizer can't prove the
-%% inner shape without import-side help, so we re-typecheck via a
-%% guard-narrowed constructor.
--spec classify_plural_compile_error(term()) -> ensure_error().
-classify_plural_compile_error({plural_compile_error, Inner}) ->
-    case is_known_plural_compile_error(Inner) of
-        true -> {plural_compile_error, narrow_plural_compile(Inner)};
-        false -> {load_failed, {plural_compile_error, Inner}}
-    end.
-
--spec is_known_plural_compile_error(term()) -> boolean().
-is_known_plural_compile_error({syntax_error, _Reason, Pos}) when
-    is_integer(Pos), Pos >= 0
-->
-    true;
-is_known_plural_compile_error({missing_nplurals, B}) when is_binary(B) -> true;
-is_known_plural_compile_error({missing_plural_expr, B}) when is_binary(B) -> true;
-is_known_plural_compile_error({nplurals_out_of_range, N}) when is_integer(N) ->
-    true;
-is_known_plural_compile_error(_) ->
-    false.
-
--spec narrow_plural_compile(term()) -> erli18n_plural:compile_error().
-narrow_plural_compile({syntax_error, R, Pos}) when
-    is_integer(Pos), Pos >= 0
-->
-    {syntax_error, R, Pos};
-narrow_plural_compile({missing_nplurals, B}) when is_binary(B) ->
-    {missing_nplurals, B};
-narrow_plural_compile({missing_plural_expr, B}) when is_binary(B) ->
-    {missing_plural_expr, B};
-narrow_plural_compile({nplurals_out_of_range, N}) when is_integer(N) ->
-    {nplurals_out_of_range, N};
-narrow_plural_compile(Other) ->
-    error({unknown_plural_compile_error, Other}).
+%% As `cast_ensure_result/1' but for the bulk `{commit_many, _}' reply: the
+%% server callback (`do_commit_many/1', specced precisely) returns a list of
+%% `{domain(), locale(), ensure_result()}'. One cast re-announces that type.
+-spec cast_commit_many(term()) -> [{domain(), locale(), ensure_result()}].
+cast_commit_many(Reply) ->
+    eqwalizer:dynamic_cast(Reply).
 
 %% Compute the gettext-style convention path for a given application,
 %% domain, and locale: `<priv>/locale/<Locale>/LC_MESSAGES/<Domain>.po`.
@@ -1289,6 +1045,15 @@ emit_fuzzy_skip(Domain, Locale, Count) when Count > 0 ->
 %% exhaustive for any header produced by erli18n_po:parse/{1,2}. A
 %% missing key here would be a parser invariant break and is allowed to
 %% crash with function_clause.
+%%
+%% Findings #12 / #18: this `-spec' anchors the `compile_error()' union at
+%% the ORIGIN. With the reply-boundary narrowing tree gone, the compile error
+%% must be proven typed where it is constructed (here), not reclassified at
+%% the boundary — so eqwalizer rejects in BUILD any return outside this union
+%% (stronger than the deleted runtime re-validation).
+-spec maybe_compile_plural(erli18n_po:header_map()) ->
+    {ok, erli18n_plural:plural_compiled() | fallback}
+    | {error, erli18n_plural:compile_error()}.
 maybe_compile_plural(#{plural_forms := <<>>}) ->
     {ok, fallback};
 maybe_compile_plural(#{plural_forms := PluralRaw}) ->
