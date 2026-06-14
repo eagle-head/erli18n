@@ -107,7 +107,8 @@ init_per_suite(Config) ->
                                     "/etc/locale.gen and run `sudo "
                                     "locale-gen`, or `sudo localedef -i " ++
                                     binary_to_list(Loc) ++ " -f UTF-8 " ++
-                                    binary_to_list(Loc) ++ ".UTF-8`). "
+                                    binary_to_list(Loc) ++
+                                    ".UTF-8`). "
                                     "Required: pt_BR.UTF-8 and ru_RU.UTF-8."}
                     end;
                 {error, missing} ->
@@ -172,13 +173,15 @@ end_per_testcase(_TC, Config) ->
 %% translation.
 parity_singular_lookup(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<"msgid \"\"\n"
+    Po = <<
+        "msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Olá\"\n"/utf8>>,
+        "msgstr \"Olá\"\n"/utf8
+    >>,
     install_fixture(Base, <<"pt_BR">>, Po),
     load_both(Base, <<"pt_BR">>),
     OracleOut = oracle_gettext(Base, ?DOMAIN, <<"Hello">>, <<"pt_BR">>),
@@ -190,13 +193,15 @@ parity_singular_lookup(Config) ->
 %% PARITY-01 / R1-fallback scenario: lookup miss returns original input.
 parity_singular_miss_fallback(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<"msgid \"\"\n"
+    Po = <<
+        "msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Olá\"\n"/utf8>>,
+        "msgstr \"Olá\"\n"/utf8
+    >>,
     install_fixture(Base, <<"pt_BR">>, Po),
     load_both(Base, <<"pt_BR">>),
     OracleOut =
@@ -298,7 +303,8 @@ parity_contextual_lookup(Config) ->
 %% libraries (R1).
 parity_empty_msgstr_fallback(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<"msgid \"\"\n"
+    Po = <<
+        "msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
@@ -307,7 +313,8 @@ parity_empty_msgstr_fallback(Config) ->
         "msgstr \"Olá\"\n"
         "\n"
         "msgid \"Empty\"\n"
-        "msgstr \"\"\n"/utf8>>,
+        "msgstr \"\"\n"/utf8
+    >>,
     install_fixture(Base, <<"pt_BR">>, Po),
     load_both(Base, <<"pt_BR">>),
     OracleEmpty = oracle_gettext(Base, ?DOMAIN, <<"Empty">>, <<"pt_BR">>),
@@ -410,7 +417,14 @@ drain_port(Port, Acc) ->
         {Port, {data, Bytes}} ->
             drain_port(Port, <<Acc/binary, Bytes/binary>>);
         {Port, eof} ->
-            catch port_close(Port),
+            %% The port may already be closed by the time we see eof; port_close/1
+            %% raises error:badarg in that case, which we ignore. Any other error
+            %% propagates rather than being silently swallowed.
+            try
+                port_close(Port)
+            catch
+                error:badarg -> ok
+            end,
             Acc
     end.
 
