@@ -1,20 +1,107 @@
 -module(erli18n_server).
 
 -moduledoc """
-Catálogo gen_server: dono e único escritor da tabela ETS de traduções.
+Catálogo `gen_server`: dono e único escritor da tabela ETS de traduções.
 
-Serializa as escritas (insert/unload/commit) através do mailbox do processo
-dono, enquanto as leituras (`lookup_singular/4`, `lookup_plural_form/5`,
-`lookup_header/2`) correm lock-free, direto da ETS, no processo chamador (hot
-path anti-gargalo, RISK-012). A ETS é entregue ao server por um dono dedicado
-(`erli18n_table_owner`) que também atua como `heir`: se este worker crashar, a
-tabela volta intacta ao dono em vez de destruir todos os catálogos carregados.
+## O que é e qual problema resolve
 
-A orquestração de carga (`ensure_loaded`/`reload`) roda a fase pesada
-(read+parse+compile+CLDR) no processo CHAMADOR e entrega apenas um payload
-validado (`staged/0`) ao server para um commit de milissegundos; `reload` é
-atômico STAGE -> SWAP (insert-before-prune), e `opts()` expõe bounds de
-segurança (`max_bytes`, `max_entries`) e `timeout` do commit.
+Este módulo é o coração do runtime do erli18n: ele carrega catálogos `.po`,
+mantém as traduções vivas em ETS e responde aos lookups (singular, plural e
+header). O problema central que ele resolve é conciliar duas exigências
+contraditórias: leituras de tradução são extremamente quentes (toda string da
+UI passa por um lookup) e precisam ser lock-free; já as escritas precisam ser
+serializadas para manter a ETS `protected` consistente. A solução é uma divisão
+estrita entre o caminho de escrita (serializado pelo mailbox deste processo) e o
+caminho de leitura (direto da ETS, sem roundtrip ao server).
+
+## Modelo mental
+
+Pense neste módulo em três camadas:
+
+1. **Caminho de leitura (hot path, lock-free).** `lookup_singular/4`,
+   `lookup_plural_form/5` e `lookup_header/2` rodam `ets:lookup/2` direto no
+   processo CHAMADOR — nenhuma mensagem chega ao mailbox do server. É por isso
+   que N processos podem ler em paralelo sem gargalo (RISK-012). A ETS é
+   `protected`: qualquer processo lê, só o dono (este server) escreve.
+
+2. **Caminho de escrita (serializado).** `insert_*`, `unload/2` e os commits de
+   carga viram `gen_server:call/2,3`; o `handle_call/3` é a única seção crítica
+   onde a ETS é mutada. Como ETS-`set` faz inserts atômicos por linha sob o
+   mailbox único, nunca há estado misto observável.
+
+3. **Orquestração de carga (trabalho pesado FORA do mailbox).** `ensure_loaded/4`
+   e `reload/4` rodam a fase pesada e falível (size-check, read, parse, compile
+   da regra plural, divergência CLDR, build dos objetos, contagem de fuzzy) no
+   processo CHAMADOR, produzindo um `staged()` puro em memória. Só esse payload
+   validado viaja ao server para um commit de milissegundos. Assim um `.po`
+   grande/lento/patológico de um tenant nunca bloqueia a carga de outro
+   (finding #6).
+
+**Confiável vs não-confiável.** A regra `Plural-Forms` de um `.po` é entrada
+não-confiável; por isso ela é compilada com bounds (ver `erli18n_plural`) e
+`lookup_plural_form/5` envolve a avaliação num `try` cinto-e-suspensório. Os
+bounds anti-DoS deste módulo (`max_bytes`, `max_entries`) rejeitam catálogos
+grandes ANTES de qualquer mutação ETS.
+
+**ETS-TRANSFER / heir.** Este server NÃO cria a tabela de dados. Um dono
+dedicado (`erli18n_table_owner`, iniciado antes sob `rest_for_one`) cria a
+tabela e a entrega via `give_away/3` (`'ETS-TRANSFER'` consumido em `init/1`),
+permanecendo como `heir`. Se este worker crashar, a tabela volta INTACTA ao
+dono em vez de ser destruída — todos os catálogos carregados sobrevivem ao
+restart. Ao reassumir, `init/1` reconstrói o índice O(1) de catálogos a partir
+das linhas sobreviventes.
+
+**Dois mapas mentais de "estado".** O `State` deste `gen_server` é um mapa vazio
+`#{}` — ele é proposital. A verdade vive em DUAS tabelas ETS: a tabela de dados
+(`?ETS_TABLE`, herdada do owner) e um índice secundário server-owned
+(`?CATALOG_INDEX_TABLE`) que guarda, por catálogo, o `set` de chaves de dados.
+O índice torna `memory_info/0` O(1) e `unload/2` O(tamanho do catálogo) em vez
+de varreduras O(total de linhas) (findings #7/#13).
+
+## Quando e como um dev encosta neste módulo
+
+- Para **carregar/recarregar** um `.po`: `ensure_loaded/3,4` (idempotente),
+  `reload/3,4` (sempre reinstala, atômico) ou `ensure_loaded_many/1` (lote).
+- Para **descarregar**: `unload/2`.
+- Para **ler** uma tradução de baixo nível (a fachada `erli18n` é o front-door
+  usual): `lookup_singular/4`, `lookup_plural_form/5`, `lookup_header/2`.
+- Para **escrever** entradas avulsas (testes, fontes não-`.po`):
+  `insert_singular/5`, `insert_plural/5`, `insert_catalog/3`.
+- Para **observabilidade**: `memory_info/0`, `loaded_catalogs/0`,
+  `which_keys/2`.
+
+## Quickstart
+
+```erlang
+1> application:ensure_all_started(erli18n).
+{ok, [erli18n]}
+2> Po = erli18n_server:default_po_path(my_app, my_domain, <<"fr">>).
+"/.../priv/locale/fr/LC_MESSAGES/my_domain.po"
+3> erli18n_server:ensure_loaded(my_domain, <<"fr">>, Po).
+{ok, 128}
+4> erli18n_server:ensure_loaded(my_domain, <<"fr">>, Po).
+{ok, already}
+5> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Hello">>).
+{ok, <<"Bonjour">>}
+6> erli18n_server:lookup_plural_form(my_domain, <<"fr">>, undefined, <<"file">>, 2).
+{ok, <<"fichiers">>}
+7> erli18n_server:memory_info().
+#{ets_bytes => 24576, num_catalogs => 1, num_keys => 131}
+```
+
+(`num_keys` conta TODAS as linhas, inclusive o header; `loaded_catalogs/0` conta
+só as 130 linhas de dados — ver ambas as funções.)
+
+## Pontos de entrada principais
+
+- Carga: `ensure_loaded/3`, `ensure_loaded/4`, `ensure_loaded_many/1`,
+  `reload/3`, `reload/4`.
+- Leitura (lock-free): `lookup_singular/4`, `lookup_plural_form/5`,
+  `lookup_header/2`.
+- Escrita: `insert_singular/5`, `insert_plural/5`, `insert_catalog/3`,
+  `unload/2`.
+- Observabilidade: `memory_info/0`, `loaded_catalogs/0`, `which_keys/2`.
+- Ciclo de vida / OTP: `start_link/0`, `init/1`.
 """.
 
 -behaviour(gen_server).
@@ -120,20 +207,50 @@ segurança (`max_bytes`, `max_entries`) e `timeout` do commit.
 %%                     (now millisecond-scale) commit. The heavy phase no
 %%                     longer runs behind the mailbox, so the deadline only
 %%                     covers the bulk insert.
+-doc """
+Opções de carga aceitas por `ensure_loaded/4`, `reload/4` e cada item de
+`ensure_loaded_many/1`. Todos os campos são opcionais; omitir um preserva o
+comportamento legado (módulo os defaults dos caps de segurança).
+
+- `include_fuzzy` (default `false`): inclui entradas marcadas `#, fuzzy`.
+- `max_bytes` (default `application:get_env(erli18n, max_po_bytes)`, 16 MiB):
+  rejeita o arquivo ANTES de lê-lo inteiro (via `filelib:file_size/1`).
+  `infinity` desliga o cap.
+- `max_entries` (default `application:get_env(erli18n, max_po_entries)`,
+  500000): rejeita o catálogo APÓS o parse se tiver mais que N entradas.
+  `infinity` desliga o cap.
+- `timeout` (default 5000 ms): deadline do `gen_server:call/3` que faz o commit.
+  Como a fase pesada não roda mais atrás do mailbox, o deadline cobre só o bulk
+  insert (escala de milissegundos).
+""".
 -type opts() :: #{
     include_fuzzy => boolean(),
     max_bytes => non_neg_integer() | infinity,
     max_entries => non_neg_integer() | infinity,
     timeout => timeout()
 }.
-%% `{ok, NewlyLoaded :: pos_integer()}`: number of entries inserted on a
-%% real load (parsed + compiled + installed).
-%% `{ok, already}`: idempotent fast-path, the catalog was already loaded.
-%% `{error, ensure_error()}`: structured error; ETS untouched.
+-doc """
+Resultado de uma carga (`ensure_loaded/3,4`, `reload/3,4`).
+
+- `{ok, NewlyLoaded}`: carga real — número de entradas parseadas, compiladas e
+  instaladas.
+- `{ok, already}`: fast-path idempotente, o catálogo já estava carregado (só
+  `ensure_loaded`/`ensure_loaded_many`; `reload` nunca retorna isto).
+- `{error, ensure_error()}`: erro estruturado; a ETS fica intacta (todos os
+  erros ocorrem ANTES de qualquer mutação).
+""".
 -type ensure_result() ::
     {ok, NewlyLoaded :: non_neg_integer()}
     | {ok, already}
     | {error, ensure_error()}.
+-doc """
+União de todos os erros estruturados que uma carga pode retornar. Cada variante
+mapeia um passo falível do pipeline de stage (na ordem em que pode falhar):
+erro de I/O ao ler o arquivo (`{file_error, _}`), erro de parse do `.po`
+(`erli18n_po:parse_error()`), erro de compilação da regra plural
+(`{plural_compile_error, _}`) e os caps anti-DoS (`bound_error()`). Nenhuma
+delas deixa a ETS mutada.
+""".
 -type ensure_error() ::
     erli18n_po:parse_error()
     | {plural_compile_error, erli18n_plural:compile_error()}
@@ -144,15 +261,45 @@ segurança (`max_bytes`, `max_entries`) e `timeout` do commit.
 %% `ensure_error()`, surfaced from the caller-side heavy phase BEFORE any
 %% ETS mutation (same "errors before mutation" ordering the load pipeline
 %% always had).
+-doc """
+Erros dos bounds anti-DoS (finding #6), um subconjunto de `ensure_error()`.
+Ambos são surfados na fase pesada do CHAMADOR, ANTES de qualquer mutação ETS:
+`input_too_large` quando o tamanho do arquivo excede `max_bytes` (checado sem
+ler os bytes, via `filelib:file_size/1`); `too_many_entries` quando a contagem
+pós-parse excede `max_entries`. O segundo elemento é o valor observado, o
+terceiro é o limite configurado.
+""".
 -type bound_error() ::
     {input_too_large, Bytes :: non_neg_integer(), Limit :: non_neg_integer()}
     | {too_many_entries, Count :: non_neg_integer(), Limit :: non_neg_integer()}.
 %% Finding #6: a single catalog to load in the bulk API. Same positional
 %% shape as the `ensure_loaded/4' arguments.
+-doc """
+Um catálogo a carregar na API em lote `ensure_loaded_many/1`. Mesma forma
+posicional dos argumentos de `ensure_loaded/4`:
+`{Domain, Locale, PoPath, Opts}`.
+""".
 -type load_spec() :: {domain(), locale(), file:filename(), opts()}.
 -type divergence_info() ::
     none
     | {plural_divergence, binary(), binary()}.
+-doc """
+Estado do header de um catálogo carregado, retornado por `lookup_header/2` e
+armazenado na linha `?HEADER_KEY`. A PRESENÇA desta linha é o sinal de
+idempotência usado por `ensure_loaded/3` ("catálogo já carregado").
+
+- `plural`: a regra `Plural-Forms` JÁ compilada (`erli18n_plural:plural_compiled()`),
+  ou o átomo `fallback` quando o `.po` veio sem header de plural (o lookup então
+  usa o padrão C/Germânico, ver `lookup_plural_form/5`).
+- `plural_raw`: o texto cru da regra (ou a regra de fallback) para
+  observabilidade/round-trip.
+- `po_path`: o caminho do `.po` de origem.
+- `loaded_at`: `erlang:system_time(millisecond)` do instante da carga.
+- `divergence`: `divergence_info()` — `none` ou o aviso de divergência vs CLDR.
+- `fuzzy_included`: se a carga incluiu entradas `#, fuzzy`.
+- `num_entries`: contagem de entradas (singulares + plurais agregadas como o
+  parser conta), o número reportado em `{ok, NewlyLoaded}`.
+""".
 -type header_state() :: #{
     plural := erli18n_plural:plural_compiled() | fallback,
     plural_raw := binary(),
@@ -219,11 +366,28 @@ segurança (`max_bytes`, `max_entries`) e `timeout` do commit.
 %% =========================
 
 -doc """
-Inicia o catálogo gen_server registrado localmente como `erli18n_server`.
+Inicia o catálogo `gen_server`, registrado localmente como `erli18n_server`.
 
-Em `init/1` reclama a tabela ETS de dados do `erli18n_table_owner` (via
-`'ETS-TRANSFER'`), tornando-se seu dono/escritor, e (re)constrói o índice O(1)
-de catálogos a partir das linhas sobreviventes. Iniciado pelo supervisor.
+Chamado pelo supervisor — em geral você NÃO chama isto à mão. Em `init/1` o
+server reclama a tabela ETS de dados do `erli18n_table_owner` via
+`'ETS-TRANSFER'` (tornando-se seu dono/escritor) e (re)constrói o índice O(1)
+de catálogos a partir das linhas sobreviventes.
+
+## Modos de falha
+`init/1` crasha com `{ets_handoff_timeout, _}` se o owner não entregar a tabela
+em 5s (algo estruturalmente quebrado na árvore de supervisão), o que faz o
+supervisor reavaliar. Como o owner é `heir` da tabela, um crash DESTE worker não
+destrói os catálogos: a tabela volta ao owner e é reentregue no próximo
+`init/1`.
+
+```erlang
+1> {ok, Pid} = erli18n_server:start_link().
+{ok, <0.123.0>}
+2> is_pid(Pid).
+true
+```
+
+Ver também `init/1`.
 """.
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
@@ -232,11 +396,39 @@ start_link() ->
 -doc """
 Insere/sobrescreve uma tradução singular, serializada pelo server.
 
-`Context` é o `msgctxt` (`undefined` quando ausente), `Msgid` o texto-fonte e
-`Translation` a tradução. Escreve uma linha na ETS sob a chave
-`{Domain, Locale, Context, Msgid}` e registra a chave no índice do catálogo.
-Síncrona; retorna `ok`. API de escrita de baixo nível — para carregar `.po`
-inteiros prefira `ensure_loaded/3`.
+API de escrita de baixo nível — para carregar `.po` inteiros prefira
+`ensure_loaded/3`. Útil em testes ou ao alimentar traduções de uma fonte que
+não seja `.po`.
+
+## Parâmetros
+- `Domain`: o domínio gettext (átomo) do catálogo.
+- `Locale`: o locale binário (ex.: `<<"fr">>`).
+- `Context`: o `msgctxt`, ou `undefined` quando ausente.
+- `Msgid`: o texto-fonte (chave de busca).
+- `Translation`: a tradução a armazenar.
+
+## Retorno e efeitos
+Escreve uma linha na ETS sob a chave `{singular, Domain, Locale, Context, Msgid}`
+(a tag `singular` faz parte da chave — `?SINGULAR_KEY` em `erli18n.hrl`) e
+registra essa chave no índice do catálogo (que assim passa a contar >=1
+entrada). Síncrona; sempre retorna `ok`. Sobrescreve qualquer tradução anterior
+para a mesma chave. NÃO instala header — esta entrada fica legível por
+`lookup_singular/4`, mas o catálogo não terá `lookup_header/2` a menos que um
+`ensure_loaded/3` o instale.
+
+## Modos de falha
+Argumentos fora dos guards (ex.: `Domain` não-átomo) crasham com
+`function_clause` no chamador. Um reply do server fora de `ok` crasha com
+`badmatch` (quebra de contrato — só `handle_call/3` escreve esse reply).
+
+```erlang
+1> erli18n_server:insert_singular(my_domain, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>).
+ok
+2> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Hello">>).
+{ok, <<"Bonjour">>}
+```
+
+Ver também `insert_plural/5`, `insert_catalog/3`, `lookup_singular/4`.
 """.
 -spec insert_singular(domain(), locale(), context(), msgid(), translation()) -> ok.
 insert_singular(Domain, Locale, Context, Msgid, Translation) when
@@ -259,12 +451,56 @@ insert_singular(Domain, Locale, Context, Msgid, Translation) when
 -doc """
 Insere/sobrescreve as formas plurais de um `Msgid`, serializada pelo server.
 
-`Entries` é a lista `[{FormIndex, Translation}]` — uma linha ETS por forma, sob
-a chave `{Domain, Locale, Context, Msgid, FormIndex}`. Uma lista vazia não
-escreve nada e não registra o catálogo no índice (regra de membership: linha de
-índice presente sse e só se houver >=1 entrada de dados). Síncrona; retorna
-`ok`. A seleção da forma correta em tempo de leitura é responsabilidade de
-`lookup_plural_form/5`.
+## Parâmetros
+- `Domain`, `Locale`, `Context`, `Msgid`: como em `insert_singular/5`.
+- `Entries`: a lista `[{FormIndex, Translation}]` — uma forma plural por par,
+  onde `FormIndex` é o índice de forma (0 = singular gettext, 1, 2, ...).
+
+## Retorno e efeitos
+Grava uma linha ETS por forma, sob a chave
+`{plural, Domain, Locale, Context, Msgid, FormIndex}` (a tag `plural` faz parte
+da chave — `?PLURAL_KEY` em `erli18n.hrl`), e registra essas chaves no índice
+do catálogo. Síncrona; sempre retorna `ok`. **Lista vazia é um no-op**: não
+escreve nenhuma linha E não registra o catálogo no índice — pela regra de
+membership "linha de índice presente <=> >=1 entrada de dados". A seleção da
+forma correta em tempo de leitura (avaliar `Plural-Forms` contra `N`) é
+responsabilidade de `lookup_plural_form/5`, NÃO desta função: aqui você fornece
+os índices crus.
+
+## Modos de falha
+Argumentos fora dos guards crasham com `function_clause`. Cada par precisa ter
+`FormIndex` inteiro >= 0 (validado em `build_plural_objects/5` dentro do server);
+um índice negativo crasharia o server.
+
+As linhas ficam imediatamente legíveis por leitura direta da ETS, mas
+`lookup_plural_form/5` só SELECIONA uma forma quando o header do catálogo
+`(Domain, Locale)` já está carregado — ele lê o header primeiro para obter a
+regra `Plural-Forms`; sem header, retorna `undefined` direto (header ausente ->
+miss). E `insert_plural/5` NÃO instala header algum.
+
+Importante: não existe atalho para tornar uma forma inserida à mão "selecionável"
+a posteriori. `ensure_loaded/3` NÃO instala um header retroativo para chaves
+gravadas via `insert_plural/5`: ou ele toma o fast-path idempotente (se já há
+header) e não toca em nada, ou estagia e instala APENAS as entradas lidas do
+`.po` em disco (ver `do_ensure_loaded/4`). Para que `lookup_plural_form/5`
+selecione uma forma plural, o header precisa ter sido instalado por uma carga
+real de `.po` que JÁ contenha essas mesmas chaves. Sem um `.po`, `insert_plural/5`
+é útil apenas para semear dados a serem lidos diretamente da ETS em testes, pela
+chave tagueada `{plural, Domain, Locale, Context, Msgid, FormIndex}`:
+
+```erlang
+1> erli18n_server:insert_plural(my_domain, <<"fr">>, undefined, <<"file">>,
+..    [{0, <<"fichier">>}, {1, <<"fichiers">>}]).
+ok
+%% Sem header, lookup_plural_form/5 é um miss:
+2> erli18n_server:lookup_plural_form(my_domain, <<"fr">>, undefined, <<"file">>, 1).
+undefined
+%% Em testes, leia a linha direto pela chave tagueada:
+3> ets:lookup(erli18n_catalog, {plural, my_domain, <<"fr">>, undefined, <<"file">>, 1}).
+[{{plural, my_domain, <<"fr">>, undefined, <<"file">>, 1}, <<"fichiers">>}]
+```
+
+Ver também `insert_singular/5`, `lookup_plural_form/5`, `ensure_loaded/3`.
 """.
 -spec insert_plural(domain(), locale(), context(), msgid(), plural_entries()) -> ok.
 insert_plural(Domain, Locale, Context, Msgid, Entries) when
@@ -282,11 +518,38 @@ insert_plural(Domain, Locale, Context, Msgid, Entries) when
 -doc """
 Insere um lote de entradas (singulares e plurais) de um catálogo em uma escrita.
 
-`Entries` mistura `{singular, Context, Msgid, Translation}` e
-`{plural, Context, Msgid, MsgidPlural, [{Index, Translation}]}`; cada entrada é
-achatada nas linhas ETS correspondentes e as chaves de dados são registradas no
-índice. NÃO instala o header do catálogo — para isso (parse de `.po` + plural +
-header) use `ensure_loaded/3`. Síncrona; retorna `ok`.
+## Parâmetros
+- `Domain`, `Locale`: o catálogo alvo.
+- `Entries`: lista que mistura `{singular, Context, Msgid, Translation}` e
+  `{plural, Context, Msgid, MsgidPlural, [{Index, Translation}]}`. O
+  `MsgidPlural` é preservado no formato parseado para round-trip de `dump/1`,
+  mas é descartado na materialização das linhas ETS (não participa da chave de
+  lookup — finding #14).
+
+## Retorno e efeitos
+Cada entrada é achatada nas linhas ETS correspondentes (uma por forma plural) e
+as chaves de dados resultantes são registradas no índice do catálogo. Síncrona;
+sempre retorna `ok`. **NÃO instala o header do catálogo** — para o pipeline
+completo (parse de `.po` + compilação de plural + header) use `ensure_loaded/3`.
+Sem header, `lookup_plural_form/5` retorna `undefined`; use esta função para
+seeding de dados singulares ou em testes.
+
+## Modos de falha
+`Domain` não-átomo / `Locale` não-binário / `Entries` não-lista crasham com
+`function_clause`. Uma entrada com tag desconhecida crasha o server em
+`entry_to_objects/3`.
+
+```erlang
+1> erli18n_server:insert_catalog(my_domain, <<"fr">>, [
+..    {singular, undefined, <<"Hello">>, <<"Bonjour">>},
+..    {plural, undefined, <<"file">>, <<"files">>, [{0, <<"fichier">>}, {1, <<"fichiers">>}]}
+.. ]).
+ok
+2> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Hello">>).
+{ok, <<"Bonjour">>}
+```
+
+Ver também `insert_singular/5`, `insert_plural/5`, `ensure_loaded/3`.
 """.
 -spec insert_catalog(domain(), locale(), [catalog_entry()]) -> ok.
 insert_catalog(Domain, Locale, Entries) when
@@ -297,11 +560,32 @@ insert_catalog(Domain, Locale, Entries) when
 -doc """
 Remove o catálogo `(Domain, Locale)` por inteiro (entradas + header).
 
-Deleção O(tamanho do catálogo): lê as chaves de dados no índice secundário e
-deleta cada uma (O(1) por chave num `set`), depois remove o header pela sua
-própria chave e desregistra o catálogo do índice. Idempotente — descarregar um
-catálogo nunca carregado é um no-op. Emite o span de telemetria
-`[erli18n, catalog, unload]`. Síncrona; retorna sempre `ok`.
+## Retorno e efeitos
+Deleção O(tamanho do catálogo), não O(total de linhas): lê as chaves de dados no
+índice secundário e deleta cada uma (O(1) por chave num `set`), depois remove o
+header pela sua própria chave e desregistra o catálogo do índice (finding #13).
+Após o unload, `lookup_*` daquele catálogo passa a retornar `undefined`.
+Síncrona; sempre retorna `ok`.
+
+**Idempotente**: descarregar um catálogo nunca carregado é um no-op (também
+retorna `ok`). Emite o span de telemetria `[erli18n, catalog, unload]` cujos
+metadados de stop incluem `result` (`ok` | `not_loaded`) e `keys_removed`.
+
+## Modos de falha
+`Domain` não-átomo / `Locale` não-binário crasham com `function_clause`.
+
+```erlang
+1> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "fr.po").
+{ok, 128}
+2> erli18n_server:unload(my_domain, <<"fr">>).
+ok
+3> erli18n_server:lookup_header(my_domain, <<"fr">>).
+undefined
+4> erli18n_server:unload(my_domain, <<"fr">>).   %% idempotente
+ok
+```
+
+Ver também `reload/3` (que NÃO faz delete-then-reload), `loaded_catalogs/0`.
 """.
 -spec unload(domain(), locale()) -> ok.
 unload(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
@@ -313,11 +597,38 @@ unload(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
 -doc """
 Busca lock-free de uma tradução singular, direto da ETS no processo chamador.
 
-Retorna `{ok, Translation}` se a chave `{Domain, Locale, Context, Msgid}`
-existir, ou `undefined` caso contrário (cabe ao chamador aplicar o fallback para
-o `msgid` cru). Um único `ets:lookup/2`, sem roundtrip ao gen_server — o hot
-path de leitura. Argumentos malformados são `function_clause` (quebra de
-contrato), não um `undefined` silencioso.
+O hot path de leitura singular: um único `ets:lookup/2`, sem roundtrip ao
+`gen_server`, executado no processo chamador (por isso N processos leem em
+paralelo sem gargalo).
+
+## Parâmetros
+- `Domain`, `Locale`: o catálogo.
+- `Context`: o `msgctxt`, ou `undefined`. Um lookup com `Context` errado é um
+  miss — `msgctxt` faz parte da chave.
+- `Msgid`: o texto-fonte buscado.
+
+## Retorno
+- `{ok, Translation}` se a chave `{singular, Domain, Locale, Context, Msgid}`
+  existir (a tag `singular` faz parte da chave — `?SINGULAR_KEY` em
+  `erli18n.hrl`; um `ets:lookup/2` com a 4-tupla sem tag é sempre um miss).
+- `undefined` em um miss — cabe ao chamador (a fachada `erli18n`) aplicar o
+  fallback para o próprio `Msgid` cru. Não há fallback automático aqui.
+
+## Modos de falha
+Argumentos fora dos guards são `function_clause` (quebra de contrato, falha
+ALTA), nunca um `undefined` silencioso — escolha deliberada (finding #16). Se a
+ETS não existir (server morto), o `ets:lookup/2` crasha com `badarg`.
+
+```erlang
+1> erli18n_server:insert_singular(my_domain, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>).
+ok
+2> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Hello">>).
+{ok, <<"Bonjour">>}
+3> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Missing">>).
+undefined
+```
+
+Ver também `lookup_plural_form/5`, `lookup_header/2`.
 """.
 -spec lookup_singular(domain(), locale(), context(), msgid()) ->
     {ok, translation()} | undefined.
@@ -356,11 +667,44 @@ lookup_plural(Domain, Locale, Context, Msgid, Index) when
 -doc """
 Busca lock-free do header do catálogo `(Domain, Locale)`, direto da ETS.
 
-Retorna `{ok, HeaderState}` — onde `HeaderState` carrega a regra plural compilada
-(ou `fallback`), o raw `Plural-Forms`, o caminho do `.po`, o instante de carga, a
-divergência vs CLDR e a contagem de entradas — ou `undefined` se o catálogo não
-está carregado. A presença do header também é o sinal de idempotência usado por
-`ensure_loaded/3`.
+## Retorno
+- `{ok, HeaderState}` — ver `header_state()` para o conteúdo (regra plural
+  compilada ou `fallback`, raw `Plural-Forms`, caminho do `.po`, instante de
+  carga, divergência vs CLDR, contagem de entradas).
+- `undefined` se o catálogo não está carregado.
+
+## Por que isto importa
+A PRESENÇA do header é o sinal de idempotência que `ensure_loaded/3` consulta
+("já carregado?") e é o que `lookup_plural_form/5` lê primeiro para obter a regra
+de plural. Um catálogo carregado SEM `Plural-Forms` ainda tem header — com
+`plural := fallback`. Um catálogo populado só por `insert_*` (sem
+`ensure_loaded/3`) NÃO tem header.
+
+## Modos de falha
+`Domain` não-átomo / `Locale` não-binário crasham com `function_clause`.
+
+```erlang
+1> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "fr.po").
+{ok, 128}
+2> {ok, H} = erli18n_server:lookup_header(my_domain, <<"fr">>).
+{ok, #{divergence => none,
+       fuzzy_included => false,
+       loaded_at => 1700000000000,
+       num_entries => 128,
+       plural => #{nplurals => 2, expr => '...', raw => <<"n>1">>},
+       plural_raw => <<"nplurals=2; plural=n>1;">>,
+       po_path => <<"fr.po">>}}
+3> maps:get(num_entries, H).
+128
+4> erli18n_server:lookup_header(my_domain, <<"de">>).
+undefined
+```
+
+(O valor de `plural` é um `t:erli18n_plural:plural_compiled/0` —
+`#{nplurals, expr, raw}`; o `expr` acima está abreviado como `'...'`, é uma AST
+interna.)
+
+Ver também `lookup_singular/4`, `lookup_plural_form/5`, `header_state()`.
 """.
 -spec lookup_header(domain(), locale()) -> {ok, header_state()} | undefined.
 lookup_header(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
@@ -380,19 +724,53 @@ lookup_header(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
 -doc """
 Ponto de entrada CORRETO para leitura de plurais (form-aware, lock-free).
 
-Lê o header, avalia a regra `Plural-Forms` compilada do catálogo contra a
-contagem `N` para obter o índice de forma e então busca a entrada nesse índice.
-Retorna `{ok, Translation}` ou `undefined` (cabe ao chamador o fallback para
-`msgid_plural`, PSD-003). Hot path: 1 lookup do header + 1 lookup da entrada,
-sem roundtrip ao gen_server.
+Diferente do raw, index-based `lookup_plural/5` (interno, NÃO exportado — finding
+#16), aqui o chamador NÃO precisa conhecer o índice de forma para `N`: esta
+função lê o header, avalia a regra `Plural-Forms` compilada do catálogo contra a
+contagem `N` para obter o índice de forma, e então busca a entrada nesse índice.
+É o encapsulamento do conhecimento locale-específico que a biblioteca existe
+para prover.
 
-Regras de fallback: header ausente -> `undefined`; header presente sem
-`Plural-Forms` (plural `fallback`) -> usa o padrão C/Germânico
-(`N == 1 -> forma 0; senão forma 1`); `evaluate/2` é total (faz clamp de regras
-malformadas), e o `try` em volta é cinto-e-suspensório que degrada para a forma
-Germânica caso uma regressão futura reintroduza um throw. Diferente do raw,
-index-based `lookup_plural/5` (interno, não exportado), aqui o chamador NÃO
-precisa conhecer o índice de forma para `N`.
+## Parâmetros
+- `Domain`, `Locale`, `Context`, `Msgid`: identificam o msgid plural.
+- `N`: a contagem (inteiro) que decide a forma. NÃO é o índice de forma — a
+  regra `Plural-Forms` o converte em índice.
+
+## Retorno
+- `{ok, Translation}` quando a forma existe.
+- `undefined` em um miss — cabe ao chamador o fallback para `msgid_plural`
+  (PSD-003). Não há fallback automático para o texto cru aqui.
+
+## Hot path
+1 lookup do header + 1 lookup da entrada, ambos `ets:lookup/2` diretos, sem
+roundtrip ao `gen_server`.
+
+## Regras de fallback (ordem importa)
+- **Header ausente** (catálogo não carregado, ou populado só por `insert_*`)
+  -> `undefined` direto.
+- **Header presente sem `Plural-Forms`** (`plural := fallback`) -> usa o padrão
+  C/Germânico (`N == 1 -> forma 0; senão forma 1`).
+- **Header com regra compilada** -> avalia a regra. `erli18n_plural:evaluate/2`
+  é total (faz clamp de regras malformadas em vez de crashar), e o `try` em
+  volta é cinto-e-suspensório que degrada para a forma Germânica caso uma
+  regressão futura reintroduza um throw nesse hot path por requisição (finding
+  #1, anti-DoS). Ou seja: esta função nunca crasha o processo chamador por causa
+  de uma regra plural não-confiável.
+
+## Modos de falha
+`N` não-inteiro (ou demais args fora dos guards) é `function_clause`.
+
+```erlang
+%% Catálogo francês carregado com Plural-Forms (n>1 -> forma 1).
+1> erli18n_server:lookup_plural_form(my_domain, <<"fr">>, undefined, <<"file">>, 1).
+{ok, <<"fichier">>}
+2> erli18n_server:lookup_plural_form(my_domain, <<"fr">>, undefined, <<"file">>, 42).
+{ok, <<"fichiers">>}
+3> erli18n_server:lookup_plural_form(my_domain, <<"de">>, undefined, <<"file">>, 1).
+undefined
+```
+
+Ver também `lookup_singular/4`, `lookup_header/2`.
 """.
 -spec lookup_plural_form(
     domain(),
@@ -435,10 +813,30 @@ lookup_plural_form(Domain, Locale, Context, Msgid, N) when
 -doc """
 Retorna o uso de memória da tabela ETS de traduções.
 
-Mapa com `ets_bytes` (memória da tabela em bytes = palavras * wordsize),
-`num_catalogs` (catálogos distintos carregados, lido em O(1) do índice
-secundário) e `num_keys` (total de linhas na tabela). Leitura de observabilidade
-no processo chamador; não é hot path.
+Leitura de observabilidade no processo chamador; não é hot path (não chame por
+requisição). Retorna um mapa com:
+- `ets_bytes`: memória da tabela de dados em bytes (palavras * wordsize).
+- `num_catalogs`: catálogos distintos carregados — lido em O(1) do índice
+  secundário (finding #7), não por varredura. Conta um catálogo sse ele tem >=1
+  linha de dados (um `.po` só-header não conta).
+- `num_keys`: total de linhas na tabela de dados — `ets:info(?ETS_TABLE, size)`,
+  conta TODAS as linhas, INCLUSIVE a do header de cada catálogo. Logo, para um
+  só catálogo com 1 header vale o invariante
+  `num_keys = (linhas de dados de loaded_catalogs/0) + num_catalogs`: as linhas
+  de dados (`loaded_catalogs/0` NÃO conta headers) mais uma linha de header por
+  catálogo.
+
+## Modos de falha
+Crasha com `{ets_info_invalid, _}` se a tabela não existir (server morto) — um
+payload descritivo em vez de propagar `undefined`.
+
+```erlang
+%% Catálogo único com 130 linhas de dados (ver loaded_catalogs/0) + 1 header.
+1> erli18n_server:memory_info().
+#{ets_bytes => 24576, num_catalogs => 1, num_keys => 131}
+```
+
+Ver também `loaded_catalogs/0`, `which_keys/2`.
 """.
 -spec memory_info() ->
     #{
@@ -481,8 +879,26 @@ ets_info_integer(Key) ->
 Lista os catálogos carregados com a contagem de linhas de dados de cada um.
 
 Retorna `[{Domain, Locale, NumRows}]`, onde `NumRows` conta as linhas de dados
-(singulares + cada forma plural; headers não contam). Computado por varredura de
-um snapshot `ets:tab2list/1`. Leitura de observabilidade, não hot path.
+(singulares + CADA forma plural contada separadamente; headers NÃO contam — por
+isso este número difere de `header_state()`.`num_entries`, que conta entradas
+lógicas). A ordem da lista não é especificada.
+
+Computado por varredura de um snapshot `ets:tab2list/1` (O(total de linhas)) — é
+leitura de observabilidade, não hot path. Para apenas a CONTAGEM de catálogos
+sem o custo da varredura, use `memory_info/0` (`num_catalogs`, O(1)).
+
+Relação com `memory_info/0`: o `NumRows` aqui são SÓ linhas de dados (sem
+header), enquanto `memory_info/0`.`num_keys` conta tudo (dados + 1 header por
+catálogo). Para o catálogo único abaixo, `num_keys` é `130 + 1 = 131`.
+
+```erlang
+1> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "fr.po").
+{ok, 128}
+2> erli18n_server:loaded_catalogs().
+[{my_domain, <<"fr">>, 130}]
+```
+
+Ver também `memory_info/0`, `which_keys/2`.
 """.
 -spec loaded_catalogs() -> [{domain(), locale(), non_neg_integer()}].
 loaded_catalogs() ->
@@ -516,10 +932,26 @@ build_counts([Obj | Rest], Acc) ->
 -doc """
 Enumera as chaves (singulares e plurais) carregadas para `(Domain, Locale)`.
 
-Retorna uma lista ordenada de `{singular, Context, Msgid}` e
-`{plural, Context, Msgid}`. Entradas plurais são deduplicadas: um msgid plural
-com N formas aparece UMA vez, não N. Paridade com `gettexter:which_keys/2`.
-Varredura ETS no processo chamador, sem roundtrip ao gen_server.
+Retorna uma lista ORDENADA de `{singular, Context, Msgid}` e
+`{plural, Context, Msgid}`. Entradas plurais são DEDUPLICADAS por
+`(Context, Msgid)`: um msgid plural com N formas aparece UMA vez, não N (a
+contagem de `loaded_catalogs/0`, ao contrário, conta cada forma). Paridade
+com `gettexter:which_keys/2`.
+
+Varredura ETS (`ets:tab2list/1`) no processo chamador, sem roundtrip ao
+`gen_server` — observabilidade, não hot path. Catálogo ausente -> lista vazia.
+
+```erlang
+1> erli18n_server:insert_singular(d, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>).
+ok
+2> erli18n_server:insert_plural(d, <<"fr">>, undefined, <<"file">>,
+..    [{0, <<"fichier">>}, {1, <<"fichiers">>}]).
+ok
+3> erli18n_server:which_keys(d, <<"fr">>).
+[{plural, undefined, <<"file">>}, {singular, undefined, <<"Hello">>}]
+```
+
+Ver também `loaded_catalogs/0`, `memory_info/0`.
 """.
 -spec which_keys(domain(), locale()) ->
     [{singular, context(), msgid()} | {plural, context(), msgid()}].
@@ -638,11 +1070,24 @@ build_keys([Obj | Rest], Domain, Locale, Acc) ->
 -doc """
 Carga idempotente de um catálogo `.po`. Igual a `ensure_loaded/4` com `#{}`.
 
-Se `(Domain, Locale)` já estiver carregado, retorna `{ok, already}` sem tocar o
-disco. Caso contrário roda o pipeline completo (ler arquivo, parse, compilar a
-regra plural, validar contra CLDR como aviso, instalar na ETS atomicamente) e
-retorna `{ok, NewlyLoaded}` com o número de entradas inseridas, ou
-`{error, ensure_error()}` deixando a ETS intacta.
+Se `(Domain, Locale)` já estiver carregado (header presente), retorna
+`{ok, already}` sem tocar o disco. Caso contrário roda o pipeline completo (ler
+arquivo, parse, compilar a regra plural, validar contra CLDR como AVISO —
+divergência nunca bloqueia a carga, instalar na ETS atomicamente) e retorna
+`{ok, NewlyLoaded}` com o número de entradas inseridas, ou
+`{error, ensure_error()}` deixando a ETS INTACTA.
+
+```erlang
+1> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "priv/locale/fr/LC_MESSAGES/my_domain.po").
+{ok, 128}
+2> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "priv/locale/fr/LC_MESSAGES/my_domain.po").
+{ok, already}
+3> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "/no/such/file.po").
+{error, {file_error, enoent}}
+```
+
+Ver `ensure_loaded/4` (opções e bounds), `reload/3` (força reinstalação),
+`ensure_loaded_many/1` (lote).
 """.
 -spec ensure_loaded(domain(), locale(), file:filename()) -> ensure_result().
 ensure_loaded(Domain, Locale, PoPath) ->
@@ -677,6 +1122,27 @@ para o commit de milissegundos.
 Retorna `{ok, NewlyLoaded}`, `{ok, already}` ou `{error, ensure_error()}`
 (incluindo `{input_too_large, _, _}` / `{too_many_entries, _, _}`), sempre antes
 de qualquer mutação da ETS.
+
+## Casos de borda
+- **Race check-then-insert**: o fast-path idempotente lê fora da serialização,
+  mas o commit RE-CHECA a idempotência sob o mailbox (modo `ensure`), então dois
+  chamadores concorrentes do mesmo catálogo não se sobrescrevem — o segundo vê
+  `{ok, already}`.
+- **Divergência CLDR**: nunca é erro; emite log/telemetria de aviso e segue,
+  guardando a divergência no `header_state()`.
+- **`timeout` estourado**: o `gen_server:call/3` do commit pode crashar com
+  `{timeout, _}`; como o commit é só o bulk insert, isto praticamente só ocorre
+  com um `timeout` muito apertado.
+
+```erlang
+1> erli18n_server:ensure_loaded(my_domain, <<"fr">>, "fr.po", #{include_fuzzy => true}).
+{ok, 131}
+2> erli18n_server:ensure_loaded(my_domain, <<"de">>, "big.po", #{max_bytes => 1024}).
+{error, {input_too_large, 6553600, 1024}}
+```
+
+Ver `ensure_loaded/3`, `reload/4`, `ensure_loaded_many/1`, `opts()`,
+`ensure_error()`.
 """.
 -spec ensure_loaded(domain(), locale(), file:filename(), opts()) ->
     ensure_result().
@@ -749,7 +1215,20 @@ Recarga atômica de um catálogo `.po`. Igual a `reload/4` com `#{}`.
 
 Diferente de `ensure_loaded/3`, NUNCA toma o fast-path idempotente: sempre faz
 parse e reinstala, sobrescrevendo o catálogo antigo entrada por entrada
-(AMB-001). Ver `reload/4` para a semântica atômica STAGE -> SWAP.
+(AMB-001). Nunca retorna `{ok, already}`. Ver `reload/4` para a semântica
+atômica STAGE -> SWAP e a garantia de zero janela de miss.
+
+```erlang
+1> erli18n_server:reload(my_domain, <<"fr">>, "fr.po").
+{ok, 128}
+%% Um .po inválido NÃO destrói o catálogo bom em uso:
+2> erli18n_server:reload(my_domain, <<"fr">>, "broken.po").
+{error, {parse_error, ...}}
+3> erli18n_server:lookup_singular(my_domain, <<"fr">>, undefined, <<"Hello">>).
+{ok, <<"Bonjour">>}
+```
+
+Ver `reload/4`, `ensure_loaded/3`.
 """.
 -spec reload(domain(), locale(), file:filename()) -> ensure_result().
 reload(Domain, Locale, PoPath) ->
@@ -776,6 +1255,22 @@ A fase pesada corre dentro do span `[erli18n, catalog, reload]`; só o commit do
 swap viaja ao server, com `timeout` ajustável. `Opts` é idêntico ao de
 `ensure_loaded/4` (`include_fuzzy`, `max_bytes`, `max_entries`, `timeout`).
 Retorna `{ok, NewlyLoaded}` ou `{error, ensure_error()}` (nunca `{ok, already}`).
+
+## Casos de borda
+- **Memória transitória dobra** durante o swap (linhas velhas + novas
+  coexistem) — custo deliberado da atomicidade.
+- **Chaves stale** (presentes no catálogo antigo, ausentes no novo) servem a
+  tradução ANTIGA por microssegundos antes do prune — consistente com gettext,
+  melhor que um miss.
+- Os mesmos `bound_error()` de `ensure_loaded/4` se aplicam; em qualquer erro o
+  catálogo anterior permanece intacto.
+
+```erlang
+1> erli18n_server:reload(my_domain, <<"fr">>, "fr.po", #{timeout => 30000}).
+{ok, 128}
+```
+
+Ver `reload/3`, `ensure_loaded/4`, `opts()`.
 """.
 -spec reload(domain(), locale(), file:filename(), opts()) ->
     ensure_result().
@@ -843,6 +1338,26 @@ em O(1) (índice O(1) do finding #7). Cada `Opts` segue `ensure_loaded/4`.
 Retorna `[{Domain, Locale, ensure_result()}]` — catálogos já carregados ou que
 falharam são reportados individualmente; o erro de um catálogo nunca bloqueia os
 demais.
+
+## Casos de borda
+- Cada elemento do resultado é um `ensure_result()` independente: você pode ter
+  uma mistura de `{ok, N}`, `{ok, already}` e `{error, _}` na mesma lista.
+- Lista vazia -> `[]` (nenhum roundtrip ao server).
+- Se TODOS os specs forem idempotentes/erro na fase de preparo, nenhum commit é
+  enviado (o `commit_many` só roda quando há >=1 payload validado).
+
+```erlang
+1> erli18n_server:ensure_loaded_many([
+..    {my_domain, <<"fr">>, "fr.po", #{}},
+..    {my_domain, <<"de">>, "de.po", #{}},
+..    {my_domain, <<"xx">>, "/missing.po", #{}}
+.. ]).
+[{my_domain, <<"fr">>, {ok, 128}},
+ {my_domain, <<"de">>, {ok, 96}},
+ {my_domain, <<"xx">>, {error, {file_error, enoent}}}]
+```
+
+Ver `ensure_loaded/4`, `load_spec()`.
 """.
 -spec ensure_loaded_many([load_spec()]) ->
     [{domain(), locale(), ensure_result()}].
@@ -941,11 +1456,30 @@ cast_commit_many(Reply) ->
 -doc """
 Calcula o caminho `.po` convencional do gettext para uma aplicação.
 
-Retorna `<priv>/locale/<Locale>/LC_MESSAGES/<Domain>.po`, onde `<priv>` é o
-`code:priv_dir(App)`. Crasha com `{priv_dir_not_found, App}` se a aplicação for
-desconhecida. Separação de responsabilidades: `ensure_loaded/3` recebe o caminho
-explicitamente — não há resolução implícita; é a fachada que decide honrar esta
-convenção ou usar um caminho fornecido pelo chamador.
+## Parâmetros
+- `App`: a aplicação OTP cujo `priv` contém os catálogos (resolvida via
+  `code:priv_dir/1`).
+- `Domain`: o domínio gettext (vira o nome do arquivo `<Domain>.po`).
+- `Locale`: o locale binário (vira o segmento de diretório `<Locale>`).
+
+## Retorno
+Retorna `<priv>/locale/<Locale>/LC_MESSAGES/<Domain>.po` (uma string).
+Esta função apenas COMPÕE o caminho — não verifica se o arquivo existe.
+
+## Modos de falha
+Crasha com `{priv_dir_not_found, App}` se a aplicação for desconhecida
+(`code:priv_dir/1` retorna `{error, bad_name}`) — assim o operador vê a
+misconfiguração na hora, em vez de carregar um caminho com `{error, bad_name}`
+embutido. Separação de responsabilidades: `ensure_loaded/3` recebe o caminho
+explicitamente; não há resolução implícita aqui — é a fachada que decide honrar
+esta convenção ou usar um caminho do chamador.
+
+```erlang
+1> erli18n_server:default_po_path(my_app, my_domain, <<"fr">>).
+"/path/to/my_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
+```
+
+Ver `ensure_loaded/3`.
 """.
 -spec default_po_path(atom(), domain(), locale()) -> file:filename().
 default_po_path(App, Domain, Locale) when
@@ -984,6 +1518,35 @@ default_po_path(App, Domain, Locale) when
 %% gen_server callbacks
 %% =========================
 
+-doc """
+Callback de inicialização — NOTA PARA O MANTENEDOR (não chame à mão; é o
+supervisor que invoca via `start_link/0`).
+
+## Protocolo de aquisição da tabela (heir / ETS-TRANSFER)
+Este server NÃO cria a tabela de dados (finding #10). Ele pede ao
+`erli18n_table_owner` (sibling iniciado ANTES dele sob `rest_for_one`) que a
+entregue via `give_away/3`. A sequência:
+1. `erli18n_table_owner:claim_table/0` (síncrona) — sinaliza ao owner para
+   entregar.
+2. Bloqueia em `receive {'ETS-TRANSFER', ?ETS_TABLE, _, ?ETS_HANDOFF_DATA}`.
+3. Cria o índice secundário (`?CATALOG_INDEX_TABLE`) e o RECONSTRÓI a partir das
+   linhas sobreviventes da tabela de dados (no boot inicial é no-op; após um
+   crash deste worker, a tabela volta populada pelo heir e o índice é
+   reconstruído UMA vez aqui, não por carga).
+
+## Invariantes
+- O `State` é `#{}` (vazio): toda a verdade vive nas duas tabelas ETS. Não
+  guarde estado de catálogo no `State`.
+- Este server é o ÚNICO escritor de ambas as tabelas, então o índice O(1) nunca
+  diverge enquanto o worker vive.
+
+## Modos de falha
+Se o owner não entregar a tabela em 5s, crasha com `{ets_handoff_timeout, _}` —
+algo estruturalmente quebrado na árvore; o supervisor reavalia. Após um crash
+deste worker, os catálogos NÃO são perdidos (o owner é heir).
+
+Ver `start_link/0`.
+""".
 -spec init([]) -> {ok, map()}.
 init([]) ->
     %% Finding #10: the server no longer CREATES the table. It asks the
@@ -1067,6 +1630,35 @@ index_obj({{plural, D, L, Ctx, Msgid, Idx}, _}) ->
 index_obj(_Other) ->
     ok.
 
+-doc """
+Seção crítica serializada — NOTA PARA O MANTENEDOR. Este é o ÚNICO ponto onde a
+ETS é mutada; toda escrita do módulo passa por aqui sob o mailbox único, então
+nunca há estado misto observável (ETS-`set` insere atomicamente por linha).
+
+## Protocolo de mensagens (todas as variantes de call)
+- `{insert_singular, D, L, Ctx, Msgid, T}` -> grava 1 linha + indexa a chave;
+  reply `ok`. (API: `insert_singular/5`.)
+- `{insert_plural, D, L, Ctx, Msgid, Entries}` -> grava 1 linha por forma +
+  indexa; reply `ok`. (API: `insert_plural/5`.)
+- `{insert_catalog, D, L, Entries}` -> achata e grava o lote + indexa; reply
+  `ok`. (API: `insert_catalog/3`.)
+- `{unload, D, L}` -> deleção O(tamanho do catálogo) via índice + remove header;
+  emite o span `[erli18n, catalog, unload]`; reply SEMPRE `ok` (contrato
+  histórico de `unload/2`).
+- `{commit, ensure | reload, D, L, Staged}` -> instala um `staged()` JÁ validado
+  (a fase pesada rodou no chamador). Modo `ensure` RE-CHECA idempotência sob
+  serialização (fecha o race check-then-insert); modo `reload` faz o swap
+  atômico insert-before-prune (finding #4). NÃO há span aqui — ele já disparou
+  caller-side.
+- `{commit_many, Items}` -> instala N payloads numa só seção crítica, com UM
+  `memory_warning_check` ao final (não N).
+- Qualquer outra call -> `{reply, {error, unknown_call}, State}`.
+
+## Invariante
+O server recebe SOMENTE payloads validados nos commits — nenhum read/parse/
+compile pesado roda atrás deste mailbox (finding #6). Por isso este callback é a
+seção de milissegundos.
+""".
 handle_call({insert_singular, D, L, Ctx, Msgid, T}, _From, State) ->
     Key = ?SINGULAR_KEY(D, L, Ctx, Msgid),
     true = ets:insert(?ETS_TABLE, {Key, T}),
@@ -1140,15 +1732,38 @@ handle_call({commit_many, Items}, _From, State) ->
 handle_call(_Other, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
+-doc """
+Inerte por design: este server não usa casts (toda escrita é um `call`
+síncrono, para que o chamador receba confirmação e contrapressão). Existe só
+para satisfazer o behaviour `gen_server`. Mensagens são ignoradas com
+`{noreply, State}`.
+""".
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+-doc """
+Inerte por design: este server não espera mensagens fora-de-banda. O
+`'ETS-TRANSFER'` inicial é consumido em `init/1` por um `receive` explícito, não
+por aqui; um `'ETS-TRANSFER'` de retorno após crash chega ao OWNER (heir), não a
+este worker. Mensagens são ignoradas com `{noreply, State}`.
+""".
 handle_info(_Info, State) ->
     {noreply, State}.
 
+-doc """
+Sem cleanup a fazer: a tabela de dados é `protected` e tem `heir` (o owner), de
+modo que em um crash deste worker ela volta INTACTA ao owner em vez de ser
+destruída — justamente o cenário que esta arquitetura protege. O índice
+secundário é server-owned e morre com o worker, sendo reconstruído no próximo
+`init/1`. Retorna `ok`.
+""".
 terminate(_Reason, _State) ->
     ok.
 
+-doc """
+Sem migração de estado: o `State` é um `#{}` vazio (a verdade vive em ETS), logo
+um upgrade de código não tem estado a transformar. Retorna `{ok, State}`.
+""".
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
