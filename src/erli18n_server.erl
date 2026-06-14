@@ -109,6 +109,16 @@ only the 130 data rows — see both functions.)
 -include("erli18n.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+%% eqwalizer suppressions for the `term() -> T' boundary casts below (a
+%% gen_server reply or an ETS read, both of which eqwalizer can only type as
+%% `term()'). nowarn_function lets these helpers re-announce a server-proven
+%% type WITHOUT a runtime `eqwalizer:dynamic_cast/1' call, which would require
+%% the test-only `eqwalizer_support' module (a git dependency Hex cannot
+%% package) at runtime. Full rationale at each function.
+-eqwalizer({nowarn_function, cast_ensure_result/1}).
+-eqwalizer({nowarn_function, cast_commit_many/1}).
+-eqwalizer({nowarn_function, dynamic_cast_index_keyset/1}).
+
 %% Write API (serialized via gen_server, only owner writes to protected ETS).
 -export([
     start_link/0,
@@ -1419,11 +1429,15 @@ partition_one({D, L, {prepared, {error, _} = Err}}, {Commit, Done}) ->
 %% the ORIGIN — `do_ensure_loaded/4', `do_commit/4', `do_commit_many/1' and
 %% `install_staged/3' all carry precise `-spec's). So the boundary only has
 %% to re-announce a type that is already proven server-side, not reconstruct
-%% it. We use `eqwalizer:dynamic_cast/1' (spec: `term() -> dynamic()'), the
-%% idiom eqwalizer prescribes for message-passing boundaries (`dynamic()' is
-%% both sub- and supertype of every type, so it flows into `ensure_result()'
-%% with no type error). The same primitive is already used elsewhere in this
-%% module (`dynamic_cast_index_keyset/1') and across `src/'.
+%% it. The cast helper returns the value unchanged and is annotated with
+%% `-eqwalizer({nowarn_function, ...})' so the type-checker accepts the
+%% `term() -> ensure_result()' boundary. We deliberately do NOT use
+%% `eqwalizer:dynamic_cast/1' here: that is a RUNTIME call into the `eqwalizer'
+%% module shipped by `eqwalizer_support', a test-only `git_subdir' dependency
+%% Hex cannot package — so a published build would crash with `undefined
+%% function eqwalizer:dynamic_cast/1'. The static annotation is equivalent for
+%% the type-checker at zero runtime cost. Same pattern in
+%% `dynamic_cast_index_keyset/1'.
 %%
 %% This deletes the old hand-maintained enumeration (a 48-clause
 %% `narrow_posix/1' restating the entire `file:posix()' set, plus the
@@ -1437,14 +1451,14 @@ partition_one({D, L, {prepared, {error, _} = Err}}, {Commit, Done}) ->
 %% structured `{error, {file_error, _}}' instead of crashing.
 -spec cast_ensure_result(term()) -> ensure_result().
 cast_ensure_result(Reply) ->
-    eqwalizer:dynamic_cast(Reply).
+    Reply.
 
 %% As `cast_ensure_result/1' but for the bulk `{commit_many, _}' reply: the
 %% server callback (`do_commit_many/1', specced precisely) returns a list of
 %% `{domain(), locale(), ensure_result()}'. One cast re-announces that type.
 -spec cast_commit_many(term()) -> [{domain(), locale(), ensure_result()}].
 cast_commit_many(Reply) ->
-    eqwalizer:dynamic_cast(Reply).
+    Reply.
 
 %% Compute the gettext-style convention path for a given application,
 %% domain, and locale: `<priv>/locale/<Locale>/LC_MESSAGES/<Domain>.po`.
@@ -2438,7 +2452,7 @@ index_keys(D, L) ->
 %% specced precisely, so the rest of the index code stays statically typed.
 -spec dynamic_cast_index_keyset(term()) -> sets:set(data_key()).
 dynamic_cast_index_keyset(KeySet) ->
-    eqwalizer:dynamic_cast(KeySet).
+    KeySet.
 
 %% Project the data keys out of built ETS objects (the `{Key, Value}'
 %% tuples produced by `build_*_objects/_'). Used by the insert paths to
@@ -2447,9 +2461,7 @@ dynamic_cast_index_keyset(KeySet) ->
 object_keys([]) ->
     [];
 object_keys([{Key, _Value} | Rest]) ->
-    [object_key(Key) | object_keys(Rest)];
-object_keys([Other | _Rest]) ->
-    error({unexpected_catalog_object, Other}).
+    [object_key(Key) | object_keys(Rest)].
 
 %% Narrow a stored object's key to the `data_key/0' shape. The build paths
 %% only ever emit `?SINGULAR_KEY'/`?PLURAL_KEY' tuples (never a header), so

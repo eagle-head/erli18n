@@ -1813,10 +1813,10 @@ base_locale(Locale) ->
 -spec cldr_compiled(binary()) -> plural_compiled() | undefined.
 cldr_compiled(Locale) when is_binary(Locale) ->
     Table = cldr_compiled_table(),
-    case maps:find(Locale, Table) of
-        {ok, Bundle} ->
+    case Table of
+        #{Locale := Bundle} ->
             Bundle;
-        error ->
+        #{} ->
             case base_locale(Locale) of
                 Locale ->
                     undefined;
@@ -1834,9 +1834,9 @@ the fixed key `?CLDR_COMPILED_KEY` (the tuple
 `{?MODULE, cldr_compiled_table}`, NOT a content hash) and NEVER
 invalidated — `cldr_data/0` is a constant literal, so a global cache is
 safe. The first call builds it via `build_cldr_compiled_table/0` and
-writes it; the following ones hit the cache (the
-`eqwalizer:dynamic_cast/1` only narrows the `term()` type from
-`persistent_term:get/2`, since the only writer is the clause above). It is
+writes it; the following ones hit the cache (the cast on the hit branch only
+re-announces the `term()` from `persistent_term:get/2`, since the only writer
+is the clause above). It is
 only for the cold divergence path (`cldr_compiled/1`); it is never touched
 by `evaluate/2`.
 """.
@@ -1855,9 +1855,10 @@ cldr_compiled_table() ->
             persistent_term:put(?CLDR_COMPILED_KEY, Table),
             Table;
         Table when is_map(Table) ->
-            %% `persistent_term:get/2` is typed `term()`; the only writer
-            %% is the clause above, so this branch is the cache hit.
-            eqwalizer:dynamic_cast(Table)
+            %% `persistent_term:get/2` is typed `term()`; the `is_map/1` guard
+            %% narrows it to a map (the only writer is the clause above, so this
+            %% is the cache hit), which eqwalizer accepts here — no cast needed.
+            Table
     end.
 
 -spec build_cldr_compiled_table() -> #{binary() => plural_compiled()}.
