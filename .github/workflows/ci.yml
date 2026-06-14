@@ -1,10 +1,14 @@
 name: CI
 
 on:
+  # CI runs AUTOMATICALLY only for the main branch (a push/merge to main).
+  # Pull requests deliberately do NOT trigger CI: feature branches and draft
+  # PRs would otherwise consume CI minutes on every push. Every non-main run is
+  # therefore on-demand only, via workflow_dispatch ("Run workflow" in the
+  # Actions tab) — i.e. it runs with explicit maintainer authorization, against
+  # whichever branch is selected.
   push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
