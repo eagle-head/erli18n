@@ -30,7 +30,7 @@ _No unreleased changes._
 ## [0.1.0] — 2026-06-14
 
 Initial development release. The public API is functional but subject to backward-incompatible
-changes on minor bumps per the `0.x` SemVer policy above.
+changes on minor bumps per the `0.x` SemVer policy.
 
 **Requires OTP 27 or newer.** The public modules carry native `-doc` / `-moduledoc`
 documentation attributes (EEP-59), which only compile on OTP 27+; OTP 25.3 and 26 reject
