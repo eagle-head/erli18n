@@ -2,18 +2,18 @@
 %%% Common Test runner for property-based tests (PropEr).
 %%%
 %%% Each test_case in this suite invokes `proper:quickcheck/2` for one
-%%% property. `numtests` is fixed at 200 — chosen per
-%%% `parity_specs.md` §6.1 ("Min runs CI por PR: 200") as the floor for
-%%% PR validation. CI noturno may rerun this same suite with a higher
-%%% numtests via ct_run --userconfig, but the default is the
-%%% release-blocking baseline.
+%%% property. `numtests` is fixed at 200 — the minimum number of runs
+%%% required in CI per PR, used as the floor for PR validation. The
+%%% nightly CI may rerun this same suite with a higher numtests via
+%%% ct_run --userconfig, but the default is the release-blocking
+%%% baseline.
 %%%
 %%% PropEr counter-examples are written to stdout (via `{to_file, user}`)
 %%% so when a property fails the CT log surfaces the minimized input
-%%% directly. Persisting counter-examples to disk (`proper_counterexamples/`)
-%%% is documented in `parity_specs.md` §6.1; we leave the disk-corpus
-%%% wiring as a follow-up since PropEr 1.5 expects the consumer to
-%%% manage that file lifecycle explicitly.
+%%% directly. Persisting counter-examples to disk
+%%% (`proper_counterexamples/`) is a planned enhancement; we leave the
+%%% disk-corpus wiring as a follow-up since PropEr 1.5 expects the
+%%% consumer to manage that file lifecycle explicitly.
 %%% =====================================================================
 -module(erli18n_property_SUITE).
 
@@ -46,7 +46,7 @@
 ]).
 
 %% Number of QuickCheck runs per property. 200 = release-blocking floor
-%% per `parity_specs.md` §6.1.
+%% (minimum runs required in CI per PR).
 -define(NUMTESTS, 200).
 
 all() ->

@@ -115,19 +115,17 @@ true
 %%    * Centralize all `erli18n` event names (`[erli18n, catalog, load]`,
 %%      etc.) so a future rename or audit is a one-file change. The event
 %%      names are the **public contract** of the lib's observability
-%%      surface — see observability.md §3 (naming convention) and §4
-%%      (catalogue of events).
+%%      surface (naming convention and catalogue of events).
 %%
 %%    * Provide opt-in/opt-out gating for high-frequency events
 %%      (lookup miss / fuzzy_skip) via the `emit_lookup_telemetry`
-%%      application env flag. Always-on events bypass the gate. See
-%%      observability.md §6 (overhead policy).
+%%      application env flag. Always-on events bypass the gate (overhead
+%%      policy).
 %%
 %%    * Provide a rate-limited memory-warning check used by the loader
 %%      to emit `[erli18n, catalog, memory_warning]` at most once per
 %%      configured window (RISK-011 mitigation 2: "once per crossing
-%%      event, not on every tick"). See observability.md §4 (memory
-%%      warning schema).
+%%      event, not on every tick").
 %%
 %%  References:
 %%
@@ -194,7 +192,7 @@ type returned by all `event_*/0` functions and the one accepted by
 admits a free `atom()` in the tail for extensions (e.g. the `start`/`stop`
 suffix that `span/3` appends).
 """.
-%% Event name shapes per observability.md §5.
+%% Event name shapes.
 -type event_name() ::
     [
         erli18n
@@ -529,9 +527,9 @@ span(EventPrefix, StartMetadata, Fun) when
 %%
 %% `application:get_env/3` lookup is an ETS-direct read in the OTP
 %% application controller (~100 ns), comparable to telemetry's own no-op
-%% overhead. See observability.md §6 ("the flag eliminates the overhead of
-%% an attached handler, not the overhead of looking up the flag — that is
-%% the theoretical limit of the design").
+%% overhead. The flag eliminates the overhead of an attached handler, not
+%% the overhead of looking up the flag — that is the theoretical limit of
+%% the design.
 -doc """
 Gate for the high-frequency lookup events (`event_lookup_miss/0` and
 `event_lookup_fuzzy_skip/0`). Call sites call this function **before** building
@@ -572,16 +570,14 @@ lookup_telemetry_enabled() ->
         Other -> error({invalid_config, {erli18n, emit_lookup_telemetry, Other, expected, boolean}})
     end.
 
-%% Bytes threshold for memory_warning. Default 100 MiB matches the
-%% sys.config example in observability.md §4.
+%% Bytes threshold for memory_warning. Default 100 MiB (104857600).
 -doc """
 Threshold, in **bytes**, of the catalogs' ETS usage above which
 `event_catalog_memory_warning/0` becomes eligible. Compared against `ets_bytes`
 inside `memory_warning_check/1` with a strict `>` (equaling the threshold does
 **not** fire).
 
-Reads the app env `memory_warning_threshold` (default `104857600`, 100 MiB —
-matching the `sys.config` example in observability).
+Reads the app env `memory_warning_threshold` (default `104857600`, 100 MiB).
 
 Return and failure modes: a valid `non_neg_integer()`. Any value that is not an
 integer `>= 0` (negative, non-integer) triggers a crash with
@@ -763,8 +759,8 @@ memory_warning_check(MemInfo) when is_map(MemInfo) ->
                             num_catalogs => maps:get(num_catalogs, MemInfo, 0),
                             num_keys => maps:get(num_keys, MemInfo, 0)
                         },
-                        %% observability.md §4.2 memory_warning metadata
-                        %% calls for `domain_locales_sample`: up to 10
+                        %% The memory_warning metadata carries
+                        %% `domain_locales_sample`: up to 10
                         %% `{Domain, Locale}` tuples to bound payload
                         %% size in multi-tenant deployments.
                         %% `erli18n_server:loaded_catalogs/0` is a
@@ -868,12 +864,11 @@ Cost: at most one `code:ensure_loaded/1` per emission while telemetry is absent
 %% WITHOUT caching, so that if the consumer brings telemetry up later
 %% (`application:start(telemetry)`) the next call observes it.
 %%
-%% Trade-off documented in observability.md §11: positive-only caching
-%% costs at most one `code:ensure_loaded/1` per emit while telemetry is
-%% absent (microseconds), and zero per emit once present. Negative
-%% caching would be cheaper in the absent case but would prevent
-%% on-the-fly enablement, contradicting the "no-op safe, never crashes"
-%% contract.
+%% Trade-off: positive-only caching costs at most one
+%% `code:ensure_loaded/1` per emit while telemetry is absent
+%% (microseconds), and zero per emit once present. Negative caching
+%% would be cheaper in the absent case but would prevent on-the-fly
+%% enablement, contradicting the "no-op safe, never crashes" contract.
 telemetry_loaded() ->
     case persistent_term:get(?LOADED_KEY, undefined) of
         true ->

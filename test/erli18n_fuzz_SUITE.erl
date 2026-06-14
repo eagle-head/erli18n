@@ -1,10 +1,9 @@
 %%% =====================================================================
-%%% Common Test runner for `erli18n_po` fuzz scenarios (F1..F7) per
-%%% `parity_specs.md` §6.2.
+%%% Common Test runner for `erli18n_po` fuzz scenarios (F1..F7).
 %%%
 %%% Each scenario runs `proper:quickcheck/2` with 500 generated inputs.
-%%% That number matches the "Min runs CI por PR" floor from §6.2; CI
-%%% noturno is expected to bump this via a CT config override but the
+%%% That number matches the minimum-runs-per-PR floor in CI; the nightly
+%%% CI run is expected to bump this via a CT config override but the
 %%% default is the release-blocking baseline.
 %%%
 %%% F7 (end-to-end against `ensure_loaded`) is intentionally given the

@@ -1,7 +1,7 @@
 %%% =====================================================================
 %%% Fuzz testing for `erli18n_po` parser robustness.
 %%%
-%%% Spec source-of-truth: `parity_specs.md` §6.2 (scenarios F1..F7).
+%%% Parser-robustness fuzz scenarios F1..F7.
 %%% Risk traceability: `risk_register.md` RISK-014 ("parser robustness")
 %%% is materialised via F1..F7. Each scenario takes the same shape — a
 %%% PropEr `?FORALL` that asserts `erli18n_po:parse/1` always returns

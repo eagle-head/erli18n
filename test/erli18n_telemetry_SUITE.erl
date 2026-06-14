@@ -2,9 +2,7 @@
 
 %% Common Test suite for the `:telemetry` observability layer (Part 7).
 %%
-%% Schemas and contract under test come from:
-%%   `_reversa_sdd/migration/observability.md` §4 (catalogue),
-%%   §5 (typespecs), §6 (overhead policy).
+%% Covers the event catalogue, typespecs, and overhead policy.
 %%
 %% Pattern:
 %%   * Each test attaches one or more `telemetry` handlers to the
@@ -185,7 +183,7 @@ captured_for(Config, EventName) ->
 %% Catalog load span
 %% =========================
 
-%% Spec: observability.md §4.1 `[erli18n, catalog, load]`. A successful
+%% Event `[erli18n, catalog, load]`. A successful
 %% load emits exactly two events: `..., load, start]` followed by
 %% `..., load, stop]`. The stop carries `result => ok` and
 %% `keys_loaded => N` in metadata.
@@ -216,7 +214,7 @@ telemetry_catalog_load_emits_span_start_stop(Config) ->
     ?assert(maps:is_key(duration, StopM)),
     ?assert(maps:is_key(monotonic_time, StopM)).
 
-%% Spec: observability.md §4.1 idempotent fast-path. A second
+%% Idempotent fast-path. A second
 %% `ensure_loaded` still emits the span; the stop metadata records
 %% `result => already` and `keys_loaded => 0`. RISK-012 mitigation 2.
 telemetry_catalog_load_already_reports_result_in_metadata(Config) ->
@@ -233,7 +231,7 @@ telemetry_catalog_load_already_reports_result_in_metadata(Config) ->
     ?assertEqual(already, maps:get(result, Meta2)),
     ?assertEqual(0, maps:get(keys_loaded, Meta2)).
 
-%% Spec: observability.md §8 — failure that returns `{error, _}` (not a
+%% A failure that returns `{error, _}` (not a
 %% crash) emits `:stop` with `result => {error, _}`, NOT `:exception`.
 %% Exception is reserved for Erlang throw/error/exit.
 telemetry_catalog_load_error_path_uses_stop_not_exception(Config) ->
@@ -254,7 +252,7 @@ telemetry_catalog_load_error_path_uses_stop_not_exception(Config) ->
     ?assertMatch({error, _}, maps:get(result, StopMeta)),
     ?assertEqual(0, maps:get(keys_loaded, StopMeta)).
 
-%% Spec: observability.md §4.1 `[erli18n, catalog, reload]`. Same
+%% Event `[erli18n, catalog, reload]`. Same
 %% schema as load; distinct event name lets consumers react
 %% specifically to overwrites.
 telemetry_catalog_reload_emits_span(Config) ->
@@ -274,7 +272,7 @@ telemetry_catalog_reload_emits_span(Config) ->
     ?assertEqual(ok, maps:get(result, StopMeta)),
     ?assertEqual(1, maps:get(keys_loaded, StopMeta)).
 
-%% Spec: observability.md §4.1 `[erli18n, catalog, unload]`. Stop
+%% Event `[erli18n, catalog, unload]`. Stop
 %% metadata reports `result => ok` and `keys_removed` count.
 telemetry_catalog_unload_emits_span(Config) ->
     Path = fixture(Config, "minimal_en.po"),
@@ -294,7 +292,7 @@ telemetry_catalog_unload_emits_span(Config) ->
     ?assertEqual(default, maps:get(domain, StopMeta)),
     ?assertEqual(<<"en">>, maps:get(locale, StopMeta)).
 
-%% Spec: observability.md §4.1 unload of a catalog that was never
+%% Unload of a catalog that was never
 %% loaded -> result => not_loaded, keys_removed => 0.
 telemetry_catalog_unload_not_loaded_reports_zero(Config) ->
     ok = attach(Config, [[erli18n, catalog, unload, stop]]),
@@ -309,7 +307,7 @@ telemetry_catalog_unload_not_loaded_reports_zero(Config) ->
 %% Lookup miss — opt-in
 %% =========================
 
-%% Spec: observability.md §6 (overhead policy) — lookup miss is opt-in.
+%% Overhead policy: lookup miss is opt-in.
 %% Default OFF means zero events even when a miss occurs.
 telemetry_lookup_miss_opt_in_default_off(Config) ->
     %% Confirm default is off.
@@ -325,7 +323,7 @@ telemetry_lookup_miss_opt_in_default_off(Config) ->
     Events = captured_for(Config, [erli18n, lookup, miss]),
     ?assertEqual(0, length(Events)).
 
-%% Spec: observability.md §4.2 lookup_miss measurements/metadata
+%% lookup_miss measurements/metadata
 %% schema. Opt-in via `application:set_env(erli18n,
 %% emit_lookup_telemetry, true)`.
 telemetry_lookup_miss_opt_in_enabled(Config) ->
@@ -346,7 +344,7 @@ telemetry_lookup_miss_opt_in_enabled(Config) ->
     ?assertEqual(gettext, maps:get(function, Meta)),
     ?assertEqual(undefined, maps:get(context, Meta)).
 
-%% Spec: observability.md §4.2 — function metadata distinguishes the
+%% The function metadata distinguishes the
 %% call shape: gettext, ngettext, pgettext, npgettext.
 telemetry_lookup_miss_function_metadata(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
@@ -381,7 +379,7 @@ telemetry_lookup_miss_function_metadata(Config) ->
 %% Fuzzy skip — loader-level emit
 %% =========================
 
-%% Spec: observability.md §4.2 fuzzy_skip — loader-level aggregated
+%% fuzzy_skip — loader-level aggregated
 %% emit; same opt-in flag as lookup miss. fuzzy_entry.po has 1 fuzzy
 %% entry that is dropped by default; we expect count=1 when the flag is
 %% on.
@@ -397,7 +395,7 @@ telemetry_lookup_fuzzy_skip_emits_on_load(Config) ->
     ?assertEqual(default, maps:get(domain, Meta)),
     ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)).
 
-%% Spec: observability.md §4.2 — `include_fuzzy => true` means no
+%% `include_fuzzy => true` means no
 %% entries are dropped, so the event is not emitted.
 telemetry_lookup_fuzzy_skip_not_emitted_when_include_fuzzy(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
@@ -416,7 +414,7 @@ telemetry_lookup_fuzzy_skip_not_emitted_when_include_fuzzy(Config) ->
 %% Plural divergence — always-on
 %% =========================
 
-%% Spec: observability.md §4.2 — plural divergence is always-on (no
+%% Plural divergence is always-on (no
 %% opt-in). divergent_pt_br.po has pt_BR header `n != 1` while CLDR
 %% canonical for pt_BR is `n > 1`.
 telemetry_plural_divergence_always_on(Config) ->
@@ -436,7 +434,7 @@ telemetry_plural_divergence_always_on(Config) ->
     ?assert(is_binary(maps:get(po_rule, Meta))),
     ?assert(is_binary(maps:get(cldr_rule, Meta))).
 
-%% Spec: observability.md §4.2 — no event when header rule == CLDR
+%% No event when header rule == CLDR
 %% canonical. plural_pt_br.po uses `n > 1` which matches CLDR for pt_BR.
 telemetry_plural_divergence_not_emitted_when_aligned(Config) ->
     ok = attach(Config, [[erli18n, plural, divergence_warning]]),
@@ -449,10 +447,10 @@ telemetry_plural_divergence_not_emitted_when_aligned(Config) ->
 %% Memory warning — always-on, rate-limited
 %% =========================
 
-%% Spec: observability.md §4.2 — emits when ets_bytes crosses
+%% Emits when ets_bytes crosses
 %% threshold. Test forces threshold to 1 byte so any load triggers.
-%% Also verifies the metadata sample (`domain_locales_sample`) per
-%% §4.2 ("sample of up to 10 `{Domain, Locale}` entries").
+%% Also verifies the metadata sample (`domain_locales_sample`): a
+%% sample of up to 10 `{Domain, Locale}` entries.
 telemetry_memory_warning_when_threshold_crossed(Config) ->
     application:set_env(erli18n, memory_warning_threshold, 1),
     application:set_env(erli18n, memory_warning_rate_limit_seconds, 60),
@@ -472,7 +470,7 @@ telemetry_memory_warning_when_threshold_crossed(Config) ->
     ?assert(length(Sample) =< 10),
     ?assert(lists:member({default, <<"en">>}, Sample)).
 
-%% Spec: observability.md §4.2 — rate-limit window suppresses repeated
+%% Rate-limit window suppresses repeated
 %% emits even when threshold remains crossed.
 telemetry_memory_warning_rate_limited(Config) ->
     application:set_env(erli18n, memory_warning_threshold, 1),
@@ -491,9 +489,9 @@ telemetry_memory_warning_rate_limited(Config) ->
     %% Exactly one event within the 60s window.
     ?assertEqual(1, length(Events)).
 
-%% Spec: observability.md §4.1 — po_path is part of the load start/stop
+%% po_path is part of the load start/stop
 %% metadata. Verifies the binary normalization (the path is passed as a
-%% string by the loader; metadata must be binary per §5 typespec).
+%% string by the loader; metadata must be binary per the typespec).
 telemetry_metadata_includes_po_path(Config) ->
     ok = attach(Config, [
         [erli18n, catalog, load, start],
@@ -509,13 +507,13 @@ telemetry_metadata_includes_po_path(Config) ->
     ?assert(binary:match(PoPath, <<"minimal_en.po">>) =/= nomatch),
     %% fuzzy_included default is false (no opt passed).
     ?assertEqual(false, maps:get(fuzzy_included, Meta)),
-    %% language is lc_messages — observability.md §4.1 base metadata.
+    %% language is lc_messages in the base metadata.
     ?assertEqual(lc_messages, maps:get(language, Meta)).
 
 %% Sanity: the event-name accessors in `erli18n_telemetry` must return
-%% the exact lists documented in observability.md §3-4. This guards
+%% the exact documented lists. This guards
 %% against accidental renames during refactoring — renames would be a
-%% major-version-breaking change per §7.
+%% major-version-breaking change.
 telemetry_event_names_are_canonical(_Config) ->
     ?assertEqual(
         [erli18n, catalog, load],
@@ -552,7 +550,7 @@ telemetry_event_names_are_canonical(_Config) ->
 %%
 %% These tests exercise the no-op branches of `erli18n_telemetry` that
 %% fire when the `telemetry` library is not loaded in the running VM
-%% (observability.md §11 "no-op safe, never crashes"). We simulate
+%% (no-op safe, never crashes). We simulate
 %% absence by temporarily removing telemetry from the code path,
 %% deleting/purging the module, and resetting the persistent_term cache
 %% so the next call to `telemetry_loaded/0` actually walks the code
@@ -560,7 +558,7 @@ telemetry_event_names_are_canonical(_Config) ->
 %% restores the code path, reloads telemetry, and re-attaches the
 %% application so subsequent suites and tests see a clean state.
 
-%% Spec: observability.md §11 — when telemetry is absent, `emit/3` must
+%% When telemetry is absent, `emit/3` must
 %% return `ok` without raising. Covers the `false ->` clause of
 %% `emit/3` and the `_ ->` clause of `telemetry_loaded/0`.
 telemetry_emit_is_noop_when_telemetry_unloaded(_Config) ->
@@ -577,7 +575,7 @@ telemetry_emit_is_noop_when_telemetry_unloaded(_Config) ->
         end
     ).
 
-%% Spec: observability.md §11 — when telemetry is absent, `span/3` must
+%% When telemetry is absent, `span/3` must
 %% still run Fun (so the lib has identical observable behaviour with or
 %% without telemetry) and return Fun's first tuple element. Covers the
 %% `false ->` clause of `span/3` (the `{Result, _StopMetadata} = Fun()`
@@ -595,7 +593,7 @@ telemetry_span_runs_fun_when_telemetry_unloaded(_Config) ->
         end
     ).
 
-%% Spec: observability.md §4.2 — when `erli18n_server` is not loaded,
+%% When `erli18n_server` is not loaded,
 %% `collect_domain_locales_sample/0` must return `[]` (defensive guard
 %% so the telemetry module never crashes the caller). Covers the
 %% `false ->` clause of `collect_domain_locales_sample/0`.

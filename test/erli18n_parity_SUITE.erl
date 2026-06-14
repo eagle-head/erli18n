@@ -7,10 +7,9 @@
 %%% `msgfmt` remains the `.po -> .mo` compiler; the runtime lookups are
 %%% delegated to `gettext`/`ngettext` rather than an in-BEAM library.
 %%%
-%%% Spec source-of-truth:
-%%%   * `parity_specs.md` §1-§4 — overall harness shape, oracle pin.
-%%%   * `parity_specs.md` §4 "Canonical oracle — msgfmt version pinning"
-%%%     — `msgfmt >= 0.21` is mandatory; we validate at suite init.
+%%% Rules:
+%%%   * Canonical oracle — msgfmt version pinning: `msgfmt >= 0.21` is
+%%%     mandatory; we validate at suite init.
 %%%   * `parity_tests/01-singular-lookup.feature` (PARITY-01)
 %%%   * `parity_tests/02-plural-lookup.feature` (PARITY-02)
 %%%   * `parity_tests/03-contextual-lookup.feature` (PARITY-03)
@@ -35,8 +34,8 @@
 %%%   * 5 core scenarios covering singular, plural pt_BR, plural ru,
 %%%     contextual, empty-msgstr-fallback.
 %%%   * The remaining 4 `.feature` files in `parity_tests/` are
-%%%     documented as backlog in `parity_specs.md` §5 ("fixture set
-%%%     (8 minimum)"); they are not blocking v0.1.
+%%%     documented as backlog (fixture set, 8 minimum); they are not
+%%%     blocking v0.1.
 %%% =====================================================================
 -module(erli18n_parity_SUITE).
 
@@ -128,7 +127,7 @@ init_per_suite(Config) ->
             {skip,
                 "msgfmt " ++ V ++
                     " < 0.21 — parity oracle requires "
-                    "newer toolchain (see parity_specs.md §4)."};
+                    "GNU gettext >= 0.21."};
         {error, {parse_failed, Out}} ->
             {skip, "could not parse msgfmt --version output: " ++ Out}
     end.

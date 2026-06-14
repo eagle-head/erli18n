@@ -11,7 +11,7 @@ Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), this project is in the 
 
 - **`0.x.y` → `0.x.y+1`** (patch): backward-compatible bug fixes only.
 - **`0.x.y` → `0.x+1.0`** (minor): may introduce backward-incompatible changes, announced in advance via CHANGELOG. Additive changes (new functions, new arities, new opt-in flags, new telemetry events) are the norm.
-- **Telemetry events** are versioned per the schema policy in `observability.md` §7; events marked `@stable` cannot change schema within `0.x` series, events marked `@unstable` may.
+- **Telemetry events** are versioned per the schema policy documented in the `erli18n_telemetry` module `-moduledoc`; events marked `@stable` cannot change schema within `0.x` series, events marked `@unstable` may.
 
 ## Criteria for `1.0.0`
 
@@ -19,20 +19,22 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 1. At least one external project uses `erli18n` in production for ≥ 6 months without reporting breaking issues.
 2. The Post-0.1.0 Roadmap items that affect public API surface (charset support, hot upgrade behavior, async load) are either implemented or formally rejected with rationale.
-3. Parity SUITE (`erli18n_parity_SUITE`) passes end-to-end against `gettexter` + `msgfmt` ≥ 0.21 oracle (currently 6 scenarios; target ≥ 20 covering all 9 `.feature` files in the design docs).
+3. Parity SUITE (`erli18n_parity_SUITE`) passes end-to-end against the real GNU `gettext` / `ngettext` CLI (`gettext-tools` ≥ 0.21) as oracle (currently 6 scenarios; target ≥ 20 covering the full PSD-001…009 semantics matrix).
 4. No unfixed `@unstable` telemetry events remain — all events either promoted to `@stable` or removed.
 5. CHANGELOG documents zero behavioral changes for at least 2 consecutive minor releases.
 
 ## [Unreleased]
 
-### Changed
+_No unreleased changes._
 
-- **Minimum OTP bumped to 27** (was 25.3). The public modules now carry native `-doc` / `-moduledoc` documentation attributes (EEP-59), which only compile on OTP 27+; OTP 25.3 and 26 reject them at compile time with `attribute doc after function definitions`. The CI test matrix drops OTP 25.3 / `ubuntu-22.04` and now covers OTP 27 and 28 only.
-
-## [0.1.0] — 2026-05-18
+## [0.1.0] — 2026-06-14
 
 Initial development release. The public API is functional but subject to backward-incompatible
 changes on minor bumps per the `0.x` SemVer policy above.
+
+**Requires OTP 27 or newer.** The public modules carry native `-doc` / `-moduledoc`
+documentation attributes (EEP-59), which only compile on OTP 27+; OTP 25.3 and 26 reject
+them at compile time with `attribute doc after function definitions`.
 
 ### Added
 
@@ -44,7 +46,7 @@ changes on minor bumps per the `0.x` SemVer policy above.
   - PSD-003: empty `msgstr` preserved; fallback-to-msgid handled at lookup.
   - PSD-004: header `Plural-Forms` is runtime source of truth; CLDR consulted at load only for divergence warning.
   - PSD-005: BOM UTF-8 stripped silently.
-  - PSD-006: msgctxt stored as separate ETS key field (parity with `gettexter`).
+  - PSD-006: msgctxt stored as a separate ETS key field, matching how GNU gettext keys contextual entries (`msgctxt` + `EOT` + `msgid`).
   - PSD-007: obsolete `#~` entries skipped.
   - PSD-008: degenerate plural (`nplurals=1`) accepted.
   - PSD-009: `nplurals` mismatch rejected with structured error.
@@ -52,19 +54,17 @@ changes on minor bumps per the `0.x` SemVer policy above.
 - **`erli18n_server:ensure_loaded/3,4` and `reload/3,4`** — atomic catalog load (parse → compile plural → validate vs CLDR → insert), with idempotency fast-path (RISK-012 mitigation).
 - **`erli18n`** (façade) — full GNU gettext C-macro API surface: `gettext` family (singular), `ngettext` family (plural), `pgettext` family (contextual), `npgettext` family (contextual + plural), with `d`/`dc` aliases. Per-process locale via process dictionary; application-wide defaults via `application:get_env/2`.
 - **`erli18n_telemetry`** — 7 `:telemetry` events as first-class observability concern (catalog load/reload/unload spans; lookup miss/fuzzy_skip opt-in; plural divergence warning; memory warning rate-limited). `telemetry` declared as optional dep via `optional_applications` (OTP 24+).
-- **Test suite**: 238 tests total (10 server, 27 po, 34 plural, 18 loader, 36 façade, 17 telemetry, 9 PropEr properties P1-P5 @ 200 runs each, 7 fuzz scenarios F1-F7 @ 100-500 runs each, 6 parity scenarios skipped without `msgfmt`).
+- **Test suite**: 289 Common Test cases, green on OTP 27 and 28 — façade API, gen_server / catalog, `.po` parser, plural evaluator, loader, and telemetry suites, plus PropEr properties (200 runs each) and fuzz scenarios (100–500 runs each). 6 of these are parity scenarios run against the real GNU `gettext` / `ngettext` CLI oracle; that suite skips cleanly when `gettext-tools` or the `pt_BR.UTF-8` / `ru_RU.UTF-8` locales are absent.
 - **Coverage**: 100% of behaviorally reachable lines. Dead defensive code removed (no silent fallbacks for invariant violations — crashes are explicit via `function_clause` / `case_clause` / `badmatch`).
 - **Apache 2.0 license**.
-- **GitHub Actions CI** (`.github/workflows/ci.yml`) — three jobs on pinned `ubuntu-24.04` / `ubuntu-22.04` runners (per the `erlef/setup-beam` ABI compatibility matrix): `lint` (fast quality gate on OTP 28), `test` (Common Test + coverage matrix across OTP 25.3 / 27 / 28 with `gettext` installed so `erli18n_parity_SUITE` exercises the oracle path), `dialyzer` (isolated job with PLT cache). Concurrency cancellation per ref, least-privilege `contents: read` token, rebar3 build cache keyed per OTP.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — three jobs on pinned `ubuntu-24.04` runners: `lint` (fast quality gate on OTP 28), `test` (Common Test + coverage across OTP 27 and 28, with `gettext` installed and the `pt_BR.UTF-8` / `ru_RU.UTF-8` locales generated so `erli18n_parity_SUITE` exercises the oracle path), `dialyzer` (isolated job with PLT cache). CI runs automatically only on `main`; every other branch runs on demand via `workflow_dispatch`. Concurrency cancellation per ref, least-privilege `contents: read` token, rebar3 build cache keyed per OTP.
 - **Local CI emulation** via `act` and a custom runner image (`Dockerfile.act-runner`): extends `ghcr.io/catthehacker/ubuntu:full-24.04` with ELP `2026-02-27` (SHA256-verified per SLSA v0.2). Reuses the workflow YAML unchanged — GitHub-hosted runners gracefully `[SKIP]` the ELP steps in real CI. Bootstrap is declarative in `compose.yml` (`act-toolcache` volume init + image build). `actionlint 1.7.12` pinned via `mise.toml` for static workflow analysis.
 - **Repo hygiene**: `README.md` (with usage / install / compatibility / dev sections), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 3.0), `.editorconfig`.
 
-### Architecture decisions documented
+### Architecture decisions
 
-See `_reversa_sdd/migration/` (in the parent repo) for the full design corpus:
-- 9 PSDs (PO Semantics Decisions)
-- 21 EXs (parity exceptions)
-- 14 RISKs (architectural risks with mitigations)
-- 9 AMBs (ambiguity log)
-- 5 PropEr properties + 7 fuzz scenarios specifications
-- Topology, paradigm, observability, target architecture, and test strategy documents
+The design rationale is captured inline in the source: PO-semantics decisions
+(`PSD-001`…`PSD-009`), risk mitigations (`RISK-*`), and ambiguity resolutions
+(`AMB-*`) are referenced from the relevant module `-moduledoc` / `-doc` attributes
+and code comments. The internal planning corpus that originally tracked them is not
+part of the published package.

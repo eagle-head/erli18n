@@ -1,7 +1,7 @@
 %%% =====================================================================
 %%% Property-based tests for `erli18n_po` — parser/dumper invariants.
 %%%
-%%% Spec source-of-truth: `parity_specs.md` §6.1 (properties P1, P2, P5).
+%%% Properties P1, P2, P5.
 %%%   * P1 — Roundtrip parse/dump.
 %%%   * P2 — Idempotent normalization (dump∘parse∘dump∘parse = parse).
 %%%   * P5 — ETS-key canonical equivalence (PSD-006): `{Context, Msgid}`

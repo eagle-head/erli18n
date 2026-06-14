@@ -1698,9 +1698,9 @@ handle_call({insert_catalog, D, L, Entries}, _From, State) ->
     index_add_keys(D, L, object_keys(Objects)),
     {reply, ok, State};
 handle_call({unload, D, L}, _From, State) ->
-    %% Span: [erli18n, catalog, unload]. Always-on per observability.md
-    %% §6 (frequency is bounded — admin operation, not hot path).
-    %% Metadata schema per observability.md §4.1:
+    %% Span: [erli18n, catalog, unload]. Always-on (frequency is bounded —
+    %% admin operation, not hot path).
+    %% Metadata schema:
     %%   start:     #{domain, locale}
     %%   stop:      #{domain, locale, result :: ok | not_loaded,
     %%                keys_removed}
@@ -1854,8 +1854,8 @@ install_staged_no_memcheck(Domain, Locale, Staged) ->
         fuzzy_skipped := FuzzySkipped
     } = Staged,
     emit_divergence_log(Domain, Locale, Divergence),
-    %% Telemetry: [erli18n, plural, divergence_warning]. Always-on per
-    %% observability.md §6 (load-time, infrequent). Schema in §4.2.
+    %% Telemetry: [erli18n, plural, divergence_warning]. Always-on
+    %% (load-time, infrequent).
     emit_divergence_telemetry(Domain, Locale, Divergence),
     emit_fuzzy_skip(Domain, Locale, FuzzySkipped),
     %% Findings #7/#13: register the catalog's data keys (iff >=1 row).
@@ -1965,8 +1965,8 @@ emit_divergence_log(Domain, Locale, {plural_divergence, HdrRule, CldrRule}) ->
     ok.
 
 %% Telemetry counterpart to the ?LOG_WARNING above. Always emitted on
-%% real divergence; skipped on `none`. Schema is the contract in
-%% observability.md §4.2 (`[erli18n, plural, divergence_warning]`).
+%% real divergence; skipped on `none`. Emits the event
+%% `[erli18n, plural, divergence_warning]`.
 emit_divergence_telemetry(_Domain, _Locale, none) ->
     ok;
 emit_divergence_telemetry(
@@ -2195,7 +2195,7 @@ stage_compiled(Domain, Locale, PoPath, IncludeFuzzy, Bin, Header, Entries, NumEn
 -spec compute_fuzzy_skipped(boolean(), binary(), non_neg_integer()) ->
     non_neg_integer().
 compute_fuzzy_skipped(true = _IncludeFuzzy, _Bin, _DefaultCount) ->
-    %% include_fuzzy => true: nothing was dropped (observability.md §4.2).
+    %% include_fuzzy => true: nothing was dropped.
     0;
 compute_fuzzy_skipped(false, Bin, DefaultCount) ->
     case erli18n_telemetry:lookup_telemetry_enabled() of
@@ -2305,9 +2305,9 @@ rewrite_index(Domain, Locale, NewKeys) ->
     end.
 
 %% Counts the rows actually deleted so the unload span can report
-%% `keys_removed` (observability.md §4.1). The result atom mirrors the
-%% schema: `not_loaded` when there was nothing to delete, `ok`
-%% otherwise. This is the catalog-removal primitive behind the `unload`
+%% `keys_removed`. The result atom mirrors the schema: `not_loaded` when
+%% there was nothing to delete, `ok` otherwise. This is the
+%% catalog-removal primitive behind the `unload`
 %% handle_call; the `reload` path no longer deletes-then-reloads (finding
 %% #4: it STAGEs then atomically swaps via `swap_catalog/3').
 %%
@@ -2365,7 +2365,7 @@ delete_keys([Key | Rest], Acc) ->
     delete_keys(Rest, Acc1).
 
 %% Build the stop metadata for the catalog load/reload span. Maps the
-%% internal load result onto the schema in observability.md §4.1:
+%% internal load result onto the stop-metadata schema:
 %%
 %%   {ok, N}             -> #{result => ok,    keys_loaded => N}
 %%   {ok, already}       -> #{result => already, keys_loaded => 0}
@@ -2377,10 +2377,10 @@ load_stop_metadata({ok, N}) when is_integer(N) ->
 load_stop_metadata({error, Reason}) ->
     #{result => {error, Reason}, keys_loaded => 0}.
 
-%% The `po_path` metadata field must be binary per observability.md
-%% §4.1 (catalog_load_metadata typespec). `file:filename()` can be
-%% either a list or binary depending on the build; we normalize at the
-%% telemetry boundary so handlers never have to guard.
+%% The `po_path` metadata field must be binary (the catalog_load_metadata
+%% typespec). `file:filename()` can be either a list or binary depending on
+%% the build; we normalize at the telemetry boundary so handlers never have
+%% to guard.
 to_binary_path(Path) when is_binary(Path) -> Path;
 to_binary_path(Path) when is_list(Path) -> unicode:characters_to_binary(Path).
 

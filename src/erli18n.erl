@@ -1389,21 +1389,17 @@ plural_fallback(_Msgid, MsgidPlural, _) -> MsgidPlural.
 %% Telemetry — lookup miss
 %% =========================
 %%
-%% Opt-in per observability.md §6 (overhead policy). The flag is
-%% checked first so the fast path stays a single `application:get_env`
-%% (ETS read, ~100ns). When the flag is OFF the function returns
-%% immediately and no event is constructed.
+%% Opt-in (overhead policy). The flag is checked first so the fast path
+%% stays a single `application:get_env` (ETS read, ~100ns). When the flag
+%% is OFF the function returns immediately and no event is constructed.
 %%
-%% Schema per observability.md §4.2 (`[erli18n, lookup, miss]`):
+%% Schema of `[erli18n, lookup, miss]`:
 %%   measurements: `#{count => 1}`
 %%   metadata:     `#{domain, locale, msgid, function, context}`
 %%
-%% Note: the spec's metadata schema in §5 omits `context` for the
-%% lookup_miss event, but the §4.2 prose explicitly includes it as the
-%% last field. We honour the §4.2 prose (it's the catalogue, treated as
-%% authoritative) and surface `context` so the consumer can distinguish
-%% pgettext from gettext misses without inferring from the function
-%% atom.
+%% Note: we surface `context` in the metadata so the consumer can
+%% distinguish pgettext from gettext misses without inferring from the
+%% function atom.
 -doc """
 Internal helper: emits the lookup-miss telemetry event
 (`[erli18n, lookup, miss]`), invoked by all fallback paths of the four families.

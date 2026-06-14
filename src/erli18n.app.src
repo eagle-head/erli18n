@@ -11,13 +11,13 @@
     %% the release tool will pick it up if present without forcing the
     %% consumer to start it. The runtime guard in `erli18n_telemetry`
     %% covers the case where the module is genuinely absent. See
-    %% observability.md §11.
+    %% the `erli18n_telemetry` module docs.
     {optional_applications, [telemetry]},
     %% Application env defaults consumed by `erli18n_telemetry`:
     %%   * `emit_lookup_telemetry` (boolean, default false):
     %%     opt-in flag for `[erli18n, lookup, miss]` and
-    %%     `[erli18n, lookup, fuzzy_skip]` events. See observability.md
-    %%     §6 (overhead policy).
+    %%     `[erli18n, lookup, fuzzy_skip]` events. See the
+    %%     `erli18n_telemetry` module docs (overhead policy).
     %%   * `memory_warning_threshold` (bytes, default 100 MiB):
     %%     threshold for `[erli18n, catalog, memory_warning]`. Crossing
     %%     it triggers a single emit, rate-limited to one per

@@ -1,6 +1,6 @@
 %%% =====================================================================
 %%% Property-based tests for `erli18n_plural` — C-expression evaluator
-%%% soundness (`parity_specs.md` §6.1 property P3).
+%%% soundness (property P3).
 %%%
 %%% Claim (P3): for every well-formed GNU plural expression `Expr` and
 %%% every integer `N`, the chosen form index is within `[0, Nplurals-1]`.
