@@ -71,7 +71,7 @@ jobs:
       - name: Publish package to Hex.pm
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: rebar3 hex publish package --yes
+        run: rebar3 hex publish package --repo hexpm --yes
 
       # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh
       # calls the ex_doc escript directly, skipping the vestigial EDoc step
@@ -86,7 +86,7 @@ jobs:
       - name: Publish docs to HexDocs
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: rebar3 hex publish docs --doc-dir doc --yes
+        run: rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
 
       # Create the visible GitHub Release LAST — only after Hex publishing has
       # succeeded, so a failed publish never leaves a release for a version that
