@@ -186,4 +186,4 @@ To report a vulnerability, see [`SECURITY.md`](SECURITY.md) — please do **not*
 - [GNU gettext manual](https://www.gnu.org/software/gettext/manual/gettext.html) — `.po` format and runtime semantics.
 - [Unicode CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules) — pluralization data source.
 - [`telemetry`](https://github.com/beam-telemetry/telemetry) — the observability framework.
-- [`gettexter`](https://github.com/seriyps/gettexter) — historical Erlang gettext implementation, used here as a parity oracle.
+- [`gettexter`](https://github.com/seriyps/gettexter) — historical Erlang gettext library whose API surface `erli18n` mirrors for easy migration.

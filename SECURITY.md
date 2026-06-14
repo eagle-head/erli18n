@@ -44,5 +44,5 @@ We will keep you informed throughout the process.
 Out of scope:
 
 - Vulnerabilities in `telemetry` (optional dep) — report upstream to [beam-telemetry/telemetry](https://github.com/beam-telemetry/telemetry).
-- Vulnerabilities in `gettexter` or `proper` (test-only deps).
+- Vulnerabilities in `proper` or `eqwalizer_support` (test-only deps).
 - Vulnerabilities in the OTP runtime itself — report to [Ericsson OTP security](https://www.erlang.org/news/security).
