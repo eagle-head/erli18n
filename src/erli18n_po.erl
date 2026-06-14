@@ -1,74 +1,74 @@
 -module(erli18n_po).
 
 -moduledoc """
-Parser e serializador do formato GNU gettext PO/POT.
+Parser and serializer for the GNU gettext PO/POT format.
 
-Le um catalogo `.po`/`.pot` (texto) e devolve um `parsed_catalog()` estruturado;
-`dump/1` faz o caminho inverso. Toda a logica e descida-recursiva escrita a mao,
-sem dependencias, honrando as nove decisoes de semantica PO (PSD-001..009).
+Reads a `.po`/`.pot` catalog (text) and returns a structured `parsed_catalog()`;
+`dump/1` is the inverse path. All the logic is hand-rolled recursive descent,
+dependency-free, honoring the nine PO-semantics decisions (PSD-001..009).
 
-## O que faz e qual problema resolve
+## What it does and what problem it solves
 
-Transforma bytes brutos de um `.po` em dados que o resto da biblioteca consome
-(o `erli18n_server` chama este modulo no inicio do pipeline de carga). As nove
-decisoes em uma frase cada:
+Turns the raw bytes of a `.po` into data the rest of the library consumes
+(`erli18n_server` calls this module at the start of the load pipeline). The nine
+decisions in one sentence each:
 
-- PSD-001: entradas `#, fuzzy` sao descartadas por padrao (parity com `msgfmt`).
-- PSD-002: charset do `Content-Type` normalizado para `utf8 | latin1 | us_ascii`.
-- PSD-003: traducao vazia (`<<>>`) e preservada; o fallback e responsabilidade
-  de quem faz lookup, nao do parser.
-- PSD-004: `Plural-Forms` preservado cru; so o `nplurals` e extraido aqui.
-- PSD-005: BOM UTF-8 e removido em silencio antes de qualquer processamento.
-- PSD-006: `msgctxt` e um campo separado, nunca colado por byte ao `msgid`.
-- PSD-007: entradas obsoletas (`#~`) sao descartadas.
-- PSD-008: plural degenerado (`nplurals=1`) e aceito; `validate_plural_indices/3`
-  trata `nplurals=1` como um conjunto de indices valido (`[0]`), parity com as
-  regras asiaticas (ja/zh/ko/vi/th).
-- PSD-009: o conjunto de indices `msgstr[N]` e validado contra `nplurals`.
+- PSD-001: `#, fuzzy` entries are dropped by default (parity with `msgfmt`).
+- PSD-002: the `Content-Type` charset is normalized to `utf8 | latin1 | us_ascii`.
+- PSD-003: an empty translation (`<<>>`) is preserved; the fallback is the
+  responsibility of whoever does the lookup, not the parser.
+- PSD-004: `Plural-Forms` is preserved raw; only `nplurals` is extracted here.
+- PSD-005: a UTF-8 BOM is stripped silently before any processing.
+- PSD-006: `msgctxt` is a separate field, never byte-glued to the `msgid`.
+- PSD-007: obsolete entries (`#~`) are dropped.
+- PSD-008: a degenerate plural (`nplurals=1`) is accepted; `validate_plural_indices/3`
+  treats `nplurals=1` as a valid index set (`[0]`), parity with the
+  Asian rules (ja/zh/ko/vi/th).
+- PSD-009: the `msgstr[N]` index set is validated against `nplurals`.
 
-## Modelo mental
+## Mental model
 
-Este modulo e PURO e SEM ESTADO: nenhum ETS, nenhum dicionario de processo,
-nenhum `application:env`. Cada chamada de `parse/2` carrega so o binario que voce
-passou; `parse_file/2` apenas adiciona um `file:read_file/1` na frente. Erros
-viram dados (`{error, parse_error()}`), nao processos mortos.
+This module is PURE and STATELESS: no ETS, no process dictionary,
+no `application:env`. Each `parse/2` call carries only the binary you
+passed; `parse_file/2` just prepends a `file:read_file/1`. Errors
+become data (`{error, parse_error()}`), not dead processes.
 
-A entrada e NAO-CONFIAVEL (modelo de ameaca multi-tenant do `SECURITY.md`): um
-inquilino pode subir um `.po` adversarial. Por isso o contrato e "erros de
-parsing viram erros estruturados, nunca crashes silenciosos nem crescimento
-ilimitado de memoria". Duas defesas concretas vivem aqui:
+The input is UNTRUSTED (the multi-tenant threat model in `SECURITY.md`): a
+tenant may upload an adversarial `.po`. Hence the contract is "parsing
+errors become structured errors, never silent crashes nor unbounded
+memory growth". Two concrete defenses live here:
 
-- Cap por CONTAGEM de digitos antes de qualquer `binary_to_integer` sobre input
-  do atacante (`?MAX_INT_DIGITS`), nos dois sitios que leem inteiros do `.po`:
-  o `nplurals=` do header (`collect_digits/2`) e o indice `msgstr[N]`
-  (`parse_msgstr_index/2`). Sem isso, uma corrida de milhares de digitos
-  construiria um bignum O(d^2) ou atingiria `system_limit`.
-- `bins_to_binary/1` materializa strings grandes em tempo LINEAR (acumulador a
-  esquerda + `iolist_to_binary/1`); a forma ingenua com o acumulador a direita
-  era Θ(n²) e travava o loader por segundos num unico `msgid` grande.
+- A cap by digit COUNT before any `binary_to_integer` over attacker input
+  (`?MAX_INT_DIGITS`), at the two sites that read integers from the `.po`:
+  the `nplurals=` of the header (`collect_digits/2`) and the `msgstr[N]` index
+  (`parse_msgstr_index/2`). Without it, a run of thousands of digits would
+  build an O(d^2) bignum or hit `system_limit`.
+- `bins_to_binary/1` materializes large strings in LINEAR time (left-side
+  accumulator + `iolist_to_binary/1`); the naive form with the right-side
+  accumulator was Θ(n²) and stalled the loader for seconds on a single large `msgid`.
 
-O pipeline de `parse/2` e de DUAS PASSADAS, porque o charset do corpo so e
-conhecido depois de ler o header:
+The `parse/2` pipeline is TWO-PASS, because the body charset is only
+known after reading the header:
 
-1. Prepass (`extract_header_charset/1`) le os bytes crus (header e sempre
-   ASCII-safe pelo spec GNU) e descobre o charset.
-2. `normalize_input/2` transcodifica o corpo inteiro para UTF-8 nesse charset.
-3. O parse linha-a-linha roda sobre UTF-8, com o charset ainda threaded para que
-   escapes `\\xHH`/`\\OOO` sejam interpretados no code space declarado ANTES do
-   gate UTF-8 (decode em duas fases, `decode_quoted_string/2` +
-   `reassemble_field/2`). Prepass e builder usam o MESMO reconciliador de campos
-   (`field_charset/1`), entao nunca divergem (essa divergencia era um badmatch
-   que derrubava o gen_server num `Content-Type ` com espaco antes do `:`).
+1. A prepass (`extract_header_charset/1`) reads the raw bytes (the header is
+   always ASCII-safe per the GNU spec) and discovers the charset.
+2. `normalize_input/2` transcodes the entire body to UTF-8 in that charset.
+3. The line-by-line parse runs over UTF-8, with the charset still threaded so
+   `\\xHH`/`\\OOO` escapes are interpreted in the declared code space BEFORE the
+   UTF-8 gate (two-phase decode, `decode_quoted_string/2` +
+   `reassemble_field/2`). Prepass and builder use the SAME field reconciler
+   (`field_charset/1`), so they never diverge (that divergence was a badmatch
+   that took down the gen_server on a `Content-Type ` with a space before the `:`).
 
-Finais de linha LF, CRLF e lone-CR (Mac classico) sao todos aceitos.
+LF, CRLF and lone-CR (classic Mac) line endings are all accepted.
 
-## Quando voce encosta neste modulo
+## When you touch this module
 
-- Carregar um catalogo: o `erli18n_server` le o arquivo por conta propria
-  (`file:read_file/1`) e chama `parse/2` por baixo — `parse_file/1,2` e um helper
-  de conveniencia/teste, NAO o caminho de producao. Voce raramente chama direto.
-- Validar/inspecionar um `.po` em ferramenta ou teste: `parse/1` ou `parse/2`.
-- Roundtrip / reescrita programatica: `parse/1` -> editar -> `dump/1`.
+- Loading a catalog: `erli18n_server` reads the file on its own
+  (`file:read_file/1`) and calls `parse/2` underneath — `parse_file/1,2` is a
+  convenience/test helper, NOT the production path. You rarely call it directly.
+- Validating/inspecting a `.po` in a tool or test: `parse/1` or `parse/2`.
+- Roundtrip / programmatic rewrite: `parse/1` -> edit -> `dump/1`.
 
 ## Quickstart
 
@@ -87,10 +87,10 @@ utf8
 true
 ```
 
-## Funcoes-chave
+## Key functions
 
-Entrada: `parse/1`, `parse/2`, `parse_file/1`, `parse_file/2`. Saida: `dump/1`.
-Tipo do resultado: `parsed_catalog/0`; uma entrada e um `entry/0`; erros sao um
+Input: `parse/1`, `parse/2`, `parse_file/1`, `parse_file/2`. Output: `dump/1`.
+Result type: `parsed_catalog/0`; an entry is an `entry/0`; errors are a
 `parse_error/0`.
 """.
 
@@ -121,27 +121,27 @@ Tipo do resultado: `parsed_catalog/0`; uma entrada e um `entry/0`; erros sao um
 %% =========================
 
 -doc """
-Opcoes de parse. Hoje so existe uma chave: `include_fuzzy`.
+Parse options. Today there is only one key: `include_fuzzy`.
 
-Com `include_fuzzy => false` (default), entradas marcadas `#, fuzzy` sao
-descartadas no flush (parity com `msgfmt`). Com `true`, elas sao mantidas. Um
-mapa vazio `#{}` herda todos os defaults.
+With `include_fuzzy => false` (default), entries marked `#, fuzzy` are
+dropped on flush (parity with `msgfmt`). With `true`, they are kept. An
+empty map `#{}` inherits all the defaults.
 """.
 -type parse_opts() :: #{include_fuzzy => boolean()}.
 
 -doc """
-Resultado de um parse bem-sucedido.
+Result of a successful parse.
 
-`header` e o `header_map()` (sempre presente: sintetizado vazio se o `.po` nao
-tinha um header proprio). `entries` esta na ORDEM DO ARQUIVO. E exatamente a
-forma que `dump/1` consome.
+`header` is the `header_map()` (always present: synthesized empty if the `.po`
+had no header of its own). `entries` is in FILE ORDER. It is exactly the
+shape that `dump/1` consumes.
 
-A lei de roundtrip `parse(dump(C)) =:= {ok, C}` vale para catalogos cujo header
-foi parseado de um `.po` COM header proprio (`raw =/= <<>>`). Quando o catalogo
-veio de um input SEM header (header sintetico com `raw => <<>>` e `content_type
-=> <<>>`), `dump/1` materializa um `Content-Type` minimo; ao re-parsear, esse
-campo passa a estar preenchido e o catalogo difere do original nesse ponto.
-Veja `dump/1` para o detalhe.
+The roundtrip law `parse(dump(C)) =:= {ok, C}` holds for catalogs whose header
+was parsed from a `.po` WITH a header of its own (`raw =/= <<>>`). When the
+catalog came from an input WITHOUT a header (a synthetic header with
+`raw => <<>>` and `content_type => <<>>`), `dump/1` materializes a minimal
+`Content-Type`; on re-parse, that field becomes populated and the catalog
+differs from the original at that point. See `dump/1` for the detail.
 """.
 -type parsed_catalog() :: #{
     header := header_map(),
@@ -151,14 +151,15 @@ Veja `dump/1` para o detalhe.
 %% Per PSD-002: charset normalized to one of utf8 | latin1 | us_ascii.
 %% Per PSD-004: plural_forms preserved raw for downstream evaluator.
 -doc """
-Header do catalogo, ja reconciliado.
+Catalog header, already reconciled.
 
-`charset` e o atomo normalizado (PSD-002). `plural_forms` e a string CRUA do
-campo `Plural-Forms` (PSD-004): este modulo NAO a avalia — so `erli18n_plural`
-o faz; aqui ela e preservada para downstream. `content_type` e o valor cru do
-campo homonimo. `raw` e o texto inteiro do `msgstr` do header, usado por
-`dump/1` para re-emitir o header fielmente. Um catalogo sem header proprio
-recebe um header sintetico com `charset => utf8` e os demais campos vazios.
+`charset` is the normalized atom (PSD-002). `plural_forms` is the RAW string of
+the `Plural-Forms` field (PSD-004): this module does NOT evaluate it — only
+`erli18n_plural` does; here it is preserved for downstream. `content_type` is
+the raw value of the field of the same name. `raw` is the entire `msgstr` text
+of the header, used by `dump/1` to re-emit the header faithfully. A catalog
+without a header of its own gets a synthetic header with `charset => utf8` and
+the other fields empty.
 """.
 -type header_map() :: #{
     plural_forms => binary(),
@@ -175,16 +176,16 @@ recebe um header sintetico com `charset => utf8` e os demais campos vazios.
 %% `msgstr[N]` lines — unusual but accepted) carries `undefined`, and the
 %% dumper falls back to the singular `msgid` for that one slot.
 -doc """
-Uma entrada do catalogo, em uma de duas formas.
+A catalog entry, in one of two shapes.
 
-`{singular, Context, Msgid, Translation}` — uma traducao 1:1. `Context` e
-`undefined` (sem `msgctxt`) ou um binario. `Translation` pode ser `<<>>` (PSD-003:
-o vazio e preservado, nao vira fallback aqui).
+`{singular, Context, Msgid, Translation}` — a 1:1 translation. `Context` is
+`undefined` (no `msgctxt`) or a binary. `Translation` may be `<<>>` (PSD-003:
+the empty value is preserved, it does not become a fallback here).
 
-`{plural, Context, Msgid, MsgidPlural, Forms}` — uma traducao com plurais.
-`MsgidPlural` e a forma plural do source ou `undefined` (caso degenerado: so
-`msgstr[N]` sem `msgid_plural` explicito). `Forms` e uma lista
-`[{plural_index(), translation()}]` ORDENADA por indice, validada contra
+`{plural, Context, Msgid, MsgidPlural, Forms}` — a translation with plurals.
+`MsgidPlural` is the plural form from the source or `undefined` (degenerate
+case: only `msgstr[N]` without an explicit `msgid_plural`). `Forms` is a list
+`[{plural_index(), translation()}]` ORDERED by index, validated against
 `nplurals` (PSD-009).
 """.
 -type entry() ::
@@ -203,18 +204,18 @@ o vazio e preservado, nao vira fallback aqui).
     file:posix() | badarg | terminated | system_limit.
 
 -doc """
-Erro estruturado de parse — o unico modo de falha "normal" da API publica.
+Structured parse error — the only "normal" failure mode of the public API.
 
-- `{unsupported_charset, Declared}` — o `Content-Type` declarou um charset que
-  nao mapeia para `utf8 | latin1 | us_ascii`.
-- `{charset_conversion, Label, Detail}` — os bytes nao casam com o charset
-  declarado (ex.: UTF-8 invalido, byte fora de US-ASCII).
-- `{plural_count_mismatch, Msgid, Expected, Got}` — os indices `msgstr[N]` nao
-  formam exatamente `[0..Expected-1]` (PSD-009).
-- `{syntax_error, Line, Reason}` — linha malformada; `Reason` e `term()` e
-  carrega tambem os erros de decode de escape (ex.: `escape_invalid_utf8`,
-  `octal_escape_out_of_range`) sem alargar a tupla exportada.
-- `{file_error, Posix}` — so `parse_file/1,2`: a leitura do disco falhou.
+- `{unsupported_charset, Declared}` — the `Content-Type` declared a charset that
+  does not map to `utf8 | latin1 | us_ascii`.
+- `{charset_conversion, Label, Detail}` — the bytes do not match the declared
+  charset (e.g. invalid UTF-8, a byte outside US-ASCII).
+- `{plural_count_mismatch, Msgid, Expected, Got}` — the `msgstr[N]` indices do
+  not form exactly `[0..Expected-1]` (PSD-009).
+- `{syntax_error, Line, Reason}` — malformed line; `Reason` is `term()` and
+  also carries the escape-decode errors (e.g. `escape_invalid_utf8`,
+  `octal_escape_out_of_range`) without widening the exported tuple.
+- `{file_error, Posix}` — only `parse_file/1,2`: the disk read failed.
 """.
 -type parse_error() ::
     {unsupported_charset, binary()}
@@ -312,13 +313,13 @@ Erro estruturado de parse — o unico modo de falha "normal" da API publica.
 %% =========================
 
 -doc """
-Faz o parse de um catalogo PO a partir de um binario, com opcoes padrao
+Parses a PO catalog from a binary, with default options
 (`include_fuzzy => false`).
 
-Equivale a `parse(Bin, #{})`. Retorna `{ok, parsed_catalog()}` com o header
-normalizado e a lista de entradas (na ordem do arquivo), ou
-`{error, parse_error()}` se o charset for invalido, a conversao falhar, houver
-erro de sintaxe ou os indices de plural divergirem de `nplurals`.
+Equivalent to `parse(Bin, #{})`. Returns `{ok, parsed_catalog()}` with the
+normalized header and the list of entries (in file order), or
+`{error, parse_error()}` if the charset is invalid, the conversion fails, there
+is a syntax error, or the plural indices diverge from `nplurals`.
 
 ```erlang
 1> erli18n_po:parse(<<"msgid \"Hello\"\nmsgstr \"Ola\"\n">>).
@@ -327,41 +328,41 @@ erro de sintaxe ou os indices de plural divergirem de `nplurals`.
       entries => [{singular,undefined,<<"Hello">>,<<"Ola">>}]}}
 ```
 
-Veja `parse/2` para a semantica completa de opcoes e do pipeline, e `dump/1`
-para o caminho inverso.
+See `parse/2` for the full semantics of options and the pipeline, and `dump/1`
+for the inverse path.
 """.
 -spec parse(binary()) -> {ok, parsed_catalog()} | {error, parse_error()}.
 parse(Bin) ->
     parse(Bin, #{}).
 
 -doc """
-Faz o parse de um catalogo PO a partir de um binario, respeitando `Opts`.
+Parses a PO catalog from a binary, honoring `Opts`.
 
-`Bin` e o conteudo bruto do `.po`; `Opts` e um `parse_opts()` — hoje so
-`include_fuzzy => boolean()` (default `false`: entradas marcadas `#, fuzzy` sao
-descartadas, parity com `msgfmt`). O fluxo: (1) strip silencioso do BOM UTF-8
-(PSD-005); (2) prepass que extrai o charset do header `Content-Type` via o mesmo
-reconciliador de campos do `build_header/1`, garantindo que prepass e builder
-nunca divirjam (finding #5 — fecha o `badmatch` em `Content-Type ` com espaco
-antes do `:`); (3) normaliza o corpo inteiro para UTF-8 no charset descoberto;
-(4) parse linha-a-linha com o charset threaded para que escapes `\\xHH`/`\\OOO`
-sejam transcodificados pelo code space correto.
+`Bin` is the raw content of the `.po`; `Opts` is a `parse_opts()` — today only
+`include_fuzzy => boolean()` (default `false`: entries marked `#, fuzzy` are
+dropped, parity with `msgfmt`). The flow: (1) silent strip of the UTF-8 BOM
+(PSD-005); (2) a prepass that extracts the charset from the `Content-Type`
+header via the same field reconciler as `build_header/1`, ensuring that prepass
+and builder never diverge (finding #5 — closes the `badmatch` on a
+`Content-Type ` with a space before the `:`); (3) normalizes the entire body to
+UTF-8 in the discovered charset; (4) line-by-line parse with the charset
+threaded so `\\xHH`/`\\OOO` escapes are transcoded through the right code space.
 
-Retorna `{ok, parsed_catalog()}` (`#{header => header_map(), entries =>
-[entry()]}`) ou `{error, parse_error()}`. Sem header explicito, sintetiza um
-header vazio com charset `utf8`. Aceita finais de linha LF, CRLF e lone-CR
-(finding #15).
+Returns `{ok, parsed_catalog()}` (`#{header => header_map(), entries =>
+[entry()]}`) or `{error, parse_error()}`. Without an explicit header, it
+synthesizes an empty header with charset `utf8`. Accepts LF, CRLF and lone-CR
+line endings (finding #15).
 
-Parametros:
-- `Bin` — conteudo bruto do `.po`/`.pot`. Tratado como NAO-CONFIAVEL: um
-  `nplurals=` ou `msgstr[N]` com corrida absurda de digitos e rejeitado em O(1)
-  (cap por `?MAX_INT_DIGITS`), nunca constroi um bignum.
-- `Opts` — ver `parse_opts/0`. `include_fuzzy` controla se entradas `#, fuzzy`
-  entram no resultado.
+Parameters:
+- `Bin` — raw content of the `.po`/`.pot`. Treated as UNTRUSTED: an
+  `nplurals=` or `msgstr[N]` with an absurd run of digits is rejected in O(1)
+  (cap by `?MAX_INT_DIGITS`), never builds a bignum.
+- `Opts` — see `parse_opts/0`. `include_fuzzy` controls whether `#, fuzzy`
+  entries enter the result.
 
-Modos de falha (todos `{error, parse_error()}`, nunca crash): charset declarado
-nao suportado, bytes que nao casam com o charset, indices de plural divergentes
-de `nplurals` e linhas malformadas (com numero de linha).
+Failure modes (all `{error, parse_error()}`, never a crash): an unsupported
+declared charset, bytes that do not match the charset, plural indices that
+diverge from `nplurals`, and malformed lines (with line number).
 
 ```erlang
 1> Fuzzy = <<"#, fuzzy\nmsgid \"a\"\nmsgstr \"b\"\n">>.
@@ -375,7 +376,7 @@ de `nplurals` e linhas malformadas (com numero de linha).
 {error,{syntax_error,3,{unrecognized_line,<<"???">>}}}
 ```
 
-Veja `parse/1` (defaults), `parse_file/2` (a partir do disco) e `dump/1`.
+See `parse/1` (defaults), `parse_file/2` (from disk) and `dump/1`.
 """.
 -spec parse(binary(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
@@ -402,19 +403,19 @@ parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
     end.
 
 -doc """
-Le e faz o parse de um arquivo `.po` do disco, com opcoes padrao.
+Reads and parses a `.po` file from disk, with default options.
 
-Equivale a `parse_file(Path, #{})`. Le `Path` com `file:read_file/1` e delega a
-`parse/2`. Erros de leitura viram `{error, {file_error, file_read_error()}}`.
+Equivalent to `parse_file(Path, #{})`. Reads `Path` with `file:read_file/1` and
+delegates to `parse/2`. Read errors become `{error, {file_error, file_read_error()}}`.
 
 ```erlang
 1> erli18n_po:parse_file(<<"priv/locale/fr/LC_MESSAGES/my_domain.po">>).
 {ok,#{header => #{charset => utf8, ...}, entries => [...]}}
-2> erli18n_po:parse_file(<<"/nao/existe.po">>).
+2> erli18n_po:parse_file(<<"/does/not/exist.po">>).
 {error,{file_error,enoent}}
 ```
 
-Veja `parse_file/2` (com opcoes) e `parse/2` (a semantica do parse em si).
+See `parse_file/2` (with options) and `parse/2` (the parse semantics themselves).
 """.
 -spec parse_file(file:filename()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
@@ -422,27 +423,27 @@ parse_file(Path) ->
     parse_file(Path, #{}).
 
 -doc """
-Le e faz o parse de um arquivo `.po` do disco, respeitando `Opts`.
+Reads and parses a `.po` file from disk, honoring `Opts`.
 
-Le `Path` com `file:read_file/1`; em caso de sucesso delega o binario a
-`parse/2` com `Opts` (ver `parse/2` para a semantica das opcoes e do retorno).
-Se a leitura falhar, retorna `{error, {file_error, Posix}}`, onde `Posix`
-percorre `file:posix() | badarg | terminated | system_limit`.
+Reads `Path` with `file:read_file/1`; on success it delegates the binary to
+`parse/2` with `Opts` (see `parse/2` for the semantics of the options and the
+return). If the read fails, it returns `{error, {file_error, Posix}}`, where
+`Posix` ranges over `file:posix() | badarg | terminated | system_limit`.
 
-Parametros:
-- `Path` — caminho do arquivo, qualquer `file:filename()`.
-- `Opts` — repassado intocado a `parse/2`; ver `parse_opts/0`.
+Parameters:
+- `Path` — file path, any `file:filename()`.
+- `Opts` — passed untouched to `parse/2`; see `parse_opts/0`.
 
-A unica diferenca em relacao a `parse/2` e a fase de leitura: erros de I/O viram
-`{error, {file_error, Posix}}`; tudo que ja foi lido segue exatamente as regras
-de `parse/2`.
+The only difference from `parse/2` is the read phase: I/O errors become
+`{error, {file_error, Posix}}`; everything already read follows exactly the
+rules of `parse/2`.
 
 ```erlang
 1> erli18n_po:parse_file(<<"catalog.po">>, #{include_fuzzy => true}).
 {ok,#{header => #{...}, entries => [...]}}
 ```
 
-Veja `parse_file/1` (defaults) e `parse/2`.
+See `parse_file/1` (defaults) and `parse/2`.
 """.
 -spec parse_file(file:filename(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
@@ -453,27 +454,27 @@ parse_file(Path, Opts) ->
     end.
 
 -doc """
-Serializa um `parsed_catalog()` de volta para o texto PO (binario UTF-8).
+Serializes a `parsed_catalog()` back to PO text (a UTF-8 binary).
 
-Emite primeiro o bloco de header (`msgid ""` / `msgstr ""` mais o `raw` do
-header, ou um header minimo `Content-Type: text/plain; charset=UTF-8` quando o
-`raw` esta vazio ou ausente) e depois cada entrada. Entradas `singular`
-produzem `msgctxt`/`msgid`/`msgstr`; entradas `plural` re-emitem o
-`msgid_plural` retido (finding #14 — quando ele e `undefined`, o `msgid`
-singular e usado como stand-in) e uma linha `msgstr[N]` por forma. As strings
-sao re-escapadas (`\\\\`, `\\"`, `\\n`, `\\t`, `\\r`) para que `parse(dump(C))`
-preserve o catalogo. Funcao total: sempre retorna um `binary()`.
+Emits the header block first (`msgid ""` / `msgstr ""` plus the header `raw`,
+or a minimal header `Content-Type: text/plain; charset=UTF-8` when the `raw` is
+empty or absent) and then each entry. `singular` entries produce
+`msgctxt`/`msgid`/`msgstr`; `plural` entries re-emit the retained
+`msgid_plural` (finding #14 — when it is `undefined`, the singular `msgid`
+is used as a stand-in) and one `msgstr[N]` line per form. The strings are
+re-escaped (`\\\\`, `\\"`, `\\n`, `\\t`, `\\r`) so that `parse(dump(C))`
+preserves the catalog. A total function: it always returns a `binary()`.
 
-Parametro: `Catalog` deve ser um `parsed_catalog()` valido (`#{header := _,
-entries := _}`) — tipicamente o `{ok, Catalog}` de `parse/2`. Um mapa sem as
-chaves `header`/`entries` provoca `function_clause` (contrato: so consome o que
-`parse/2` produz). Cada `entry()` deve ter a forma `singular`/`plural`; uma
-tupla de outra forma cai em `dump_entry/1` e crasha.
+Parameter: `Catalog` must be a valid `parsed_catalog()` (`#{header := _,
+entries := _}`) — typically the `{ok, Catalog}` from `parse/2`. A map without
+the `header`/`entries` keys triggers `function_clause` (contract: it only
+consumes what `parse/2` produces). Each `entry()` must have the `singular`/`plural`
+shape; a tuple of any other shape falls through `dump_entry/1` and crashes.
 
-O header sintetico minimo NAO e emitido com o `Content-Type` colado na linha
-`msgstr`: `dump_header_text/1` emite sempre `msgstr ""` e despeja o corpo do
-header como LINHAS DE CONTINUACAO entre aspas (`encode_header_line/1`). Logo a
-saida real para um catalogo SEM header proprio e:
+The minimal synthetic header is NOT emitted with the `Content-Type` glued onto
+the `msgstr` line: `dump_header_text/1` always emits `msgstr ""` and dumps the
+header body as quoted CONTINUATION LINES (`encode_header_line/1`). So the actual
+output for a catalog WITHOUT a header of its own is:
 
 ```erlang
 1> {ok, C} = erli18n_po:parse(<<"msgid \"Hi\"\nmsgstr \"Oi\"\n">>).
@@ -483,21 +484,21 @@ saida real para um catalogo SEM header proprio e:
   "msgid \"Hi\"\nmsgstr \"Oi\"\n\n">>
 ```
 
-ATENCAO ao roundtrip: o `.po` acima nao tem header, entao `C` carrega um header
-sintetico (`raw => <<>>`, `content_type => <<>>`). `dump/1` injeta um
-`Content-Type` minimo; ao re-parsear, esse campo deixa de estar vazio, logo o
-catalogo difere do original e a igualdade e FALSE:
+WATCH OUT for the roundtrip: the `.po` above has no header, so `C` carries a
+synthetic header (`raw => <<>>`, `content_type => <<>>`). `dump/1` injects a
+minimal `Content-Type`; on re-parse, that field is no longer empty, so the
+catalog differs from the original and equality is FALSE:
 
 ```erlang
 3> erli18n_po:parse(erli18n_po:dump(C)) =:= {ok, C}.
 false
 ```
 
-A lei `parse(dump(C)) =:= {ok, C}` so vale para catalogos que JA tinham header
-proprio (`raw =/= <<>>`) — exatamente o caso do quickstart no moduledoc, que de
-fato retorna `true`.
+The law `parse(dump(C)) =:= {ok, C}` only holds for catalogs that ALREADY had a
+header of their own (`raw =/= <<>>`) — exactly the case of the quickstart in the
+moduledoc, which does return `true`.
 
-Caminho inverso de `parse/1` / `parse/2`. Veja `parsed_catalog/0` e `entry/0`.
+Inverse path of `parse/1` / `parse/2`. See `parsed_catalog/0` and `entry/0`.
 """.
 -spec dump(parsed_catalog()) -> binary().
 dump(#{header := Header, entries := Entries}) ->
@@ -746,14 +747,14 @@ validate_ascii(<<_, Rest/binary>>) ->
 %% =========================
 
 -doc """
-(Interno, mantenedor.) Motor do parse: ja recebe o corpo em UTF-8 (`Utf8Bin`) e
-o `Charset` descoberto, threaded para o decode de escapes.
+(Internal, maintainer.) The parse engine: it already receives the body in UTF-8
+(`Utf8Bin`) and the discovered `Charset`, threaded for the escape decode.
 
-Roda `parse_lines/4` acumulando entradas em ordem REVERSA no `#pst{}` (e por isso
-`lists:reverse/1` no fim — invariante do acumulador deste modulo). Se nenhuma
-entrada de header (`msgid ""`) apareceu, sintetiza um header vazio com
-`charset => utf8` via `empty_header/0`. So e alcancado depois que `parse/2` ja
-descobriu o charset e normalizou o corpo; nunca chamado direto.
+Runs `parse_lines/4` accumulating entries in REVERSE order in the `#pst{}` (hence
+`lists:reverse/1` at the end — the accumulator invariant of this module). If no
+header entry (`msgid ""`) appeared, it synthesizes an empty header with
+`charset => utf8` via `empty_header/0`. Only reached after `parse/2` has already
+discovered the charset and normalized the body; never called directly.
 """.
 -spec do_parse(binary(), charset(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
@@ -1021,15 +1022,15 @@ emit_entry(
     end.
 
 -doc """
-(Interno, mantenedor — PSD-009.) Valida o conjunto de indices `msgstr[N]` de uma
-entrada plural contra `Nplurals` do header.
+(Internal, maintainer — PSD-009.) Validates the `msgstr[N]` index set of a
+plural entry against the header's `Nplurals`.
 
-Se `Nplurals` e `undefined` (sem header, ou header sem `nplurals` usavel), ACEITA
-qualquer conjunto — fail-open deliberado, casado com o fail-open de
-`collect_digits/2`. Caso contrario o conjunto deve ser EXATAMENTE
-`[0, 1, ..., Nplurals-1]` (ja ordenado pelo chamador); divergencia vira
-`{error, {plural_count_mismatch, Msgid, Nplurals, Indices}}`, que sobe como
-`parse_error()`.
+If `Nplurals` is `undefined` (no header, or a header without a usable `nplurals`),
+it ACCEPTS any set — a deliberate fail-open, matched with the fail-open of
+`collect_digits/2`. Otherwise the set must be EXACTLY
+`[0, 1, ..., Nplurals-1]` (already sorted by the caller); a divergence becomes
+`{error, {plural_count_mismatch, Msgid, Nplurals, Indices}}`, which bubbles up as
+a `parse_error()`.
 """.
 %% Per PSD-009: index set must be exactly [0, 1, ..., Nplurals-1].
 validate_plural_indices(_Msgid, undefined, _Indices) ->
@@ -1152,14 +1153,14 @@ extract_nplurals_value(Bin) ->
 %% materialised, so the O(d^2) cost and the >=~1.3M-digit `system_limit`
 %% exception are both avoided.
 -doc """
-(Interno, mantenedor — defesa anti-DoS.) Le a corrida de digitos de `nplurals=`
-no header, capando por CONTAGEM (`?MAX_INT_DIGITS`) ANTES de `binary_to_integer`.
+(Internal, maintainer — anti-DoS defense.) Reads the digit run of `nplurals=`
+in the header, capping by COUNT (`?MAX_INT_DIGITS`) BEFORE `binary_to_integer`.
 
-Fail-open TOLERANTE: corrida vazia ou longa demais vira `undefined` — o mesmo
-resultado de "sem `nplurals` declarado". Isso e seguro porque o valor so serve
-de cross-check downstream (`validate_plural_indices/3`); um header adversarial
-com milhares de digitos e ignorado em O(1), nunca constroi o bignum. Contraste
-com `parse_msgstr_index/2`, que FALHA FECHADO (o indice e load-bearing).
+A TOLERANT fail-open: an empty or over-long run becomes `undefined` — the same
+result as "no `nplurals` declared". This is safe because the value only serves
+as a downstream cross-check (`validate_plural_indices/3`); an adversarial header
+with thousands of digits is ignored in O(1), never builds the bignum. Contrast
+with `parse_msgstr_index/2`, which FAILS CLOSED (the index is load-bearing).
 """.
 -spec collect_digits(binary(), binary()) -> undefined | non_neg_integer().
 collect_digits(_, Acc) when byte_size(Acc) > ?MAX_INT_DIGITS ->
@@ -1303,15 +1304,15 @@ classify_msgstr(Rest) ->
 %% payload), which the caller turns into a `{syntax_error, _, _}` parse
 %% error — never an O(d^2) bignum and never an uncaught `system_limit`.
 -doc """
-(Interno, mantenedor — defesa anti-DoS.) Le o indice de `msgstr[<digits>]`,
-capando por CONTAGEM (`?MAX_INT_DIGITS`) antes de `binary_to_integer`.
+(Internal, maintainer — anti-DoS defense.) Reads the index of `msgstr[<digits>]`,
+capping by COUNT (`?MAX_INT_DIGITS`) before `binary_to_integer`.
 
-FALHA FECHADO (ao contrario de `collect_digits/2`): uma corrida longa demais vira
-`{error, {index_too_long, Max}}` — com a corrida rejeitada DELIBERADAMENTE fora
-do payload — que o chamador converte em `{syntax_error, Line, _}`. O indice e
-load-bearing (seleciona a forma plural), entao ignora-lo silenciosamente seria
-errado; melhor recusar o `.po`. Retorna `error` (sem `{}`) para um `[` que nao
-fecha em `]` com digitos validos.
+FAILS CLOSED (unlike `collect_digits/2`): an over-long run becomes
+`{error, {index_too_long, Max}}` — with the rejected run DELIBERATELY kept out
+of the payload — which the caller converts into `{syntax_error, Line, _}`. The
+index is load-bearing (it selects the plural form), so silently ignoring it
+would be wrong; better to reject the `.po`. Returns `error` (no `{}`) for a `[`
+that does not close with `]` over valid digits.
 """.
 -spec parse_msgstr_index(binary(), binary()) ->
     {ok, non_neg_integer(), binary()}
@@ -1361,20 +1362,20 @@ decode_quoted_string(Bin) ->
 %% `\xHH`/`\OOO` escape bytes end up as valid UTF-8 (or a structured
 %% error) instead of being spliced raw past the UTF-8 gate.
 -doc """
-(Interno, mantenedor.) Decodifica UMA string PO entre aspas, em duas fases.
+(Internal, maintainer.) Decodes ONE quoted PO string, in two phases.
 
-Invariante de entrada: `Bin` DEVE comecar com `"` — todos os 4 call sites
-garantem isso via `strip_keyword_space/1` ou guard. Passar outra coisa e
-violacao de contrato e crasha com `function_clause`.
+Input invariant: `Bin` MUST start with `"` — all 4 call sites
+guarantee this via `strip_keyword_space/1` or a guard. Passing anything else is
+a contract violation and crashes with `function_clause`.
 
-Fase 1 (`decode_chars/2`) caminha a string emitindo `chunk()`s marcados: texto
-literal ja-UTF-8 vira `{utf8, _}`; um escape `\\xHH`/`\\OOO` vira `{raw, Byte}`
-no code space do charset declarado. Fase 2 (`reassemble_field/2`) transcodifica
-as corridas de bytes crus contiguos pelo charset e as intercala com os chunks
-UTF-8. Agrupar e essencial: em UTF-8 um codepoint multibyte e escrito como
-escapes CONSECUTIVOS (`\\xC3\\xBF` = U+00FF) e precisa ser validado como uma
-unidade — um `\\xFF` solto vira `{error, {escape_invalid_utf8, _}}`, nunca um
-byte invalido vazado.
+Phase 1 (`decode_chars/2`) walks the string emitting tagged `chunk()`s: literal
+already-UTF-8 text becomes `{utf8, _}`; a `\\xHH`/`\\OOO` escape becomes `{raw, Byte}`
+in the code space of the declared charset. Phase 2 (`reassemble_field/2`)
+transcodes the runs of contiguous raw bytes through the charset and interleaves
+them with the UTF-8 chunks. Grouping is essential: in UTF-8 a multibyte
+codepoint is written as CONSECUTIVE escapes (`\\xC3\\xBF` = U+00FF) and must be
+validated as one unit — a lone `\\xFF` becomes `{error, {escape_invalid_utf8, _}}`,
+never a leaked invalid byte.
 """.
 -spec decode_quoted_string(binary(), charset()) ->
     {ok, binary()} | {error, term()}.

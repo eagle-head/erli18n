@@ -1,5 +1,5 @@
 %%% =====================================================================
-%%% Property-based tests for `erli18n` façade lookup — determinism
+%%% Property-based tests for `erli18n` facade lookup — determinism
 %%% invariant (`parity_specs.md` §6.1 property P4).
 %%%
 %%% Claim (P4): for any fixed `(Domain, Locale, Context, Msgid)`, repeated
@@ -11,7 +11,7 @@
 %%% read in `erli18n_server:lookup_singular/4` could observe a partial
 %%% write from a concurrent `ensure_loaded`. We do not exercise
 %%% concurrent inserts in this v0.1 property — that would belong in a
-%%% `proper_statem` test (parity_specs.md §6.1 "Variante concorrente
+%%% `proper_statem` test (parity_specs.md §6.1 "Concurrent variant
 %%% (proper_statem)") and is documented as backlog. What we DO cover:
 %%% the simpler, foundational invariant — sequential calls are
 %%% reproducible.

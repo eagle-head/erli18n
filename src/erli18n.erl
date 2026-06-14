@@ -1,71 +1,74 @@
 -module(erli18n).
 
 -moduledoc """
-Fachada pública (API) da biblioteca `erli18n` — ponto de entrada único para
-quem usa a biblioteca em uma aplicação (família GNU gettext).
+Public façade (API) of the `erli18n` library — the single entry point for
+anyone using the library in an application (GNU gettext family).
 
-## O que é e que problema resolve
+## What it is and what problem it solves
 
-`erli18n` traduz strings (`msgid`s) usando catálogos `.po` compatíveis com GNU
-gettext (Poedit, Crowdin, Transifex, Weblate, `xgettext`). Este módulo espelha
-a família de macros gettext do C, mapeando cada macro para uma função homônima:
+`erli18n` translates strings (`msgid`s) using `.po` catalogs compatible with
+GNU gettext (Poedit, Crowdin, Transifex, Weblate, `xgettext`). This module
+mirrors the C gettext macro family, mapping each macro to an eponymous function:
 
-- Singular: `gettext/1,2,3` / `dgettext/2,3` (domínio explícito) / `dcgettext/3`
-  (categoria — sempre LC_MESSAGES).
+- Singular: `gettext/1,2,3` / `dgettext/2,3` (explicit domain) / `dcgettext/3`
+  (category — always LC_MESSAGES).
 - Plural: `ngettext/3,4,5` / `dngettext/4,5` / `dcngettext/5`.
 - Contextual singular (`msgctxt`): `pgettext/2,3,4` / `dpgettext/3,4` /
   `dcpgettext/4`.
 - Contextual plural: `npgettext/4,5,6` / `dnpgettext/5,6` / `dcnpgettext/6`.
 
-Você quase nunca precisará tocar `erli18n_server` diretamente: esta fachada é a
-porta documentada, e as funções de carga/observabilidade aqui são finas
-passagens (passthrough) para o servidor.
+You almost never need to touch `erli18n_server` directly: this façade is the
+documented door, and the load/observability functions here are thin
+passthroughs to the server.
 
-## Modelo mental
+## Mental model
 
-- **Locale corrente é estado POR PROCESSO.** `setlocale/1` grava no dicionário
-  de processo do chamador e `which_locale/0` lê de volta. Esse estado **não é
-  herdado** por processos criados com `spawn/1`: cada novo processo começa com
-  `which_locale() = undefined` e cai no `default_locale/0`. É o equivalente BEAM
-  do `uselocale(3)` (thread-local) do libc.
-- **Domínio e locale default são `application:env`** (globais ao nó), não estado
-  por processo. São o fallback quando o chamador não optou por um locale por
-  processo, e o ponto de partida das variantes sem domínio (`gettext/1`,
-  `ngettext/3`, ...). Veja `default_locale/0`, `set_default_locale/1`,
-  `textdomain/0`, `textdomain/1`.
-- **O locale resolvido** de cada lookup é `which_locale/0` se definido, senão
-  `default_locale/0` (função interna `resolved_locale/0`).
-- **Leituras são lock-free.** Os `lookup_*` do `erli18n_server` leem direto da
-  ETS protegida no próprio processo chamador; só escritas (carga/recarga) passam
-  pelo `gen_server` dono. Não há gargalo de processo no caminho de leitura.
-- **Categoria é sempre LC_MESSAGES.** As variantes `d*`/`dc*` existem só para
-  paridade de NOME com o gettext do C; a categoria nunca é um parâmetro.
-- **Degradação graciosa.** Em miss (catálogo ausente, entrada inexistente) ou
-  tradução vazia (`msgstr ""`), a busca devolve o `msgid` original (ou
-  `msgid_plural` na forma plural, conforme `N`). Um crash do `erli18n_server`
-  (o worker/escritor) **não** esvazia os catálogos: a tabela ETS é mantida por um
-  dono dedicado (`erli18n_table_owner`) que é seu `heir`, então no restart ela
-  volta INTACTA via `'ETS-TRANSFER'` e os lookups continuam servindo as traduções
-  carregadas — não há perda de processo do chamador nem das traduções (ver
-  `erli18n_server` e `erli18n_table_owner`).
-- **Avaliação de plural é total (anti-DoS).** A regra `Plural-Forms` do header do
-  `.po` é a fonte de verdade em runtime. A avaliação faz clamp (libintl-style:
-  forma fora de faixa → 0, divisor zero → 0) e ASTs grandes são recusadas na
-  carga. O erro chega ao chamador desta fachada **envelopado** em
-  `{plural_compile_error, _}` (parte de `erli18n_server:ensure_error()`), com o
-  detalhe interno vindo de `erli18n_plural:compile_error()` — ou seja, uma AST
-  grande demais aparece como `{error, {plural_compile_error, {expr_too_complex, _,
-  _}}}` no retorno de `ensure_loaded/3,4` e `reload/3,4`. Assim uma regra
-  patológica não derruba o processo da requisição nem trava o caminho quente.
+- **The current locale is PER-PROCESS state.** `setlocale/1` writes to the
+  caller's process dictionary and `which_locale/0` reads it back. This state is
+  **not inherited** by processes created with `spawn/1`: each new process starts
+  with `which_locale() = undefined` and falls back to `default_locale/0`. It is
+  the BEAM equivalent of libc's `uselocale(3)` (thread-local).
+- **The default domain and locale are `application:env`** (node-global), not
+  per-process state. They are the fallback when the caller has not opted into a
+  per-process locale, and the starting point for the no-domain variants
+  (`gettext/1`, `ngettext/3`, ...). See `default_locale/0`,
+  `set_default_locale/1`, `textdomain/0`, `textdomain/1`.
+- **The resolved locale** of each lookup is `which_locale/0` if set, otherwise
+  `default_locale/0` (internal function `resolved_locale/0`).
+- **Reads are lock-free.** The `erli18n_server` `lookup_*` functions read
+  directly from protected ETS in the caller's own process; only writes
+  (load/reload) go through the owning `gen_server`. There is no process
+  bottleneck on the read path.
+- **The category is always LC_MESSAGES.** The `d*`/`dc*` variants exist solely
+  for NAME parity with C gettext; the category is never a parameter.
+- **Graceful degradation.** On a miss (missing catalog, nonexistent entry) or an
+  empty translation (`msgstr ""`), the lookup returns the original `msgid` (or
+  `msgid_plural` in the plural form, according to `N`). A crash of
+  `erli18n_server` (the worker/writer) does **not** empty the catalogs: the ETS
+  table is held by a dedicated owner (`erli18n_table_owner`) that is its `heir`,
+  so on restart it comes back INTACT via `'ETS-TRANSFER'` and lookups keep
+  serving the loaded translations — there is no loss of the caller's process nor
+  of the translations (see `erli18n_server` and `erli18n_table_owner`).
+- **Plural evaluation is total (anti-DoS).** The `Plural-Forms` rule from the
+  `.po` header is the source of truth at runtime. Evaluation clamps
+  (libintl-style: out-of-range form → 0, zero divisor → 0) and large ASTs are
+  rejected at load time. The error reaches the caller of this façade
+  **enveloped** in `{plural_compile_error, _}` (part of
+  `erli18n_server:ensure_error()`), with the internal detail coming from
+  `erli18n_plural:compile_error()` — that is, an AST that is too large appears as
+  `{error, {plural_compile_error, {expr_too_complex, _,
+  _}}}` in the return of `ensure_loaded/3,4` and `reload/3,4`. Thus a
+  pathological rule neither brings down the request process nor stalls the hot
+  path.
 
-## Quando você encosta neste módulo
+## When you touch this module
 
-1. No boot da app: `application:ensure_all_started(erli18n)` e carregue os
-   catálogos com `ensure_loaded/3,4` (use `default_po_path/3` para montar o
-   caminho convencional).
-2. Por requisição: opcionalmente `setlocale/1` no processo que atende a
-   requisição.
-3. No código de UI: chame `gettext/1`, `ngettext/3`, `pgettext/2`, etc.
+1. At app boot: `application:ensure_all_started(erli18n)` and load the
+   catalogs with `ensure_loaded/3,4` (use `default_po_path/3` to assemble the
+   conventional path).
+2. Per request: optionally `setlocale/1` in the process serving the
+   request.
+3. In UI code: call `gettext/1`, `ngettext/3`, `pgettext/2`, etc.
 
 ## Quickstart
 
@@ -76,8 +79,8 @@ passagens (passthrough) para o servidor.
 "/.../minha_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
 3> {ok, N} = erli18n:ensure_loaded(my_domain, <<"fr">>, PoPath).
 {ok, 12}
-%% N = 12 (entradas carregadas). Re-rodar este passo devolveria
-%% {ok, already} (idempotente), não um inteiro — ver `ensure_loaded/3`.
+%% N = 12 (entries loaded). Re-running this step would return
+%% {ok, already} (idempotent), not an integer — see `ensure_loaded/3`.
 4> erli18n:setlocale(<<"fr">>).
 ok
 5> erli18n:gettext(my_domain, <<"Hello, world">>).
@@ -88,32 +91,33 @@ ok
 <<"Mai">>
 ```
 
-## Funções-chave
+## Key functions
 
-- Busca: `gettext/3`, `ngettext/5`, `pgettext/4`, `npgettext/6` (as formas
-  principais; as demais aridades resolvem domínio/locale e delegam a estas).
-- Estado de locale: `setlocale/1`, `which_locale/0`.
-- Defaults da app: `default_locale/0`, `textdomain/0`.
-- Ciclo de vida do catálogo: `ensure_loaded/3`, `reload/3`, `unload/2`,
+- Lookup: `gettext/3`, `ngettext/5`, `pgettext/4`, `npgettext/6` (the main
+  forms; the other arities resolve domain/locale and delegate to these).
+- Locale state: `setlocale/1`, `which_locale/0`.
+- App defaults: `default_locale/0`, `textdomain/0`.
+- Catalog lifecycle: `ensure_loaded/3`, `reload/3`, `unload/2`,
   `default_po_path/3`.
-- Observabilidade: `loaded_catalogs/0`, `memory_info/0`, `which_keys/2`.
+- Observability: `loaded_catalogs/0`, `memory_info/0`, `which_keys/2`.
 
-## Regras de lookup (R1-R6)
+## Lookup rules (R1-R6)
 
-Os comentários internos deste módulo rotulam o comportamento de busca com
-`R1`-`R6` (vindos de `BR-MIGRAR-001/002` e `PSD-003`). O significado de cada um,
-para quem nunca viu o projeto:
+This module's internal comments label the lookup behavior with `R1`-`R6`
+(coming from `BR-MIGRAR-001/002` and `PSD-003`). What each one means, for anyone
+who has never seen the project:
 
-- `R1` — singular: família `gettext`/`dgettext`/`dcgettext`.
-- `R2` — plural: família `ngettext`/`dngettext`/`dcngettext`, incluindo o
-  fallback plural (`Msgid` se `N == 1`, senão `MsgidPlural`).
-- `R3` — singular contextual (`msgctxt`): família
-  `pgettext`/`dpgettext`/`dcpgettext`.
-- `R4` — plural contextual: família `npgettext`/`dnpgettext`/`dcnpgettext`.
-- `R5` — resolução de locale: usa `which_locale/0` se o processo definiu um via
-  `setlocale/1`, senão `default_locale/0` (ver helper interno `resolved_locale/0`).
-- `R6` — resolução de domínio default: as variantes sem domínio (`gettext/1`,
-  `ngettext/3`, ...) usam `textdomain/0` como domínio.
+- `R1` — singular: `gettext`/`dgettext`/`dcgettext` family.
+- `R2` — plural: `ngettext`/`dngettext`/`dcngettext` family, including the
+  plural fallback (`Msgid` if `N == 1`, otherwise `MsgidPlural`).
+- `R3` — contextual singular (`msgctxt`):
+  `pgettext`/`dpgettext`/`dcpgettext` family.
+- `R4` — contextual plural: `npgettext`/`dnpgettext`/`dcnpgettext` family.
+- `R5` — locale resolution: uses `which_locale/0` if the process set one via
+  `setlocale/1`, otherwise `default_locale/0` (see internal helper
+  `resolved_locale/0`).
+- `R6` — default domain resolution: the no-domain variants (`gettext/1`,
+  `ngettext/3`, ...) use `textdomain/0` as the domain.
 """.
 
 %% ============================================================================
@@ -204,35 +208,35 @@ para quem nunca viu o projeto:
 %% =========================
 
 -doc """
-Domínio de tradução (`atom()`). Particiona o espaço de `msgid`s — cada par
-`(Domain, Locale)` é um catálogo `.po` independente. O domínio default vem de
-`textdomain/0`.
+Translation domain (`atom()`). Partitions the `msgid` space — each pair
+`(Domain, Locale)` is an independent `.po` catalog. The default domain comes
+from `textdomain/0`.
 """.
 -type domain() :: erli18n_server:domain().
 -doc """
-Locale BCP-47 como binário (`binary()`), p.ex. `<<"en">>`, `<<"pt_BR">>`. É a
-chave de catálogo e a base da seleção de forma plural.
+BCP-47 locale as a binary (`binary()`), e.g. `<<"en">>`, `<<"pt_BR">>`. It is
+the catalog key and the basis of plural-form selection.
 """.
 -type locale() :: erli18n_server:locale().
 -doc """
-Contexto `msgctxt` (`undefined | binary()`) que desambigua homógrafos (ex.: o
-mesmo `msgid` "May" como mês vs. verbo). `undefined` significa "sem contexto".
+`msgctxt` context (`undefined | binary()`) that disambiguates homographs (e.g.
+the same `msgid` "May" as a month vs. a verb). `undefined` means "no context".
 """.
 -type context() :: erli18n_server:context().
 -doc """
-Chave de origem da tradução (`binary()`): o texto na língua-fonte, exatamente
-como extraído pelo `xgettext`. É também o valor de fallback quando não há
-tradução.
+Translation source key (`binary()`): the text in the source language, exactly
+as extracted by `xgettext`. It is also the fallback value when there is no
+translation.
 """.
 -type msgid() :: erli18n_server:msgid().
 -doc """
-Forma plural da chave de origem (`binary()`): o `msgid_plural` do `.po`. Usada
-como fallback quando `N /= 1` e não há tradução.
+Plural form of the source key (`binary()`): the `.po` `msgid_plural`. Used as
+the fallback when `N /= 1` and there is no translation.
 """.
 -type msgid_plural() :: binary().
 -doc """
-Texto traduzido devolvido ao chamador (`binary()`). Em miss ou tradução vazia,
-é o próprio `msgid` (ou `msgid_plural`), nunca `undefined`.
+Translated text returned to the caller (`binary()`). On a miss or an empty
+translation, it is the `msgid` itself (or `msgid_plural`), never `undefined`.
 """.
 -type translation() :: erli18n_server:translation().
 
@@ -266,27 +270,27 @@ Texto traduzido devolvido ao chamador (`binary()`). Em miss ou tradução vazia,
 
 %% R6: gettext(Msgid) → gettext(textdomain(), Msgid, resolved_locale()).
 -doc """
-Traduz `Msgid` no domínio default e no locale resolvido — a forma mais comum no
-código de UI.
+Translates `Msgid` in the default domain and the resolved locale — the most
+common form in UI code.
 
-- `Msgid` — chave na língua-fonte, exatamente como o `xgettext` a extraiu.
+- `Msgid` — key in the source language, exactly as `xgettext` extracted it.
 
-O domínio é `textdomain/0` e o locale é o resolvido: `which_locale/0` se o
-processo definiu um via `setlocale/1`, senão `default_locale/0`. Em miss
-(catálogo não carregado ou entrada inexistente) ou tradução vazia (`msgstr ""`),
-retorna o próprio `Msgid`.
+The domain is `textdomain/0` and the locale is the resolved one: `which_locale/0`
+if the process set one via `setlocale/1`, otherwise `default_locale/0`. On a miss
+(catalog not loaded or nonexistent entry) or an empty translation (`msgstr ""`),
+it returns `Msgid` itself.
 
 ```erlang
 1> erli18n:setlocale(<<"pt_BR">>).
 ok
 2> erli18n:gettext(<<"Hello">>).
 <<"Olá">>
-3> erli18n:gettext(<<"Sem tradução cadastrada">>).
-<<"Sem tradução cadastrada">>
+3> erli18n:gettext(<<"No registered translation">>).
+<<"No registered translation">>
 ```
 
-Crasha (`function_clause`) se `Msgid` não for binário. Para domínio explícito use
-`gettext/2`; para locale explícito, `gettext/3`.
+Crashes (`function_clause`) if `Msgid` is not a binary. For an explicit domain use
+`gettext/2`; for an explicit locale, `gettext/3`.
 """.
 -spec gettext(msgid()) -> translation().
 gettext(Msgid) when is_binary(Msgid) ->
@@ -295,14 +299,14 @@ gettext(Msgid) when is_binary(Msgid) ->
 %% gettext/2 with explicit domain. Locale comes from process dict or
 %% application default. Maps to the C macro `dgettext(domain, msgid)`.
 -doc """
-Traduz `Msgid` em um domínio `Domain` explícito, no locale resolvido. Mapeia a
-macro C `dgettext(domain, msgid)`.
+Translates `Msgid` in an explicit domain `Domain`, in the resolved locale. Maps
+the C macro `dgettext(domain, msgid)`.
 
-- `Domain` — domínio/catálogo onde procurar (não o `textdomain/0`).
-- `Msgid` — chave na língua-fonte.
+- `Domain` — domain/catalog to look in (not `textdomain/0`).
+- `Msgid` — key in the source language.
 
-O locale é o resolvido (`which_locale/0` ou `default_locale/0`). Em miss ou
-tradução vazia, retorna `Msgid`.
+The locale is the resolved one (`which_locale/0` or `default_locale/0`). On a
+miss or an empty translation, it returns `Msgid`.
 
 ```erlang
 1> erli18n:setlocale(<<"pt_BR">>).
@@ -311,8 +315,8 @@ ok
 <<"Não encontrado">>
 ```
 
-Crasha (`function_clause`) se `Domain` não for átomo ou `Msgid` não for binário.
-Veja `gettext/3` (locale explícito) e `dgettext/2` (alias).
+Crashes (`function_clause`) if `Domain` is not an atom or `Msgid` is not a binary.
+See `gettext/3` (explicit locale) and `dgettext/2` (alias).
 """.
 -spec gettext(domain(), msgid()) -> translation().
 gettext(Domain, Msgid) when is_atom(Domain), is_binary(Msgid) ->
@@ -330,31 +334,31 @@ gettext(Domain, Msgid) when is_atom(Domain), is_binary(Msgid) ->
 %% rows, but we keep the runtime guard for defence-in-depth — an empty
 %% binary on the wire should never reach the UI.
 -doc """
-Forma principal da família singular: traduz `Msgid` no domínio `Domain` e no
-locale `Locale`, ambos explícitos (sem contexto/`msgctxt`). Todas as outras
-aridades singulares resolvem domínio/locale e delegam aqui. Mapeia a macro C
+Main form of the singular family: translates `Msgid` in the domain `Domain` and
+the locale `Locale`, both explicit (no context/`msgctxt`). All other singular
+arities resolve domain/locale and delegate here. Maps the C macro
 `dcgettext(domain, msgid, LC_MESSAGES)`.
 
-- `Domain` — domínio/catálogo onde procurar.
-- `Msgid` — chave na língua-fonte.
-- `Locale` — locale exato (não passa por `which_locale/0`).
+- `Domain` — domain/catalog to look in.
+- `Msgid` — key in the source language.
+- `Locale` — exact locale (does not go through `which_locale/0`).
 
-Semântica de retorno (R1): se `erli18n_server:lookup_singular/4` devolve
-`{ok, T}` com `T` não vazio, retorna `T`; caso contrário — miss OU tradução
-vazia (`msgstr ""` é "não traduzido"; a guarda de binário vazio é defesa em
-profundidade) — retorna `Msgid`. Nesse caminho de miss, emite o evento de
-telemetria `[erli18n, lookup, miss]` quando a observabilidade está habilitada
-(ver função interna `emit_lookup_miss/5`).
+Return semantics (R1): if `erli18n_server:lookup_singular/4` returns
+`{ok, T}` with `T` non-empty, it returns `T`; otherwise — miss OR an empty
+translation (`msgstr ""` is "untranslated"; the empty-binary guard is
+defence-in-depth) — it returns `Msgid`. On that miss path, it emits the
+telemetry event `[erli18n, lookup, miss]` when observability is enabled
+(see internal function `emit_lookup_miss/5`).
 
 ```erlang
 1> erli18n:gettext(my_domain, <<"Save">>, <<"de">>).
 <<"Speichern">>
-2> erli18n:gettext(my_domain, <<"Save">>, <<"locale_inexistente">>).
+2> erli18n:gettext(my_domain, <<"Save">>, <<"nonexistent_locale">>).
 <<"Save">>
 ```
 
-Crasha (`function_clause`) se qualquer argumento violar o tipo. Veja `pgettext/4`
-(variante com contexto) e os aliases `dgettext/3` / `dcgettext/3`.
+Crashes (`function_clause`) if any argument violates the type. See `pgettext/4`
+(contextual variant) and the aliases `dgettext/3` / `dcgettext/3`.
 """.
 -spec gettext(domain(), msgid(), locale()) -> translation().
 gettext(Domain, Msgid, Locale) when
@@ -369,8 +373,8 @@ gettext(Domain, Msgid, Locale) when
 
 %% dgettext/2,3 — GNU C-macro names. Aliases for gettext/2,3.
 -doc """
-Alias de `gettext/2` (nome da macro C `dgettext`). Mesma semântica e fallback;
-existe só para paridade de nome com o gettext do C.
+Alias of `gettext/2` (C macro name `dgettext`). Same semantics and fallback;
+it exists solely for name parity with C gettext.
 
 ```erlang
 1> erli18n:dgettext(my_domain, <<"Hello">>) =:= erli18n:gettext(my_domain, <<"Hello">>).
@@ -381,7 +385,7 @@ true
 dgettext(Domain, Msgid) -> gettext(Domain, Msgid).
 
 -doc """
-Alias de `gettext/3` (nome da macro C `dgettext`). Mesma semântica e fallback.
+Alias of `gettext/3` (C macro name `dgettext`). Same semantics and fallback.
 
 ```erlang
 1> erli18n:dgettext(my_domain, <<"Hello">>, <<"de">>).
@@ -396,9 +400,10 @@ dgettext(Domain, Msgid, Locale) -> gettext(Domain, Msgid, Locale).
 %% LC_MESSAGES and is therefore not modeled as a parameter. Alias to
 %% gettext/3 for source-level compatibility with GNU naming.
 -doc """
-Alias de `gettext/3` (nome da macro C `dcgettext`). A categoria do C
-(LC_MESSAGES) é sempre implícita em `erli18n` e por isso não é um parâmetro —
-não há `LC_NUMERIC`, `LC_TIME`, etc. Mesma semântica e fallback de `gettext/3`.
+Alias of `gettext/3` (C macro name `dcgettext`). The C category
+(LC_MESSAGES) is always implicit in `erli18n` and is therefore not a parameter —
+there is no `LC_NUMERIC`, `LC_TIME`, etc. Same semantics and fallback as
+`gettext/3`.
 
 ```erlang
 1> erli18n:dcgettext(my_domain, <<"Hello">>, <<"de">>).
@@ -418,18 +423,20 @@ dcgettext(Domain, Msgid, Locale) -> gettext(Domain, Msgid, Locale).
 %% (including bignum and negatives); `erli18n_plural:evaluate/2` is
 %% bignum-clean.
 -doc """
-Traduz a forma plural correta para `N` no domínio default e no locale resolvido.
+Translates the correct plural form for `N` in the default domain and the
+resolved locale.
 
-- `Msgid` — forma singular (`msgid`), também o fallback quando `N == 1`.
-- `MsgidPlural` — forma plural (`msgid_plural`), fallback quando `N /= 1`.
-- `N` — quantidade. Inteiro arbitrário: negativos e bignums são aceitos (a
-  avaliação é bignum-clean).
+- `Msgid` — singular form (`msgid`), also the fallback when `N == 1`.
+- `MsgidPlural` — plural form (`msgid_plural`), the fallback when `N /= 1`.
+- `N` — count. Arbitrary integer: negatives and bignums are accepted (evaluation
+  is bignum-clean).
 
-A forma plural é escolhida pela regra `Plural-Forms` do header do `.po` carregado
-(não pela contagem de formas no código). A avaliação é total: faz clamp à la
-libintl (forma fora de faixa → 0, divisor zero → 0) e nunca derruba o chamador;
-regras patológicas já são recusadas na carga. Fallback (R2): em miss ou tradução
-vazia, devolve `Msgid` se `N == 1`, senão `MsgidPlural`.
+The plural form is chosen by the `Plural-Forms` rule from the loaded `.po` header
+(not by the count of forms in the code). Evaluation is total: it clamps à la
+libintl (out-of-range form → 0, zero divisor → 0) and never brings down the
+caller; pathological rules are already rejected at load time. Fallback (R2): on a
+miss or an empty translation, it returns `Msgid` if `N == 1`, otherwise
+`MsgidPlural`.
 
 ```erlang
 1> erli18n:setlocale(<<"en">>).
@@ -440,8 +447,8 @@ ok
 <<"files">>
 ```
 
-Crasha (`function_clause`) se `Msgid`/`MsgidPlural` não forem binários ou `N` não
-for inteiro. Veja `ngettext/4` (domínio) e `ngettext/5` (locale).
+Crashes (`function_clause`) if `Msgid`/`MsgidPlural` are not binaries or `N` is
+not an integer. See `ngettext/4` (domain) and `ngettext/5` (locale).
 """.
 -spec ngettext(msgid(), msgid_plural(), integer()) -> translation().
 ngettext(Msgid, MsgidPlural, N) when
@@ -450,8 +457,8 @@ ngettext(Msgid, MsgidPlural, N) when
     ngettext(textdomain(), Msgid, MsgidPlural, N, resolved_locale()).
 
 -doc """
-Igual a `ngettext/3`, mas com o domínio `Domain` explícito; o locale é o
-resolvido (`which_locale/0` ou `default_locale/0`). Mapeia a macro C
+Same as `ngettext/3`, but with the domain `Domain` explicit; the locale is the
+resolved one (`which_locale/0` or `default_locale/0`). Maps the C macro
 `dngettext(domain, msgid, msgid_plural, n)`.
 
 ```erlang
@@ -459,8 +466,8 @@ resolvido (`which_locale/0` ou `default_locale/0`). Mapeia a macro C
 <<"42 fichiers">>
 ```
 
-Mesma seleção de forma plural, fallback (R2) e modos de crash de `ngettext/3`.
-Veja `ngettext/5` para locale explícito e `dngettext/4` (alias).
+Same plural-form selection, fallback (R2), and crash modes as `ngettext/3`.
+See `ngettext/5` for an explicit locale and `dngettext/4` (alias).
 """.
 -spec ngettext(domain(), msgid(), msgid_plural(), integer()) -> translation().
 ngettext(Domain, Msgid, MsgidPlural, N) when
@@ -472,21 +479,21 @@ ngettext(Domain, Msgid, MsgidPlural, N) when
     ngettext(Domain, Msgid, MsgidPlural, N, resolved_locale()).
 
 -doc """
-Forma principal da família plural: traduz a forma plural correta para `N` no
-domínio `Domain` e no locale `Locale`, ambos explícitos. As outras aridades
-plurais delegam aqui. Mapeia a macro C
+Main form of the plural family: translates the correct plural form for `N` in
+the domain `Domain` and the locale `Locale`, both explicit. The other plural
+arities delegate here. Maps the C macro
 `dcngettext(domain, msgid, msgid_plural, n, LC_MESSAGES)`.
 
-- `Domain` — domínio/catálogo onde procurar.
-- `Msgid` / `MsgidPlural` — formas singular/plural e os fallbacks.
-- `N` — quantidade (inteiro arbitrário, incl. negativos e bignums).
-- `Locale` — locale exato (não passa por `which_locale/0`).
+- `Domain` — domain/catalog to look in.
+- `Msgid` / `MsgidPlural` — singular/plural forms and the fallbacks.
+- `N` — count (arbitrary integer, incl. negatives and bignums).
+- `Locale` — exact locale (does not go through `which_locale/0`).
 
-Chama `erli18n_server:lookup_plural_form/5`, que escolhe a forma pela regra
-`Plural-Forms` do header carregado (avaliação total/clamp — ver moduledoc).
-Fallback (R2): em miss ou tradução vazia, devolve `Msgid` se `N == 1`, senão
-`MsgidPlural`. No caminho de miss emite `[erli18n, lookup, miss]` quando a
-observabilidade está habilitada.
+Calls `erli18n_server:lookup_plural_form/5`, which chooses the form by the
+`Plural-Forms` rule from the loaded header (total evaluation/clamp — see the
+moduledoc). Fallback (R2): on a miss or an empty translation, it returns `Msgid`
+if `N == 1`, otherwise `MsgidPlural`. On the miss path it emits
+`[erli18n, lookup, miss]` when observability is enabled.
 
 ```erlang
 1> erli18n:ngettext(my_domain, <<"1 file">>, <<"%d files">>, 1, <<"en">>).
@@ -495,8 +502,8 @@ observabilidade está habilitada.
 <<"%d files">>
 ```
 
-Crasha (`function_clause`) se algum argumento violar o tipo. Veja `npgettext/6`
-(plural com contexto) e os aliases `dngettext/5` / `dcngettext/5`.
+Crashes (`function_clause`) if any argument violates the type. See `npgettext/6`
+(contextual plural) and the aliases `dngettext/5` / `dcngettext/5`.
 """.
 -spec ngettext(domain(), msgid(), msgid_plural(), integer(), locale()) ->
     translation().
@@ -524,7 +531,7 @@ ngettext(Domain, Msgid, MsgidPlural, N, Locale) when
 
 %% dngettext/4,5 — GNU C-macro names, aliases for ngettext/4,5.
 -doc """
-Alias de `ngettext/4` (nome da macro C `dngettext`). Mesma semântica e fallback.
+Alias of `ngettext/4` (C macro name `dngettext`). Same semantics and fallback.
 
 ```erlang
 1> erli18n:dngettext(my_domain, <<"file">>, <<"files">>, 2).
@@ -537,7 +544,7 @@ dngettext(Domain, Msgid, MsgidPlural, N) ->
     ngettext(Domain, Msgid, MsgidPlural, N).
 
 -doc """
-Alias de `ngettext/5` (nome da macro C `dngettext`). Mesma semântica e fallback.
+Alias of `ngettext/5` (C macro name `dngettext`). Same semantics and fallback.
 
 ```erlang
 1> erli18n:dngettext(my_domain, <<"file">>, <<"files">>, 2, <<"fr">>).
@@ -551,8 +558,8 @@ dngettext(Domain, Msgid, MsgidPlural, N, Locale) ->
 
 %% dcngettext/5 — GNU C-macro name with explicit category. See dcgettext.
 -doc """
-Alias de `ngettext/5` (nome da macro C `dcngettext`). A categoria (LC_MESSAGES)
-é sempre implícita e não é um parâmetro. Mesma semântica e fallback de
+Alias of `ngettext/5` (C macro name `dcngettext`). The category (LC_MESSAGES)
+is always implicit and is not a parameter. Same semantics and fallback as
 `ngettext/5`.
 
 ```erlang
@@ -573,17 +580,17 @@ dcngettext(Domain, Msgid, MsgidPlural, N, Locale) ->
 %% msgid (no context-aware fallback — we do NOT retry with
 %% Context=undefined; that would silently leak the wrong translation).
 -doc """
-Traduz `Msgid` desambiguado por `Context` (`msgctxt`) no domínio default e no
-locale resolvido. Use quando o mesmo `msgid` precisa de traduções diferentes por
-papel (ex.: "May" como mês vs. verbo).
+Translates `Msgid` disambiguated by `Context` (`msgctxt`) in the default domain
+and the resolved locale. Use it when the same `msgid` needs different
+translations per role (e.g. "May" as a month vs. a verb).
 
-- `Context` — binário do `msgctxt`, ou `undefined` para "sem contexto"
-  (equivale então a `gettext/1`).
-- `Msgid` — chave na língua-fonte.
+- `Context` — `msgctxt` binary, or `undefined` for "no context"
+  (then equivalent to `gettext/1`).
+- `Msgid` — key in the source language.
 
-Em miss ou tradução vazia, retorna `Msgid`. Importante: **não há retry** com
-outro contexto — uma entrada de `Context` diferente nunca vaza; o miss cai
-direto no `Msgid`.
+On a miss or an empty translation, it returns `Msgid`. Important: there is **no
+retry** with another context — an entry from a different `Context` never leaks;
+the miss falls straight back to `Msgid`.
 
 ```erlang
 1> erli18n:pgettext(<<"month">>, <<"May">>).
@@ -592,8 +599,8 @@ direto no `Msgid`.
 <<"Pode">>
 ```
 
-Crasha (`function_clause`) se `Context` não for `undefined`/binário ou `Msgid`
-não for binário. Veja `pgettext/3` (domínio) e `pgettext/4` (locale).
+Crashes (`function_clause`) if `Context` is not `undefined`/a binary or `Msgid`
+is not a binary. See `pgettext/3` (domain) and `pgettext/4` (locale).
 """.
 -spec pgettext(context(), msgid()) -> translation().
 pgettext(Context, Msgid) when
@@ -603,16 +610,16 @@ pgettext(Context, Msgid) when
     pgettext(textdomain(), Context, Msgid, resolved_locale()).
 
 -doc """
-Igual a `pgettext/2`, mas com o domínio `Domain` explícito; o locale é o
-resolvido. Mapeia a macro C `dpgettext(domain, msgctxt, msgid)`.
+Same as `pgettext/2`, but with the domain `Domain` explicit; the locale is the
+resolved one. Maps the C macro `dpgettext(domain, msgctxt, msgid)`.
 
 ```erlang
 1> erli18n:pgettext(my_domain, <<"month">>, <<"May">>).
 <<"Mai">>
 ```
 
-Mesmo fallback (sem retry de contexto) e crashes de `pgettext/2`. Veja
-`pgettext/4` (locale explícito) e `dpgettext/3` (alias).
+Same fallback (no context retry) and crashes as `pgettext/2`. See
+`pgettext/4` (explicit locale) and `dpgettext/3` (alias).
 """.
 -spec pgettext(domain(), context(), msgid()) -> translation().
 pgettext(Domain, Context, Msgid) when
@@ -623,31 +630,31 @@ pgettext(Domain, Context, Msgid) when
     pgettext(Domain, Context, Msgid, resolved_locale()).
 
 -doc """
-Forma principal da família contextual singular: traduz `Msgid` desambiguado por
-`Context` (`msgctxt`) no domínio `Domain` e no locale `Locale`, ambos explícitos.
-As outras aridades contextuais singulares delegam aqui. Mapeia a macro C
+Main form of the contextual singular family: translates `Msgid` disambiguated by
+`Context` (`msgctxt`) in the domain `Domain` and the locale `Locale`, both
+explicit. The other contextual singular arities delegate here. Maps the C macro
 `dcpgettext(domain, msgctxt, msgid, LC_MESSAGES)`.
 
-- `Domain` — domínio/catálogo.
-- `Context` — `msgctxt` (binário) ou `undefined`.
-- `Msgid` — chave na língua-fonte.
-- `Locale` — locale exato.
+- `Domain` — domain/catalog.
+- `Context` — `msgctxt` (binary) or `undefined`.
+- `Msgid` — key in the source language.
+- `Locale` — exact locale.
 
-Chama `erli18n_server:lookup_singular/4` COM o `Context`. Fallback (R3): em miss
-ou tradução vazia, retorna `Msgid` — deliberadamente **sem** retry com
-`Context = undefined`, para não vazar a tradução de outro contexto. No caminho de
-miss emite `[erli18n, lookup, miss]` (com o `context` no metadata) quando a
-observabilidade está habilitada.
+Calls `erli18n_server:lookup_singular/4` WITH the `Context`. Fallback (R3): on a
+miss or an empty translation, it returns `Msgid` — deliberately **without** a
+retry with `Context = undefined`, so as not to leak the translation of another
+context. On the miss path it emits `[erli18n, lookup, miss]` (with the `context`
+in the metadata) when observability is enabled.
 
 ```erlang
 1> erli18n:pgettext(my_domain, <<"menu">>, <<"Open">>, <<"de">>).
 <<"Öffnen">>
-2> erli18n:pgettext(my_domain, <<"contexto_inexistente">>, <<"Open">>, <<"de">>).
+2> erli18n:pgettext(my_domain, <<"nonexistent_context">>, <<"Open">>, <<"de">>).
 <<"Open">>
 ```
 
-Crasha (`function_clause`) se algum argumento violar o tipo. Veja `npgettext/6`
-(contextual plural) e os aliases `dpgettext/4` / `dcpgettext/4`.
+Crashes (`function_clause`) if any argument violates the type. See `npgettext/6`
+(contextual plural) and the aliases `dpgettext/4` / `dcpgettext/4`.
 """.
 -spec pgettext(domain(), context(), msgid(), locale()) -> translation().
 pgettext(Domain, Context, Msgid, Locale) when
@@ -665,7 +672,7 @@ pgettext(Domain, Context, Msgid, Locale) when
 
 %% dpgettext/3,4 — GNU C-macro names, aliases for pgettext/3,4.
 -doc """
-Alias de `pgettext/3` (nome da macro C `dpgettext`). Mesma semântica e fallback.
+Alias of `pgettext/3` (C macro name `dpgettext`). Same semantics and fallback.
 
 ```erlang
 1> erli18n:dpgettext(my_domain, <<"month">>, <<"May">>).
@@ -677,7 +684,7 @@ dpgettext(Domain, Context, Msgid) ->
     pgettext(Domain, Context, Msgid).
 
 -doc """
-Alias de `pgettext/4` (nome da macro C `dpgettext`). Mesma semântica e fallback.
+Alias of `pgettext/4` (C macro name `dpgettext`). Same semantics and fallback.
 
 ```erlang
 1> erli18n:dpgettext(my_domain, <<"month">>, <<"May">>, <<"de">>).
@@ -690,8 +697,8 @@ dpgettext(Domain, Context, Msgid, Locale) ->
 
 %% dcpgettext/4 — GNU C-macro name with explicit category. See dcgettext.
 -doc """
-Alias de `pgettext/4` (nome da macro C `dcpgettext`). A categoria (LC_MESSAGES)
-é sempre implícita e não é um parâmetro. Mesma semântica e fallback de
+Alias of `pgettext/4` (C macro name `dcpgettext`). The category (LC_MESSAGES)
+is always implicit and is not a parameter. Same semantics and fallback as
 `pgettext/4`.
 
 ```erlang
@@ -710,16 +717,17 @@ dcpgettext(Domain, Context, Msgid, Locale) ->
 %% R4: contextual + plural. Fallback follows R2 on the msgid /
 %% msgid_plural pair when the lookup misses or returns empty.
 -doc """
-Traduz a forma plural correta para `N`, desambiguada por `Context` (`msgctxt`),
-no domínio default e no locale resolvido. Combina contexto e plural.
+Translates the correct plural form for `N`, disambiguated by `Context`
+(`msgctxt`), in the default domain and the resolved locale. Combines context and
+plural.
 
-- `Context` — `msgctxt` (binário) ou `undefined`.
-- `Msgid` / `MsgidPlural` — formas singular/plural e os fallbacks.
-- `N` — quantidade (inteiro arbitrário).
+- `Context` — `msgctxt` (binary) or `undefined`.
+- `Msgid` / `MsgidPlural` — singular/plural forms and the fallbacks.
+- `N` — count (arbitrary integer).
 
-A forma plural vem da regra `Plural-Forms` do header carregado (avaliação
-total/clamp). Fallback: em miss ou tradução vazia, aplica R2 ao par
-msgid/msgid_plural (`Msgid` se `N == 1`, senão `MsgidPlural`).
+The plural form comes from the `Plural-Forms` rule of the loaded header (total
+evaluation/clamp). Fallback: on a miss or an empty translation, it applies R2 to
+the msgid/msgid_plural pair (`Msgid` if `N == 1`, otherwise `MsgidPlural`).
 
 ```erlang
 1> erli18n:npgettext(<<"email">>, <<"message">>, <<"messages">>, 1).
@@ -728,8 +736,8 @@ msgid/msgid_plural (`Msgid` se `N == 1`, senão `MsgidPlural`).
 <<"mensagens">>
 ```
 
-Crasha (`function_clause`) se algum argumento violar o tipo. Veja `npgettext/5`
-(domínio) e `npgettext/6` (locale).
+Crashes (`function_clause`) if any argument violates the type. See `npgettext/5`
+(domain) and `npgettext/6` (locale).
 """.
 -spec npgettext(context(), msgid(), msgid_plural(), integer()) ->
     translation().
@@ -749,8 +757,8 @@ npgettext(Context, Msgid, MsgidPlural, N) when
     ).
 
 -doc """
-Igual a `npgettext/4`, mas com o domínio `Domain` explícito; o locale é o
-resolvido. Mapeia a macro C `dnpgettext(domain, msgctxt, msgid, msgid_plural,
+Same as `npgettext/4`, but with the domain `Domain` explicit; the locale is the
+resolved one. Maps the C macro `dnpgettext(domain, msgctxt, msgid, msgid_plural,
 n)`.
 
 ```erlang
@@ -758,8 +766,8 @@ n)`.
 <<"3 messages">>
 ```
 
-Mesma seleção de forma plural, fallback e crashes de `npgettext/4`. Veja
-`npgettext/6` (locale explícito) e `dnpgettext/5` (alias).
+Same plural-form selection, fallback, and crashes as `npgettext/4`. See
+`npgettext/6` (explicit locale) and `dnpgettext/5` (alias).
 """.
 -spec npgettext(
     domain(),
@@ -778,23 +786,23 @@ npgettext(Domain, Context, Msgid, MsgidPlural, N) when
     npgettext(Domain, Context, Msgid, MsgidPlural, N, resolved_locale()).
 
 -doc """
-Forma principal da família contextual plural: traduz a forma plural correta para
-`N`, desambiguada por `Context` (`msgctxt`), no domínio `Domain` e no locale
-`Locale`, ambos explícitos. As outras aridades contextuais plurais delegam aqui.
-Mapeia a macro C `dcnpgettext(domain, msgctxt, msgid, msgid_plural, n,
+Main form of the contextual plural family: translates the correct plural form
+for `N`, disambiguated by `Context` (`msgctxt`), in the domain `Domain` and the
+locale `Locale`, both explicit. The other contextual plural arities delegate
+here. Maps the C macro `dcnpgettext(domain, msgctxt, msgid, msgid_plural, n,
 LC_MESSAGES)`.
 
-- `Domain` — domínio/catálogo.
-- `Context` — `msgctxt` (binário) ou `undefined`.
-- `Msgid` / `MsgidPlural` — formas singular/plural e os fallbacks.
-- `N` — quantidade (inteiro arbitrário).
-- `Locale` — locale exato.
+- `Domain` — domain/catalog.
+- `Context` — `msgctxt` (binary) or `undefined`.
+- `Msgid` / `MsgidPlural` — singular/plural forms and the fallbacks.
+- `N` — count (arbitrary integer).
+- `Locale` — exact locale.
 
-Chama `erli18n_server:lookup_plural_form/5` COM o `Context`; a forma vem da regra
-`Plural-Forms` do header carregado (avaliação total/clamp). Fallback: em miss ou
-tradução vazia, aplica R2 ao par msgid/msgid_plural. No caminho de miss emite
-`[erli18n, lookup, miss]` (com o `context` no metadata) quando a observabilidade
-está habilitada.
+Calls `erli18n_server:lookup_plural_form/5` WITH the `Context`; the form comes
+from the `Plural-Forms` rule of the loaded header (total evaluation/clamp).
+Fallback: on a miss or an empty translation, it applies R2 to the
+msgid/msgid_plural pair. On the miss path it emits `[erli18n, lookup, miss]`
+(with the `context` in the metadata) when observability is enabled.
 
 ```erlang
 1> erli18n:npgettext(my_domain, <<"email">>, <<"message">>, <<"messages">>, 1, <<"de">>).
@@ -803,7 +811,7 @@ está habilitada.
 <<"Nachrichten">>
 ```
 
-Crasha (`function_clause`) se algum argumento violar o tipo. Veja os aliases
+Crashes (`function_clause`) if any argument violates the type. See the aliases
 `dnpgettext/6` / `dcnpgettext/6`.
 """.
 -spec npgettext(
@@ -839,7 +847,7 @@ npgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) when
 
 %% dnpgettext/5,6 — GNU C-macro names, aliases for npgettext/5,6.
 -doc """
-Alias de `npgettext/5` (nome da macro C `dnpgettext`). Mesma semântica e
+Alias of `npgettext/5` (C macro name `dnpgettext`). Same semantics and
 fallback.
 
 ```erlang
@@ -858,7 +866,7 @@ dnpgettext(Domain, Context, Msgid, MsgidPlural, N) ->
     npgettext(Domain, Context, Msgid, MsgidPlural, N).
 
 -doc """
-Alias de `npgettext/6` (nome da macro C `dnpgettext`). Mesma semântica e
+Alias of `npgettext/6` (C macro name `dnpgettext`). Same semantics and
 fallback.
 
 ```erlang
@@ -879,9 +887,9 @@ dnpgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) ->
 
 %% dcnpgettext/6 — GNU C-macro name with explicit category. See dcgettext.
 -doc """
-Alias de `npgettext/6` (nome da macro C `dcnpgettext`). A categoria
-(LC_MESSAGES) é sempre implícita e não é um parâmetro. Mesma semântica e
-fallback de `npgettext/6`.
+Alias of `npgettext/6` (C macro name `dcnpgettext`). The category
+(LC_MESSAGES) is always implicit and is not a parameter. Same semantics and
+fallback as `npgettext/6`.
 
 ```erlang
 1> erli18n:dcnpgettext(my_domain, <<"email">>, <<"message">>, <<"messages">>, 3, <<"de">>).
@@ -911,12 +919,13 @@ dcnpgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) ->
 %% `which_locale() = undefined` and falls back to default_locale/0.
 
 -doc """
-Retorna o locale corrente do processo chamador, ou `undefined` se nenhum foi
-definido.
+Returns the current locale of the calling process, or `undefined` if none has
+been set.
 
-O valor é o que `setlocale/1` gravou no dicionário deste processo. Como o estado
-é por processo e **não** é herdado em `spawn/1`, um processo recém-criado lê
-`undefined` aqui (e, no caminho de busca, cai em `default_locale/0`).
+The value is what `setlocale/1` wrote to this process's dictionary. Since the
+state is per-process and is **not** inherited across `spawn/1`, a freshly created
+process reads `undefined` here (and, on the lookup path, falls back to
+`default_locale/0`).
 
 ```erlang
 1> erli18n:which_locale().
@@ -927,10 +936,10 @@ ok
 <<"pt_BR">>
 ```
 
-Crasha com `error({invalid_process_locale, _})` se a chave privada do dicionário
-(`'$erli18n_locale'`) tiver sido sobrescrita por terceiros com um valor não
-binário — `setlocale/1` só grava binários, então qualquer outra forma é violação
-de contrato e deve falhar visivelmente. Veja `setlocale/1` (escrita) e
+Crashes with `error({invalid_process_locale, _})` if the private dictionary key
+(`'$erli18n_locale'`) has been overwritten by a third party with a non-binary
+value — `setlocale/1` only writes binaries, so any other shape is a contract
+violation and must fail visibly. See `setlocale/1` (write) and
 `default_locale/0` (fallback).
 """.
 -spec which_locale() -> locale() | undefined.
@@ -947,16 +956,16 @@ which_locale() ->
     end.
 
 -doc """
-Define o locale corrente do processo chamador como `Locale` (binário) e retorna
+Sets the current locale of the calling process to `Locale` (binary) and returns
 `ok`.
 
-- `Locale` — locale a usar nas buscas subsequentes deste processo que dependam do
-  locale resolvido (`gettext/1`, `ngettext/3`, ...).
+- `Locale` — locale to use in this process's subsequent lookups that depend on
+  the resolved locale (`gettext/1`, `ngettext/3`, ...).
 
-Escopo: **apenas o processo atual**. O valor vive no dicionário de processo e não
-é herdado por processos filhos — cada processo de requisição precisa chamar
-`setlocale/1` por conta própria. Tipicamente chamado uma vez no início do
-tratamento de cada requisição.
+Scope: **the current process only**. The value lives in the process dictionary
+and is not inherited by child processes — each request process must call
+`setlocale/1` on its own. Typically called once at the start of handling each
+request.
 
 ```erlang
 1> erli18n:setlocale(<<"de">>).
@@ -965,8 +974,8 @@ ok
 <<"de">>
 ```
 
-Crasha (`function_clause`) se `Locale` não for binário. Veja `which_locale/0`
-(leitura) e `set_default_locale/1` (default global da app).
+Crashes (`function_clause`) if `Locale` is not a binary. See `which_locale/0`
+(read) and `set_default_locale/1` (app-global default).
 """.
 -spec setlocale(locale()) -> ok.
 setlocale(Locale) when is_binary(Locale) ->
@@ -983,12 +992,11 @@ setlocale(Locale) when is_binary(Locale) ->
 %% and the starting domain for the no-domain gettext/1, ngettext/3 etc.
 
 -doc """
-Retorna o locale default da aplicação (env `erli18n.default_locale`, padrão
+Returns the application's default locale (env `erli18n.default_locale`, default
 `<<"en">>`).
 
-É o fallback de locale usado por toda busca quando o processo chamador não
-definiu um locale via `setlocale/1` (isto é, quando `which_locale/0` é
-`undefined`).
+It is the locale fallback used by every lookup when the calling process has not
+set a locale via `setlocale/1` (that is, when `which_locale/0` is `undefined`).
 
 ```erlang
 1> erli18n:default_locale().
@@ -999,11 +1007,11 @@ ok
 <<"pt_BR">>
 ```
 
-Crasha com `error({invalid_config, _})` se o valor configurado no env não for um
-binário — a borda é estreitada para que uma má configuração vire um crash
-descritivo aqui, em vez de uma surpresa silenciosa adiante (ex.: um átomo vazando
-para um `gettext/3` que só aceita binário). Veja `set_default_locale/1` e
-`which_locale/0`.
+Crashes with `error({invalid_config, _})` if the value configured in the env is
+not a binary — the boundary is narrowed so a misconfiguration becomes a
+descriptive crash here, rather than a silent surprise downstream (e.g. an atom
+leaking into a `gettext/3` that only accepts a binary). See `set_default_locale/1`
+and `which_locale/0`.
 """.
 -spec default_locale() -> locale().
 default_locale() ->
@@ -1018,14 +1026,14 @@ default_locale() ->
     end.
 
 -doc """
-Define o locale default da aplicação (env `erli18n.default_locale`) como
-`Locale` (binário) e retorna `ok`.
+Sets the application's default locale (env `erli18n.default_locale`) to
+`Locale` (binary) and returns `ok`.
 
-- `Locale` — novo default global do nó.
+- `Locale` — new node-global default.
 
-Afeta **todos** os processos que dependem do fallback de locale (os que não
-chamaram `setlocale/1`). É estado de `application:env`, não por processo.
-Tipicamente chamado uma vez no boot da app.
+Affects **all** processes that rely on the locale fallback (those that have not
+called `setlocale/1`). It is `application:env` state, not per-process.
+Typically called once at app boot.
 
 ```erlang
 1> erli18n:set_default_locale(<<"fr">>).
@@ -1034,18 +1042,18 @@ ok
 <<"fr">>
 ```
 
-Crasha (`function_clause`) se `Locale` não for binário. Veja `default_locale/0`
-(leitura) e `setlocale/1` (override por processo).
+Crashes (`function_clause`) if `Locale` is not a binary. See `default_locale/0`
+(read) and `setlocale/1` (per-process override).
 """.
 -spec set_default_locale(locale()) -> ok.
 set_default_locale(Locale) when is_binary(Locale) ->
     application:set_env(erli18n, default_locale, Locale).
 
 -doc """
-Retorna o domínio default da aplicação (env `erli18n.default_domain`, padrão
+Returns the application's default domain (env `erli18n.default_domain`, default
 `?GETTEXT_DOMAIN` = `default`).
 
-É o domínio usado pelas variantes sem domínio explícito — `gettext/1`,
+It is the domain used by the variants without an explicit domain — `gettext/1`,
 `ngettext/3`, `pgettext/2`, `npgettext/4`.
 
 ```erlang
@@ -1057,9 +1065,9 @@ ok
 my_domain
 ```
 
-Crasha com `error({invalid_config, _})` se o valor configurado no env não for um
-átomo (mesma estratégia de estreitamento de `default_locale/0`). Veja
-`textdomain/1` (escrita).
+Crashes with `error({invalid_config, _})` if the value configured in the env is
+not an atom (same narrowing strategy as `default_locale/0`). See
+`textdomain/1` (write).
 """.
 -spec textdomain() -> domain().
 textdomain() ->
@@ -1071,14 +1079,14 @@ textdomain() ->
     end.
 
 -doc """
-Define o domínio default da aplicação (env `erli18n.default_domain`) como
-`Domain` (átomo) e retorna `ok`. Equivalente à função `textdomain(3)` do gettext
-do C.
+Sets the application's default domain (env `erli18n.default_domain`) to
+`Domain` (atom) and returns `ok`. Equivalent to C gettext's `textdomain(3)`
+function.
 
-- `Domain` — novo domínio default global do nó.
+- `Domain` — new node-global default domain.
 
-Afeta todas as chamadas subsequentes às variantes sem domínio explícito. É estado
-de `application:env`, não por processo.
+Affects all subsequent calls to the variants without an explicit domain. It is
+`application:env` state, not per-process.
 
 ```erlang
 1> erli18n:textdomain(errors).
@@ -1087,8 +1095,8 @@ ok
 errors
 ```
 
-Crasha (`function_clause`) se `Domain` não for átomo. Veja `textdomain/0`
-(leitura).
+Crashes (`function_clause`) if `Domain` is not an atom. See `textdomain/0`
+(read).
 """.
 -spec textdomain(domain()) -> ok.
 textdomain(Domain) when is_atom(Domain) ->
@@ -1103,21 +1111,21 @@ textdomain(Domain) when is_atom(Domain) ->
 %% about the server module.
 
 -doc """
-Carrega o catálogo `.po` em `PoPath` para o par `(Domain, Locale)`, de forma
-idempotente. É a chamada típica de boot: carregue cada catálogo uma vez.
+Loads the `.po` catalog at `PoPath` for the pair `(Domain, Locale)`,
+idempotently. It is the typical boot call: load each catalog once.
 
-- `Domain` — domínio do catálogo.
-- `Locale` — locale do catálogo.
-- `PoPath` — caminho do `.po` (use `default_po_path/3` para o layout
-  convencional).
+- `Domain` — catalog domain.
+- `Locale` — catalog locale.
+- `PoPath` — path to the `.po` (use `default_po_path/3` for the conventional
+  layout).
 
-Idempotência: se o par já estiver carregado, retorna `{ok, already}` **sem reler
-o disco** — para forçar releitura, use `reload/3`. O carregamento é atômico:
-parse, compile da regra de plural e validação CLDR rodam antes de qualquer
-inserção em ETS; em erro o estado fica intacto.
+Idempotence: if the pair is already loaded, it returns `{ok, already}` **without
+re-reading from disk** — to force a re-read, use `reload/3`. Loading is atomic:
+parse, plural-rule compilation, and CLDR validation run before any ETS
+insertion; on error the state stays intact.
 
-Retorno: `{ok, NumEntries}` no primeiro carregamento, `{ok, already}` se já
-presente, ou `{error, Reason}` em falha de arquivo/parse/compile (ex.:
+Return: `{ok, NumEntries}` on the first load, `{ok, already}` if already
+present, or `{error, Reason}` on a file/parse/compile failure (e.g.
 `{error, {file_error, enoent}}`, `{error, {plural_compile_error, _}}`).
 
 ```erlang
@@ -1127,8 +1135,8 @@ presente, ou `{error, Reason}` em falha de arquivo/parse/compile (ex.:
 {ok, already}
 ```
 
-Delega a `erli18n_server:ensure_loaded/3`. Veja `ensure_loaded/4` (com `Opts` e
-limites anti-DoS), `reload/3` e `unload/2`.
+Delegates to `erli18n_server:ensure_loaded/3`. See `ensure_loaded/4` (with `Opts`
+and anti-DoS limits), `reload/3`, and `unload/2`.
 """.
 -spec ensure_loaded(domain(), locale(), file:filename()) ->
     erli18n_server:ensure_result().
@@ -1136,21 +1144,21 @@ ensure_loaded(Domain, Locale, PoPath) ->
     erli18n_server:ensure_loaded(Domain, Locale, PoPath).
 
 -doc """
-Igual a `ensure_loaded/3`, com `Opts` controlando o carregamento — use esta forma
-quando o `.po` é entrada não-confiável (multi-tenant) e você quer limites
-anti-DoS explícitos.
+Same as `ensure_loaded/3`, with `Opts` controlling the load — use this form
+when the `.po` is untrusted input (multi-tenant) and you want explicit anti-DoS
+limits.
 
-- `Opts` — mapa com campos suportados:
-  - `include_fuzzy` — incluir entradas marcadas como fuzzy.
-  - `max_bytes` — recusa o arquivo (via `filelib:file_size/1`, **sem ler** os
-    bytes) se exceder o limite.
-  - `max_entries` — recusa o catálogo (após o parse) se tiver mais entradas que o
-    limite.
-  - `timeout` — timeout do commit.
+- `Opts` — map with the supported fields:
+  - `include_fuzzy` — include entries marked as fuzzy.
+  - `max_bytes` — rejects the file (via `filelib:file_size/1`, **without reading**
+    the bytes) if it exceeds the limit.
+  - `max_entries` — rejects the catalog (after the parse) if it has more entries
+    than the limit.
+  - `timeout` — commit timeout.
 
-Bounds estourados retornam `{error, {input_too_large, _, _}}` (limite de bytes)
-ou `{error, {too_many_entries, _, _}}` (limite de entradas). Demais semânticas
-(idempotência, atomicidade) iguais a `ensure_loaded/3`.
+Exceeded bounds return `{error, {input_too_large, _, _}}` (byte limit)
+or `{error, {too_many_entries, _, _}}` (entry limit). The other semantics
+(idempotence, atomicity) are the same as `ensure_loaded/3`.
 
 ```erlang
 1> erli18n:ensure_loaded(my_domain, <<"fr">>, "fr.po", #{max_bytes => 1048576}).
@@ -1159,7 +1167,7 @@ ou `{error, {too_many_entries, _, _}}` (limite de entradas). Demais semânticas
 {error, {input_too_large, _, _}}
 ```
 
-Delega a `erli18n_server:ensure_loaded/4`. Veja `reload/4`.
+Delegates to `erli18n_server:ensure_loaded/4`. See `reload/4`.
 """.
 -spec ensure_loaded(
     domain(),
@@ -1172,26 +1180,27 @@ ensure_loaded(Domain, Locale, PoPath, Opts) ->
     erli18n_server:ensure_loaded(Domain, Locale, PoPath, Opts).
 
 -doc """
-Recarrega (atomicamente) o catálogo de `(Domain, Locale)` a partir de `PoPath`,
-**mesmo que já esteja carregado** — é o caminho para aplicar mudanças no `.po`
-sem reiniciar a app (diferente de `ensure_loaded/3`, que é no-op se já presente).
+Reloads (atomically) the `(Domain, Locale)` catalog from `PoPath`,
+**even if it is already loaded** — it is the path to apply changes to the `.po`
+without restarting the app (unlike `ensure_loaded/3`, which is a no-op if already
+present).
 
-- `Domain` / `Locale` — par do catálogo a recarregar.
-- `PoPath` — caminho do `.po` (re-lido do disco sempre).
+- `Domain` / `Locale` — catalog pair to reload.
+- `PoPath` — path to the `.po` (always re-read from disk).
 
-A operação é atômica e **sem janela vazia**: o pipeline falível
-(read/parse/compile) roda sem tocar a ETS e a troca é um swap atômico
-(insert-before-prune), então as buscas concorrentes nunca veem o catálogo vazio.
-Em erro, o catálogo anterior permanece intacto.
+The operation is atomic and **without an empty window**: the fallible pipeline
+(read/parse/compile) runs without touching ETS and the swap is atomic
+(insert-before-prune), so concurrent lookups never see the empty catalog.
+On error, the previous catalog stays intact.
 
-Retorno: `{ok, NumEntries}` no sucesso ou `{error, Reason}` na falha.
+Return: `{ok, NumEntries}` on success or `{error, Reason}` on failure.
 
 ```erlang
 1> erli18n:reload(my_domain, <<"fr">>, "priv/locale/fr/LC_MESSAGES/my_domain.po").
 {ok, 15}
 ```
 
-Delega a `erli18n_server:reload/3`. Veja `reload/4` (com `Opts`) e
+Delegates to `erli18n_server:reload/3`. See `reload/4` (with `Opts`) and
 `ensure_loaded/3`.
 """.
 -spec reload(domain(), locale(), file:filename()) ->
@@ -1200,16 +1209,16 @@ reload(Domain, Locale, PoPath) ->
     erli18n_server:reload(Domain, Locale, PoPath).
 
 -doc """
-Igual a `reload/3`, com `Opts` (mesmos campos de `ensure_loaded/4`:
-`include_fuzzy`, `max_bytes`, `max_entries`, `timeout`). Mantém a recarga atômica
-e o catálogo anterior intacto em caso de erro.
+Same as `reload/3`, with `Opts` (the same fields as `ensure_loaded/4`:
+`include_fuzzy`, `max_bytes`, `max_entries`, `timeout`). Keeps the reload atomic
+and the previous catalog intact in case of error.
 
 ```erlang
 1> erli18n:reload(my_domain, <<"fr">>, "fr.po", #{max_entries => 5000}).
 {ok, 15}
 ```
 
-Delega a `erli18n_server:reload/4`. Veja `reload/3` e `ensure_loaded/4`.
+Delegates to `erli18n_server:reload/4`. See `reload/3` and `ensure_loaded/4`.
 """.
 -spec reload(
     domain(),
@@ -1222,22 +1231,23 @@ reload(Domain, Locale, PoPath, Opts) ->
     erli18n_server:reload(Domain, Locale, PoPath, Opts).
 
 -doc """
-Remove da memória o catálogo de `(Domain, Locale)` e retorna `ok`.
+Removes the `(Domain, Locale)` catalog from memory and returns `ok`.
 
-- `Domain` / `Locale` — par do catálogo a descarregar.
+- `Domain` / `Locale` — catalog pair to unload.
 
-Após o unload, as buscas desse par voltam a cair no fallback (devolvem o
-`msgid`/`msgid_plural`). É idempotente: descarregar um catálogo inexistente
-também retorna `ok`.
+After the unload, lookups for that pair fall back again (returning the
+`msgid`/`msgid_plural`). It is idempotent: unloading a nonexistent catalog
+also returns `ok`.
 
 ```erlang
 1> erli18n:unload(my_domain, <<"fr">>).
 ok
-2> erli18n:unload(my_domain, <<"nunca_carregado">>).
+2> erli18n:unload(my_domain, <<"never_loaded">>).
 ok
 ```
 
-Delega a `erli18n_server:unload/2`. Veja `ensure_loaded/3` e `loaded_catalogs/0`.
+Delegates to `erli18n_server:unload/2`. See `ensure_loaded/3` and
+`loaded_catalogs/0`.
 """.
 -spec unload(domain(), locale()) -> ok.
 unload(Domain, Locale) ->
@@ -1246,22 +1256,22 @@ unload(Domain, Locale) ->
 %% Convention-based path resolver: <PrivDir>/locale/<Locale>/LC_MESSAGES/<Domain>.po.
 %% See BR-MIGRAR-005 / ADR-0003 (multi-tenant filesystem layout).
 -doc """
-Resolve o caminho convencional do `.po` para a aplicação `App`.
+Resolves the conventional `.po` path for the application `App`.
 
-- `App` — nome da aplicação OTP cujo `priv/` contém os catálogos.
-- `Domain` — domínio (vira o nome do arquivo `<Domain>.po`).
-- `Locale` — locale (vira o diretório `<Locale>`).
+- `App` — name of the OTP application whose `priv/` contains the catalogs.
+- `Domain` — domain (becomes the file name `<Domain>.po`).
+- `Locale` — locale (becomes the directory `<Locale>`).
 
-Monta `<PrivDir>/locale/<Locale>/LC_MESSAGES/<Domain>.po`, onde `PrivDir` é o
-diretório `priv/` de `App` (via `code:priv_dir/1`). Conveniência para alimentar
-`ensure_loaded/3,4` e `reload/3,4` sem montar o caminho manualmente.
+Assembles `<PrivDir>/locale/<Locale>/LC_MESSAGES/<Domain>.po`, where `PrivDir` is
+the `priv/` directory of `App` (via `code:priv_dir/1`). A convenience to feed
+`ensure_loaded/3,4` and `reload/3,4` without assembling the path manually.
 
 ```erlang
 1> erli18n:default_po_path(minha_app, my_domain, <<"fr">>).
 "/.../minha_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
 ```
 
-Delega a `erli18n_server:default_po_path/3`.
+Delegates to `erli18n_server:default_po_path/3`.
 """.
 -spec default_po_path(atom(), domain(), locale()) -> file:filename().
 default_po_path(App, Domain, Locale) ->
@@ -1272,41 +1282,41 @@ default_po_path(App, Domain, Locale) ->
 %% =========================
 
 -doc """
-Retorna um mapa com informações de uso de memória dos catálogos carregados. Útil
-para observabilidade e diagnóstico operacional (alertas de crescimento,
+Returns a map with memory-usage information for the loaded catalogs. Useful
+for observability and operational diagnostics (growth alerts,
 dashboards).
 
-O retorno tem três chaves fixas:
+The return has three fixed keys:
 
-- `ets_bytes` — bytes consumidos pela tabela ETS (já convertido de palavras-de-VM
-  para bytes; multiplicado por `erlang:system_info(wordsize)`).
-- `num_catalogs` — número de catálogos `(Domain, Locale)` carregados.
-- `num_keys` — número total de entradas (chaves) em todos os catálogos.
+- `ets_bytes` — bytes consumed by the ETS table (already converted from VM words
+  to bytes; multiplied by `erlang:system_info(wordsize)`).
+- `num_catalogs` — number of loaded `(Domain, Locale)` catalogs.
+- `num_keys` — total number of entries (keys) across all catalogs.
 
 ```erlang
 1> erli18n:memory_info().
 #{ets_bytes => 24576, num_catalogs => 3, num_keys => 130}
 ```
 
-O `-spec` desta fachada enfraquece para `map()`, mas o servidor garante exatamente
-estas três chaves (`erli18n_server:memory_info/0`). Veja `loaded_catalogs/0`.
+This façade's `-spec` weakens to `map()`, but the server guarantees exactly
+these three keys (`erli18n_server:memory_info/0`). See `loaded_catalogs/0`.
 """.
 -spec memory_info() -> map().
 memory_info() ->
     erli18n_server:memory_info().
 
 -doc """
-Lista os catálogos atualmente carregados como tuplas `{Domain, Locale,
-NumEntries}`, uma por par domínio/locale. Retorna lista vazia se nada estiver
-carregado.
+Lists the currently loaded catalogs as `{Domain, Locale, NumEntries}` tuples,
+one per domain/locale pair. Returns an empty list if nothing is
+loaded.
 
 ```erlang
 1> erli18n:loaded_catalogs().
 [{my_domain, <<"fr">>, 12}, {my_domain, <<"de">>, 11}]
 ```
 
-Delega a `erli18n_server:loaded_catalogs/0`. Veja `which_keys/2` (chaves de um
-catálogo específico) e `memory_info/0`.
+Delegates to `erli18n_server:loaded_catalogs/0`. See `which_keys/2` (keys of a
+specific catalog) and `memory_info/0`.
 """.
 -spec loaded_catalogs() ->
     [{domain(), locale(), non_neg_integer()}].
@@ -1314,14 +1324,14 @@ loaded_catalogs() ->
     erli18n_server:loaded_catalogs().
 
 -doc """
-Lista as chaves (entradas) do catálogo de `(Domain, Locale)`, útil para
-introspecção e testes (ex.: assertir que um `.po` carregou a entrada esperada).
+Lists the keys (entries) of the `(Domain, Locale)` catalog, useful for
+introspection and tests (e.g. asserting that a `.po` loaded the expected entry).
 
-- `Domain` / `Locale` — par do catálogo a inspecionar.
+- `Domain` / `Locale` — catalog pair to inspect.
 
-Cada chave é `{singular, Context, Msgid}` ou `{plural, Context, Msgid}`, onde
-`Context` é `undefined` quando não há `msgctxt`. Retorna lista vazia se o catálogo
-não estiver carregado.
+Each key is `{singular, Context, Msgid}` or `{plural, Context, Msgid}`, where
+`Context` is `undefined` when there is no `msgctxt`. Returns an empty list if the
+catalog is not loaded.
 
 ```erlang
 1> erli18n:which_keys(my_domain, <<"fr">>).
@@ -1330,7 +1340,7 @@ não estiver carregado.
  {singular, <<"month">>, <<"May">>}]
 ```
 
-Delega a `erli18n_server:which_keys/2`. Veja `loaded_catalogs/0`.
+Delegates to `erli18n_server:which_keys/2`. See `loaded_catalogs/0`.
 """.
 -spec which_keys(domain(), locale()) ->
     [
@@ -1345,13 +1355,13 @@ which_keys(Domain, Locale) ->
 %% =========================
 
 -doc """
-Helper interno: locale efetivo de cada busca (regra R5).
+Internal helper: the effective locale of each lookup (rule R5).
 
-Devolve `which_locale/0` se o processo definiu um locale via `setlocale/1`, senão
-`default_locale/0`. É o ponto único que reconcilia o estado por processo com o
-default global; toda aridade que recebe locale implícito passa por aqui.
-Caminho quente: 1 leitura do dicionário de processo (~ns) + 1
-`application:get_env` (cacheado no controlador de aplicação do OTP).
+Returns `which_locale/0` if the process set a locale via `setlocale/1`, otherwise
+`default_locale/0`. It is the single point that reconciles the per-process state
+with the global default; every arity that receives an implicit locale goes
+through here. Hot path: 1 read of the process dictionary (~ns) + 1
+`application:get_env` (cached in the OTP application controller).
 """.
 -spec resolved_locale() -> locale().
 resolved_locale() ->
@@ -1361,15 +1371,15 @@ resolved_locale() ->
     end.
 
 -doc """
-Helper interno: fallback plural compartilhado por `ngettext/5` e `npgettext/6`
-(regra R2).
+Internal helper: the plural fallback shared by `ngettext/5` and `npgettext/6`
+(rule R2).
 
-Acionado quando não há tradução utilizável — catálogo não carregado, entrada
-ausente, ou entrada presente mas com a forma selecionada para `N` vazia
-(PSD-003). Aplica a convenção C: `Msgid` quando `N == 1`, `MsgidPlural` caso
-contrário. Note que a decisão usa `N` cru (não a forma plural avaliada), o que
-casa o comportamento do `ngettext(3)` do GNU sem precisar do catálogo. Total e
-sem efeitos colaterais.
+Triggered when there is no usable translation — catalog not loaded, missing
+entry, or an entry present but with the form selected for `N` empty
+(PSD-003). It applies the C convention: `Msgid` when `N == 1`, `MsgidPlural`
+otherwise. Note that the decision uses raw `N` (not the evaluated plural form),
+which matches GNU's `ngettext(3)` behavior without needing the catalog. Total
+and side-effect-free.
 """.
 -spec plural_fallback(msgid(), msgid_plural(), integer()) -> translation().
 plural_fallback(Msgid, _MsgidPlural, 1) -> Msgid;
@@ -1395,21 +1405,20 @@ plural_fallback(_Msgid, MsgidPlural, _) -> MsgidPlural.
 %% pgettext from gettext misses without inferring from the function
 %% atom.
 -doc """
-Helper interno: emite o evento de telemetria de lookup miss
-(`[erli18n, lookup, miss]`), invocado por todos os caminhos de fallback das
-quatro famílias.
+Internal helper: emits the lookup-miss telemetry event
+(`[erli18n, lookup, miss]`), invoked by all fallback paths of the four families.
 
-`Function` identifica a família que originou o miss (`gettext`, `ngettext`,
-`pgettext`, `npgettext`); os demais argumentos vão para o metadata
-(`#{domain, locale, msgid, function, context}`) com `measurements` `#{count =>
+`Function` identifies the family that originated the miss (`gettext`, `ngettext`,
+`pgettext`, `npgettext`); the other arguments go into the metadata
+(`#{domain, locale, msgid, function, context}`) with `measurements` `#{count =>
 1}`.
 
-Opt-in (política de overhead): a flag `erli18n_telemetry:lookup_telemetry_enabled/0`
-é checada PRIMEIRO; quando OFF a função retorna `ok` imediatamente, sem construir
-o evento — o caminho rápido fica num único `application:get_env` (leitura ETS,
-~100ns). Importante para multi-tenant: com a flag OFF, o `msgid` (que pode ser
-sensível) nunca é exposto em evento. Sempre retorna `ok` (efeito colateral
-apenas).
+Opt-in (overhead policy): the flag `erli18n_telemetry:lookup_telemetry_enabled/0`
+is checked FIRST; when OFF the function returns `ok` immediately, without building
+the event — the fast path stays a single `application:get_env` (ETS read,
+~100ns). Important for multi-tenant: with the flag OFF, the `msgid` (which can be
+sensitive) is never exposed in an event. Always returns `ok` (side effect
+only).
 """.
 -spec emit_lookup_miss(atom(), domain(), locale(), context(), msgid()) ->
     ok.

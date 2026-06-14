@@ -266,7 +266,7 @@ compile_japanese_degenerate(_Config) ->
     ].
 
 %% =========================
-%% Bignum support (cenário 7 do 09-edge-cases.feature)
+%% Bignum support (scenario 7 of 09-edge-cases.feature)
 %% =========================
 
 %% N = 2^31 (just past int32 boundary).

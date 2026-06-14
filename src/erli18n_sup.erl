@@ -1,78 +1,80 @@
 -module(erli18n_sup).
 
 -moduledoc """
-Supervisor raiz da árvore de aplicação do erli18n.
+Root supervisor of the erli18n application tree.
 
-## O que é e o que resolve
+## What it is and what it solves
 
-Este é o único supervisor da biblioteca: é o processo iniciado por
-`erli18n_app:start/2` e a raiz da árvore OTP. A sua única
-responsabilidade é manter vivos — e na ordem certa — os dois processos
-que sustentam o runtime de tradução:
+This is the library's only supervisor: it is the process started by
+`erli18n_app:start/2` and the root of the OTP tree. Its sole
+responsibility is to keep alive — and in the right order — the two
+processes that underpin the translation runtime:
 
-- `erli18n_table_owner` — o dono dedicado e longevo da tabela ETS de
-  catálogos (`erli18n_catalog`). Cria a tabela, mantém-se como `heir`
-  dela e a entrega ao worker via `ets:give_away/3`.
-- `erli18n_server` — o worker/writer. Recebe a tabela do dono no seu
-  `init/1` e serializa todas as escritas (load/reload/unload de
-  catálogos) através do seu `gen_server`.
+- `erli18n_table_owner` — the dedicated, long-lived owner of the ETS
+  catalog table (`erli18n_catalog`). It creates the table, holds itself
+  as its `heir`, and hands it to the worker via `ets:give_away/3`.
+- `erli18n_server` — the worker/writer. It receives the table from the
+  owner in its `init/1` and serializes all writes (load/reload/unload of
+  catalogs) through its `gen_server`.
 
-O leitor não passa por nenhum destes processos: `lookup_*` lê direto da
-tabela ETS `protected`/`named_table` a partir do processo chamador, sem
-bloqueio. Esta árvore existe apenas para garantir **propriedade** e
-**durabilidade** da tabela, não para mediar o hot path de leitura.
+The reader goes through neither of these processes: `lookup_*` reads
+straight from the `protected`/`named_table` ETS table from the calling
+process, without blocking. This tree exists only to guarantee the
+table's **ownership** and **durability**, not to mediate the read hot
+path.
 
-## Modelo mental (owner/heir e por que a ordem importa)
+## Mental model (owner/heir and why order matters)
 
-O coração do design — e o motivo de este módulo não ser plumbing OTP
-trivial — é a separação entre **propriedade** (quem segura a tabela ETS)
-e **mutação** (quem escreve nela). A tabela é destruída pelo ETS no
-instante em que o seu dono morre; se o dono fosse o próprio worker (o
-processo mais propenso a crashar, pois é quem muta a tabela), qualquer
-crash apagaria **todos** os catálogos carregados, transformando um
-soluço transitório em perda total de disponibilidade das traduções até
-o consumidor recarregar cada catálogo (Finding #10,
+The heart of the design — and the reason this module is not trivial OTP
+plumbing — is the separation between **ownership** (who holds the ETS
+table) and **mutation** (who writes to it). The table is destroyed by
+ETS the instant its owner dies; if the owner were the worker itself (the
+process most prone to crashing, since it is the one that mutates the
+table), any crash would wipe out **all** loaded catalogs, turning a
+transient hiccup into total loss of translation availability until the
+consumer reloads each catalog (Finding #10,
 `ets-owned-by-server-no-heir-crash-loses-all-catalogs`).
 
-A solução tem duas peças que trabalham juntas:
+The solution has two pieces that work together:
 
-1. Um **dono dedicado** (`erli18n_table_owner`) que cria a tabela com
-   `{heir, self(), _}` e nunca a muta — logo, quase nunca crasha.
-2. Uma topologia de supervisão `rest_for_one` com o **dono primeiro** e
-   o **worker depois** na lista de filhos.
+1. A **dedicated owner** (`erli18n_table_owner`) that creates the table
+   with `{heir, self(), _}` and never mutates it — therefore it almost
+   never crashes.
+2. A `rest_for_one` supervision topology with the **owner first** and
+   the **worker second** in the child list.
 
-Pela semântica do `rest_for_one`, quando um filho morre apenas os
-filhos que vêm **depois** dele na ordem de início são reiniciados. Como
-o worker vem depois do dono:
+By the semantics of `rest_for_one`, when a child dies only the children
+that come **after** it in the start order are restarted. Since the
+worker comes after the owner:
 
-- **Crash do worker** (comum): o dono — que vem antes — não é
-  terminado. O ETS dispara `'ETS-TRANSFER'` e devolve a tabela intacta
-  ao dono (que é o `heir`); o worker reiniciado readquire a **mesma**
-  tabela via novo `give_away/3`. Nenhum catálogo é perdido.
-- **Crash do dono** (raro, pois ele nada muta): o `rest_for_one`
-  reinicia o dono e, em cascata, o worker. O dono recria a tabela no
-  seu `init/1` e o ciclo de handoff se restabelece. Os catálogos se
-  perdem só neste caso raro.
+- **Worker crash** (common): the owner — which comes before — is not
+  terminated. ETS fires `'ETS-TRANSFER'` and returns the table intact
+  to the owner (which is the `heir`); the restarted worker reacquires
+  the **same** table via a fresh `give_away/3`. No catalog is lost.
+- **Owner crash** (rare, since it mutates nothing): `rest_for_one`
+  restarts the owner and, in cascade, the worker. The owner recreates
+  the table in its `init/1` and the handoff cycle is re-established. The
+  catalogs are lost only in this rare case.
 
-Inverter a ordem dos filhos reintroduz o bug do Finding #10: por isso a
-ordem em `init/1` é load-bearing, não cosmética.
+Inverting the order of the children reintroduces the Finding #10 bug:
+that is why the order in `init/1` is load-bearing, not cosmetic.
 
-## Configuração fixa nesta v0.1
+## Fixed configuration in this v0.1
 
-A intensidade de reinício é `{intensity => 5, period => 10}` (no máximo
-5 reinícios em 10 segundos antes do supervisor desistir) e está
-hardcoded nesta versão por decisão registrada na AMB-002 — não é
-configurável via `application:get_env/2`. Ambos os filhos são
-`permanent` com `shutdown => 5000`.
+The restart intensity is `{intensity => 5, period => 10}` (at most 5
+restarts in 10 seconds before the supervisor gives up) and is hardcoded
+in this version by a decision recorded in AMB-002 — it is not
+configurable via `application:get_env/2`. Both children are `permanent`
+with `shutdown => 5000`.
 
-## Quando um dev encosta neste módulo
+## When a dev touches this module
 
-Quase nunca diretamente. Consumidores da biblioteca chamam
-`application:ensure_all_started(erli18n)`, que sobe a aplicação e, por
-ela, este supervisor. Mexer aqui só faz sentido ao alterar a topologia
-da árvore (adicionar/remover um filho, mudar estratégia ou intensidade).
-Antes de qualquer mexida na **ordem** dos `ChildSpecs`, releia a seção
-do modelo mental acima.
+Almost never directly. Library consumers call
+`application:ensure_all_started(erli18n)`, which brings up the
+application and, through it, this supervisor. Touching things here only
+makes sense when altering the tree's topology (adding/removing a child,
+changing strategy or intensity). Before any change to the **order** of
+the `ChildSpecs`, re-read the mental model section above.
 
 ## Quickstart
 
@@ -85,18 +87,18 @@ true
 [erli18n_table_owner,erli18n_server]
 ```
 
-A lista em `_Started` pode variar: o `erli18n.app.src` declara `telemetry`
-em `optional_applications`, então, se a app opcional estiver presente e
-ainda não tiver sido iniciada, ela aparece junto (ex.:
-`{ok, [telemetry, erli18n]}`). `kernel` e `stdlib` já estão no ar e nunca
-entram nessa lista. Por isso o exemplo casa com `{ok, _Started}` em vez de
-comparar a saída literalmente.
+The list in `_Started` may vary: `erli18n.app.src` declares `telemetry`
+in `optional_applications`, so if the optional app is present and has not
+yet been started, it shows up alongside (e.g.:
+`{ok, [telemetry, erli18n]}`). `kernel` and `stdlib` are already up and
+never enter that list. That is why the example matches `{ok, _Started}`
+instead of comparing the output literally.
 
-## Funções-chave
+## Key functions
 
-- `start_link/0` — ponto de entrada, chamado por `erli18n_app:start/2`.
-- `init/1` — callback do `supervisor`; define estratégia, intensidade e
-  os `ChildSpecs` na ordem load-bearing.
+- `start_link/0` — entry point, called by `erli18n_app:start/2`.
+- `init/1` — the `supervisor` callback; defines the strategy, intensity,
+  and the `ChildSpecs` in the load-bearing order.
 """.
 
 -behaviour(supervisor).
@@ -104,30 +106,31 @@ comparar a saída literalmente.
 -export([start_link/0, init/1]).
 
 -doc """
-Inicia o supervisor raiz, registrado localmente como `erli18n_sup`.
+Starts the root supervisor, registered locally as `erli18n_sup`.
 
-Ponto de entrada da árvore: é o que `erli18n_app:start/2` chama. Delega
-para `supervisor:start_link/3` com `{local, ?MODULE}`, o que faz o
-supervisor responder pelo nome `erli18n_sup` (usável em
-`supervisor:which_children/1`, `whereis/1`, etc.) e invoca `init/1` para
-montar os filhos.
+The tree's entry point: it is what `erli18n_app:start/2` calls. It
+delegates to `supervisor:start_link/3` with `{local, ?MODULE}`, which
+makes the supervisor respond to the name `erli18n_sup` (usable in
+`supervisor:which_children/1`, `whereis/1`, etc.) and invokes `init/1`
+to assemble the children.
 
-## Retorno
+## Return
 
-- `{ok, Pid}` — supervisor e ambos os filhos
-  (`erli18n_table_owner` e `erli18n_server`) iniciaram com sucesso.
-- `{error, {already_started, Pid}}` — já existe um processo registrado
-  sob `erli18n_sup` (a aplicação já está no ar). Iniciar a aplicação
-  duas vezes via OTP não chega aqui; isto só aparece em chamadas manuais.
-- `{error, {shutdown, _}}` — algum filho falhou no próprio `init/1`
-  (ex.: o handoff `claim_table/0` do worker não completou). O supervisor
-  desfaz o que subiu e propaga o erro.
+- `{ok, Pid}` — the supervisor and both children
+  (`erli18n_table_owner` and `erli18n_server`) started successfully.
+- `{error, {already_started, Pid}}` — a process is already registered
+  under `erli18n_sup` (the application is already up). Starting the
+  application twice via OTP does not reach here; this only shows up in
+  manual calls.
+- `{error, {shutdown, _}}` — some child failed in its own `init/1`
+  (e.g.: the worker's `claim_table/0` handoff did not complete). The
+  supervisor unwinds what came up and propagates the error.
 
-Crasha (link com o chamador) apenas se houver erro de programação na
-construção dos `ChildSpecs` de `init/1` — o que, neste módulo, é
-estático e não depende de entrada externa.
+It crashes (linked to the caller) only if there is a programming error
+in the construction of the `ChildSpecs` in `init/1` — which, in this
+module, is static and does not depend on external input.
 
-## Exemplo
+## Example
 
 ```erlang
 1> {ok, Pid} = erli18n_sup:start_link().
@@ -138,12 +141,12 @@ true
 {error,{already_started,<0.215.0>}}
 ```
 
-A terceira chamada demonstra o modo de falha descrito acima: com o
-supervisor já registrado sob `erli18n_sup`, um segundo `start_link/0`
-manual retorna `{error, {already_started, Pid}}` com o `Pid` do processo
-existente — sem derrubar nem reiniciar nada.
+The third call demonstrates the failure mode described above: with the
+supervisor already registered under `erli18n_sup`, a second manual
+`start_link/0` returns `{error, {already_started, Pid}}` with the `Pid`
+of the existing process — without tearing down or restarting anything.
 
-Veja também `init/1` para a definição da árvore que esta função instala.
+See also `init/1` for the definition of the tree this function installs.
 """.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -159,54 +162,57 @@ start_link() ->
 %% owner (rare — it mutates nothing) restarts the worker too, and the
 %% owner recreates the table on the way back up.
 -doc """
-Callback `c:supervisor:init/1` — define a forma da árvore de supervisão.
+The `c:supervisor:init/1` callback — defines the shape of the
+supervision tree.
 
-Chamado uma vez por `start_link/0` (via `supervisor:start_link/3`).
-Recebe o argumento `[]` passado em `start_link/0` e devolve
-`{ok, {SupFlags, ChildSpecs}}`. É puramente declarativo: monta mapas e
-não tem efeitos colaterais nem caminhos de erro próprios.
+Called once by `start_link/0` (via `supervisor:start_link/3`). It
+receives the `[]` argument passed in `start_link/0` and returns
+`{ok, {SupFlags, ChildSpecs}}`. It is purely declarative: it builds maps
+and has no side effects nor error paths of its own.
 
 ## SupFlags
 
-- `strategy => rest_for_one` — load-bearing. Garante que o crash do
-  worker (que vem **depois** do dono na ordem) não derrube o dono, e que
-  o crash do dono (que vem **antes**) reinicie também o worker em
-  cascata. Ver o modelo mental no `-moduledoc` para o porquê.
-- `intensity => 5`, `period => 10` — no máximo 5 reinícios em 10
-  segundos; ao exceder, o supervisor desiste e propaga a falha para
-  cima. Valores fixos nesta v0.1 (AMB-002), não configuráveis.
+- `strategy => rest_for_one` — load-bearing. Guarantees that a worker
+  crash (which comes **after** the owner in the order) does not bring
+  down the owner, and that an owner crash (which comes **before**) also
+  restarts the worker in cascade. See the mental model in the
+  `-moduledoc` for the why.
+- `intensity => 5`, `period => 10` — at most 5 restarts in 10 seconds;
+  on exceeding it, the supervisor gives up and propagates the failure
+  upward. Fixed values in this v0.1 (AMB-002), not configurable.
 
-## ChildSpecs (a ORDEM é load-bearing)
+## ChildSpecs (the ORDER is load-bearing)
 
-A lista devolvida é `[Owner, Server]`, exatamente nesta ordem:
+The returned list is `[Owner, Server]`, in exactly this order:
 
 1. `erli18n_table_owner` — `permanent`, `worker`, `shutdown => 5000`.
-   Dono/`heir` da tabela ETS `erli18n_catalog`. Sobe primeiro para
-   existir e segurar a tabela antes de o worker pedir o handoff. A
-   mecânica do handoff/reclaim que sustenta a sobrevivência da tabela
-   no crash do worker vive em `erli18n_table_owner:handle_info/2` (a
-   cláusula `'ETS-TRANSFER'` que casa `?ETS_HEIR_DATA` e reavida a
-   tabela) e em `erli18n_table_owner:handle_call/3` (o
-   `ets:give_away/3` defensivo dono->worker, via `safe_give_away/2`); é
-   lá que se valida a afirmação de que nenhum catálogo é perdido.
+   Owner/`heir` of the `erli18n_catalog` ETS table. It comes up first so
+   it exists and holds the table before the worker requests the handoff.
+   The handoff/reclaim mechanics that sustain the table's survival on a
+   worker crash live in `erli18n_table_owner:handle_info/2` (the
+   `'ETS-TRANSFER'` clause that matches `?ETS_HEIR_DATA` and revives the
+   table) and in `erli18n_table_owner:handle_call/3` (the defensive
+   owner->worker `ets:give_away/3`, via `safe_give_away/2`); that is
+   where the claim that no catalog is lost is validated.
 2. `erli18n_server` — `permanent`, `worker`, `shutdown => 5000`.
-   Writer dos catálogos. No seu `init/1` chama
-   `erli18n_table_owner:claim_table/0` para receber a tabela via
-   `ets:give_away/3`; por isso depende de o dono já estar no ar.
+   The catalog writer. In its `init/1` it calls
+   `erli18n_table_owner:claim_table/0` to receive the table via
+   `ets:give_away/3`; that is why it depends on the owner already being
+   up.
 
-**Inverter a ordem reintroduz o Finding #10**
-(`ets-owned-by-server-no-heir-crash-loses-all-catalogs`): com o worker
-antes do dono, um crash do worker passaria a terminar o dono em cascata
-(semântica do `rest_for_one`), a tabela seria destruída e todos os
-catálogos carregados se perderiam.
+**Inverting the order reintroduces Finding #10**
+(`ets-owned-by-server-no-heir-crash-loses-all-catalogs`): with the
+worker before the owner, a worker crash would start terminating the
+owner in cascade (`rest_for_one` semantics), the table would be
+destroyed, and all loaded catalogs would be lost.
 
-## Retorno
+## Return
 
-Sempre `{ok, {SupFlags, ChildSpecs}}`. Não há cláusula de erro: um
-`ChildSpec` malformado seria um bug de programação detectado pelo
-`supervisor` ao validar a árvore, não um modo de falha em runtime.
+Always `{ok, {SupFlags, ChildSpecs}}`. There is no error clause: a
+malformed `ChildSpec` would be a programming bug detected by the
+`supervisor` while validating the tree, not a runtime failure mode.
 
-## Exemplo
+## Example
 
 ```erlang
 1> {ok, {SupFlags, Children}} = erli18n_sup:init([]).
@@ -216,7 +222,7 @@ rest_for_one
 [erli18n_table_owner,erli18n_server]
 ```
 
-Veja também `start_link/0`, que instala esta árvore.
+See also `start_link/0`, which installs this tree.
 """.
 init([]) ->
     SupFlags = #{

@@ -128,7 +128,7 @@ surfaces only `{'EXIT', error}`); cf. `erlang/otp` #5778 "EDoc swallows errors w
 -module(d).
 -export_type([t/0]).
 -type s() :: atom().
-%% O campo `msgid_plural` e irrelevante e dropado na materializacao.
+%% The `msgid_plural` field is irrelevant and dropped during materialization.
 -type t() :: {s(), s()}.
 ```
 

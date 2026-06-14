@@ -1,6 +1,6 @@
 -module(erli18n_SUITE).
 
-%% Common Test suite for the public façade `erli18n.erl` (Parte 6).
+%% Common Test suite for the public facade `erli18n.erl` (Part 6).
 %% Each test carries the design citation (BR-MIGRAR-NNN / PSD-NNN)
 %% in its docstring so that a failure points straight at the spec
 %% it violates.
@@ -211,8 +211,8 @@ gettext_fallback_to_msgid_when_missing(Config) ->
     ).
 
 %% PSD-003: msgstr "" is treated as untranslated. The parser drops the
-%% row, the lookup misses, and the façade falls back to the msgid. The
-%% façade's empty-binary guard is defence-in-depth (an empty translation
+%% row, the lookup misses, and the facade falls back to the msgid. The
+%% facade's empty-binary guard is defence-in-depth (an empty translation
 %% should never reach the UI even if a row leaked through).
 gettext_fallback_when_translation_empty(Config) ->
     Path = fixture(Config, "fr_default.po"),
@@ -311,7 +311,7 @@ ngettext_fallback_when_form_empty(Config) ->
     ).
 
 %% N can be a bignum (e.g. 2^31, 2^63, more). The plural evaluator is
-%% bignum-clean; the façade must pass through untouched.
+%% bignum-clean; the facade must pass through untouched.
 ngettext_bignum_huge_n(Config) ->
     Path = fixture(Config, "plural_fr.po"),
     {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
@@ -411,7 +411,7 @@ dcngettext_alias(Config) ->
     ).
 
 %% Japanese: nplurals=1, plural=0 — every N maps to form 0. Single
-%% translation string. The façade must NOT crash and must NOT fall back
+%% translation string. The facade must NOT crash and must NOT fall back
 %% to msgid_plural for any N (form 0 is present).
 ngettext_japanese_degenerate_plural(Config) ->
     Path = fixture(Config, "plural_ja.po"),
@@ -620,7 +620,7 @@ dcnpgettext_alias(Config) ->
     ).
 
 %% pgettext/2 arity shortcut: with no Domain and no Locale args, the
-%% façade must resolve domain from `textdomain/0` (defaults to `default`)
+%% facade must resolve domain from `textdomain/0` (defaults to `default`)
 %% and locale from `which_locale/0` (the PD entry set by setlocale/1).
 %% Behavioural assertion: the returned translation matches the one the
 %% caller would get from the explicit 4-arity call.
@@ -884,7 +884,7 @@ which_locale_undefined_by_default(_Config) ->
 %% default_locale/0 returns. Verified indirectly: load the catalog for
 %% the default <<"en">> and confirm lookup works without setlocale.
 default_locale_used_when_setlocale_unset(Config) ->
-    %% Default is <<"en">> per the façade constant.
+    %% Default is <<"en">> per the facade constant.
 
     %% any po file, we use the catalog
     EnPath = fixture(Config, "es_default.po"),

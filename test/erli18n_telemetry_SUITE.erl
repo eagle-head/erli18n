@@ -1,6 +1,6 @@
 -module(erli18n_telemetry_SUITE).
 
-%% Common Test suite for the `:telemetry` observability layer (Parte 7).
+%% Common Test suite for the `:telemetry` observability layer (Part 7).
 %%
 %% Schemas and contract under test come from:
 %%   `_reversa_sdd/migration/observability.md` §4 (catalogue),
@@ -452,7 +452,7 @@ telemetry_plural_divergence_not_emitted_when_aligned(Config) ->
 %% Spec: observability.md §4.2 — emits when ets_bytes crosses
 %% threshold. Test forces threshold to 1 byte so any load triggers.
 %% Also verifies the metadata sample (`domain_locales_sample`) per
-%% §4.2 ("amostra de até 10 `{Domain, Locale}`").
+%% §4.2 ("sample of up to 10 `{Domain, Locale}` entries").
 telemetry_memory_warning_when_threshold_crossed(Config) ->
     application:set_env(erli18n, memory_warning_threshold, 1),
     application:set_env(erli18n, memory_warning_rate_limit_seconds, 60),

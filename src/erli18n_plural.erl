@@ -1,111 +1,111 @@
 -module(erli18n_plural).
 
 -moduledoc """
-Avaliador e validador das regras de plural do gettext/CLDR usadas pelo
+Evaluator and validator for the gettext/CLDR plural rules used by
 erli18n.
 
-Compila a expressão C do cabeçalho `Plural-Forms:` de um `.po`
-(`nplurals=N; plural=EXPR;`) num pequeno AST e a avalia para escolher a
-forma plural de um dado N — é o que sustenta `ngettext`/`npgettext`.
+Compiles the C expression from a `.po` `Plural-Forms:` header
+(`nplurals=N; plural=EXPR;`) into a small AST and evaluates it to choose
+the plural form for a given N — this is what backs `ngettext`/`npgettext`.
 
-## O problema que resolve
+## The problem it solves
 
-O gettext seleciona a tradução plural correta avaliando uma EXPRESSÃO em
-C embutida no cabeçalho do `.po` (ex.: a regra russa de 3 formas
-`n%10==1 && n%100!=11 ? 0 : ...`). Cada locale traz a sua. Este módulo
-substitui o pipeline Yecc/Leex/`erl_eval` do legado `gettexter` por um
-parser de descida-recursiva + interpretador de AST escritos à mão (sem
-geração dinâmica de código Erlang, então o dialyzer/eqwalizer raciocinam
-sobre tudo). Ele transforma `EXPR` num `t:ast/0` e a avalia para um índice
-de forma em `[0, NPlurals)`.
+gettext selects the correct plural translation by evaluating a C
+EXPRESSION embedded in the `.po` header (e.g. the Russian 3-form rule
+`n%10==1 && n%100!=11 ? 0 : ...`). Each locale ships its own. This module
+replaces the legacy `gettexter`'s Yecc/Leex/`erl_eval` pipeline with a
+hand-written recursive-descent parser + AST interpreter (no dynamic
+generation of Erlang code, so dialyzer/eqwalizer can reason about
+everything). It turns `EXPR` into a `t:ast/0` and evaluates it to a form
+index in `[0, NPlurals)`.
 
-## Modelo mental
+## Mental model
 
-- **Duas fases.** `compile/1` (load-time, frio) faz parse + valida +
-  empacota num `t:plural_compiled/0`. `evaluate/2` (lookup-time, CAMINHO
-  QUENTE) interpreta esse bundle por chamada. O loader do catálogo compila
-  UMA vez e guarda o bundle; cada `ngettext`/`npgettext` chama só
+- **Two phases.** `compile/1` (load-time, cold) parses + validates +
+  packs into a `t:plural_compiled/0`. `evaluate/2` (lookup-time, HOT
+  PATH) interprets that bundle per call. The catalog loader compiles
+  ONCE and keeps the bundle; each `ngettext`/`npgettext` calls only
   `evaluate/2`.
-- **Fonte-de-verdade em runtime é o cabeçalho do `.po`** (PSD-004). A
-  tabela CLDR embutida (~49 locales, `cldr_rule/1`) NÃO participa do
-  caminho quente: ela só é consultada no load para emitir avisos de
-  divergência (`validate_against_cldr/2`) e como fallback quando o
-  cabeçalho falta (`fallback_rule/0`).
-- **Confiável vs não-confiável.** A expressão do cabeçalho vem de `.po` de
-  inquilino — entrada NÃO-CONFIÁVEL (ADR-0003, ver `SECURITY.md`). A
-  tabela `cldr_data/0` é um literal estático do módulo — CONFIÁVEL. Por
-  isso `compile/1` é fail-closed e endurecido, mas `cldr_compiled_table/0`
-  assume que cada linha compila.
-- **Função pura, sem estado por processo.** Diferente do servidor de
-  catálogo, este módulo não tem gen_server, ETS nem dicionário de
-  processo. O único efeito colateral é um cache global de leitura-única em
-  `persistent_term` (`cldr_compiled_table/0`), memoizando os ASTs CLDR
-  compilados — um singleton de escopo de módulo sob chave fixa, construído
-  uma vez por nó e nunca invalidado (`cldr_data/0` é constante).
+- **Runtime source-of-truth is the `.po` header** (PSD-004). The embedded
+  CLDR table (~49 locales, `cldr_rule/1`) does NOT take part in the hot
+  path: it is consulted only at load time to emit divergence warnings
+  (`validate_against_cldr/2`) and as a fallback when the header is missing
+  (`fallback_rule/0`).
+- **Trusted vs untrusted.** The header expression comes from a tenant's
+  `.po` — UNTRUSTED input (ADR-0003, see `SECURITY.md`). The
+  `cldr_data/0` table is a static module literal — TRUSTED. That is why
+  `compile/1` is fail-closed and hardened, while `cldr_compiled_table/0`
+  assumes every row compiles.
+- **Pure function, no per-process state.** Unlike the catalog server, this
+  module has no gen_server, no ETS and no process dictionary. The only
+  side effect is a global read-once cache in `persistent_term`
+  (`cldr_compiled_table/0`), memoising the compiled CLDR ASTs — a
+  module-scoped singleton under a fixed key, built once per node and never
+  invalidated (`cldr_data/0` is constant).
 
-## Endurecimento anti-DoS (ADR-0003)
+## Anti-DoS hardening (ADR-0003)
 
-A superfície de ataque é a expressão do `.po`. As defesas vivem TODAS em
-`compile/1` (frio), para que `evaluate/2` (quente) fique O(1)-limitado por
-construção:
+The attack surface is the `.po` expression. The defenses ALL live in
+`compile/1` (cold), so that `evaluate/2` (hot) stays O(1)-bounded by
+construction:
 
-- `?PLURAL_EXPR_MAX_BYTES` (2048) — rejeita expressão longa antes do parse.
-- `?PLURAL_EXPR_MAX_DEPTH` (64) — limita aninhamento (e a pilha do walker).
-- `?AST_MAX_NODES` (256) — limita a contagem de nós (cadeia plana larga
-  `n*n*...*n` passa nos dois caps acima mas cresceria um bignum `n^k` por
+- `?PLURAL_EXPR_MAX_BYTES` (2048) — rejects a long expression before parse.
+- `?PLURAL_EXPR_MAX_DEPTH` (64) — bounds nesting (and the walker's stack).
+- `?AST_MAX_NODES` (256) — bounds the node count (a wide flat chain
+  `n*n*...*n` passes both caps above but would grow an `n^k` bignum per
   lookup).
-- `?MAX_INT_DIGITS` (7) — limita os dígitos de `nplurals=` antes do
-  `binary_to_integer` materializar o bignum.
-- Rejeição estática (`validate_safe/2`) — recusa regras provadamente
-  faltosas para TODO N (div/mod por divisor constante 0; constante fora de
+- `?MAX_INT_DIGITS` (7) — bounds the digits of `nplurals=` before
+  `binary_to_integer` materialises the bignum.
+- Static rejection (`validate_safe/2`) — refuses rules provably faulty
+  for EVERY N (div/mod by a constant divisor of 0; constant outside
   `[0, NPlurals)`).
 
-`evaluate/2` é TOTAL: nunca levanta. Espelhando o runtime do GNU libintl
-(`dcigettext.c`), divisão/módulo por zero é coagida a 0 e uma forma fora
-de `[0, NPlurals)` sofre clamp para 0. Quem precisar OBSERVAR a anomalia
-(log/alerta) usa `evaluate_checked/2`, que a devolve como dado.
+`evaluate/2` is TOTAL: it never raises. Mirroring the GNU libintl runtime
+(`dcigettext.c`), division/modulo by zero is coerced to 0 and a form
+outside `[0, NPlurals)` is clamped to 0. Anyone who needs to OBSERVE the
+anomaly (log/alert) uses `evaluate_checked/2`, which returns it as data.
 
-## Quando você encosta neste módulo
+## When you touch this module
 
-- **Consumer:** quase nunca diretamente — você chama `erli18n:ngettext/5`
-  e o servidor de catálogo cuida do `compile/1`/`evaluate/2`. Para um
-  teste rápido fora do servidor, `plural_by_po_header/2` compila e avalia
-  num passo.
-- **Maintainer do loader:** chama `compile/1` no load, guarda o bundle, e
-  no caminho quente chama `evaluate/2`. Para divergência CLDR no load use
-  `validate_against_cldr_ast/2` (reusa o AST já compilado).
-- **Maintainer da tabela CLDR:** edita `cldr_data/0` ao sincronizar uma
-  release do CLDR.
+- **Consumer:** almost never directly — you call `erli18n:ngettext/5` and
+  the catalog server takes care of `compile/1`/`evaluate/2`. For a quick
+  test outside the server, `plural_by_po_header/2` compiles and evaluates
+  in one step.
+- **Loader maintainer:** calls `compile/1` at load, keeps the bundle, and
+  on the hot path calls `evaluate/2`. For CLDR divergence at load use
+  `validate_against_cldr_ast/2` (reuses the already-compiled AST).
+- **CLDR table maintainer:** edits `cldr_data/0` when syncing a CLDR
+  release.
 
 ## Quickstart
 
 ```erlang
-%% Compile a regra russa de 3 formas (one/few/many) uma vez...
+%% Compile the Russian 3-form (one/few/many) rule once...
 1> Hdr = <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
 1>        "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>.
 2> {ok, C} = erli18n_plural:compile(Hdr).
 {ok,#{raw => Hdr,expr => {ternary,_,_,_},nplurals => 3}}
-%% ...e selecione a forma para vários N (caminho quente).
+%% ...and select the form for various N (hot path).
 3> erli18n_plural:evaluate(C, 1).
 0
 4> erli18n_plural:evaluate(C, 2).
 1
 5> erli18n_plural:evaluate(C, 5).
 2
-%% Uso pontual: compila e avalia de uma vez.
+%% One-off use: compile and evaluate at once.
 6> erli18n_plural:plural_by_po_header(<<"nplurals=2; plural=n != 1;">>, 1).
 {ok, 0}
 ```
 
-## Funções-chave
+## Key functions
 
-- `compile/1` — parse + validação fail-closed → `t:plural_compiled/0`.
-- `evaluate/2` — caminho quente, total, devolve o índice da forma.
-- `evaluate_checked/2` — irmã estruturada que reporta anomalias como dado.
-- `plural_by_po_header/2` — atalho compile+evaluate para uso pontual.
+- `compile/1` — parse + fail-closed validation → `t:plural_compiled/0`.
+- `evaluate/2` — hot path, total, returns the form index.
+- `evaluate_checked/2` — structured sibling that reports anomalies as data.
+- `plural_by_po_header/2` — compile+evaluate shortcut for one-off use.
 - `cldr_rule/1` / `validate_against_cldr/2` / `validate_against_cldr_ast/2`
-  — observabilidade CLDR (fora do caminho quente).
-- `fallback_rule/0` — default Germânico quando falta o cabeçalho.
+  — CLDR observability (off the hot path).
+- `fallback_rule/0` — Germanic default when the header is missing.
 """.
 
 %% Evaluator for the GNU gettext `Plural-Forms:` header C-expression
@@ -187,18 +187,18 @@ de `[0, NPlurals)` sofre clamp para 0. Quem precisar OBSERVAR a anomalia
 %% =========================
 
 -doc """
-Bundle de regra de plural compilada — a saída de `compile/1` e a entrada
-de `evaluate/2`/`evaluate_checked/2`.
+Compiled plural-rule bundle — the output of `compile/1` and the input to
+`evaluate/2`/`evaluate_checked/2`.
 
-- `nplurals` — quantas formas plurais o locale tem (validado em
-  `[1, ?NPLURALS_MAX]`); todo índice retornado fica em `[0, nplurals)`.
-- `expr` — o `t:ast/0` parseado da expressão `plural=`, avaliado no
-  caminho quente.
-- `raw` — o cabeçalho bruto de origem, preservado para diagnóstico e para
-  o payload de divergência de `validate_against_cldr_ast/2`.
+- `nplurals` — how many plural forms the locale has (validated in
+  `[1, ?NPLURALS_MAX]`); every returned index stays in `[0, nplurals)`.
+- `expr` — the parsed `t:ast/0` of the `plural=` expression, evaluated on
+  the hot path.
+- `raw` — the originating raw header, preserved for diagnostics and for
+  the divergence payload of `validate_against_cldr_ast/2`.
 
-Compile uma vez no load e reuse este mapa em cada lookup; não há cache de
-resultado dentro de `evaluate/2`.
+Compile once at load and reuse this map on every lookup; there is no
+result cache inside `evaluate/2`.
 """.
 -type plural_compiled() :: #{
     nplurals := pos_integer(),
@@ -207,15 +207,15 @@ resultado dentro de `evaluate/2`.
 }.
 
 -doc """
-Motivo de falha estrutural de `compile/1` — sempre fail-closed, nunca uma
-exceção.
+Structural failure reason from `compile/1` — always fail-closed, never an
+exception.
 
-Agrupa defeitos de cabeçalho (`missing_nplurals`, `missing_plural_expr`,
-`nplurals_out_of_range`, `syntax_error`) e as rejeições de endurecimento
-anti-DoS: `expr_too_long`/`expr_too_deep`/`expr_too_complex` (caps de
-bytes/profundidade/nós), `nplurals_too_many_digits` (cap de dígitos antes
-do bignum) e `unsafe_plural_rule` (regra estaticamente faltosa para todo
-N). Veja `compile/1` para o que dispara cada um.
+Groups header defects (`missing_nplurals`, `missing_plural_expr`,
+`nplurals_out_of_range`, `syntax_error`) and the anti-DoS hardening
+rejections: `expr_too_long`/`expr_too_deep`/`expr_too_complex`
+(byte/depth/node caps), `nplurals_too_many_digits` (digit cap before the
+bignum) and `unsafe_plural_rule` (rule statically faulty for every N).
+See `compile/1` for what triggers each one.
 """.
 -type compile_error() ::
     {syntax_error, Reason :: term(), Position :: non_neg_integer()}
@@ -253,29 +253,27 @@ N). Veja `compile/1` para o que dispara cada um.
     | {nplurals_too_many_digits, Digits :: pos_integer(), Max :: pos_integer()}.
 
 -doc """
-Anomalia observada ao avaliar uma regra compilada — devolvida como dado,
-nunca levantada.
+Anomaly observed while evaluating a compiled rule — returned as data,
+never raised.
 
-`{division_by_zero, '/' | '%'}` quando um divisor avaliado é 0;
-`{form_out_of_range, Form, NPlurals}` quando o índice cai fora de
-`[0, NPlurals)`. Aparece como retorno de `evaluate_checked/2` e como
-payload de um `{unsafe_plural_rule, _}` rejeitado por `compile/1`. A
-`evaluate/2` total NUNCA produz isto — ela faz clamp (paridade com
-libintl).
+`{division_by_zero, '/' | '%'}` when an evaluated divisor is 0;
+`{form_out_of_range, Form, NPlurals}` when the index falls outside
+`[0, NPlurals)`. It appears as a return of `evaluate_checked/2` and as the
+payload of an `{unsafe_plural_rule, _}` rejected by `compile/1`. The total
+`evaluate/2` NEVER produces this — it clamps (parity with libintl).
 """.
 -type plural_eval_error() ::
     {division_by_zero, '/' | '%'}
     | {form_out_of_range, Form :: integer(), NPlurals :: pos_integer()}.
 
 -doc """
-AST da expressão de plural — um inteiro literal, a variável `n`, um binop
-(`{binop, t:op/0, Esq, Dir}`), o unop de negação (`{unop, '!', _}`) ou um
-ternário (`{ternary, Cond, Then, Else}`).
+AST of the plural expression — a literal integer, the variable `n`, a
+binop (`{binop, t:op/0, Left, Right}`), the negation unop
+(`{unop, '!', _}`) or a ternary (`{ternary, Cond, Then, Else}`).
 
-É a árvore que `compile/1` constrói e que `evaluate/2`/`eval_ast/2`
-interpretam. A profundidade é limitada por `?PLURAL_EXPR_MAX_DEPTH` e a
-contagem de nós por `?AST_MAX_NODES`, então nenhuma instância válida é
-arbitrariamente grande.
+It is the tree that `compile/1` builds and that `evaluate/2`/`eval_ast/2`
+interpret. The depth is bounded by `?PLURAL_EXPR_MAX_DEPTH` and the node
+count by `?AST_MAX_NODES`, so no valid instance is arbitrarily large.
 """.
 -type ast() ::
     integer()
@@ -286,11 +284,10 @@ arbitrariamente grande.
     | {ternary, ast(), ast(), ast()}.
 
 -doc """
-Operadores binários aceitos num `t:ast/0`, com precedência/associatividade
-do C: aritméticos (`+ - * / %`), relacionais (`< > <= >=`), de igualdade
-(`== !=`) e lógicos de curto-circuito (`&&` `||`). `%` usa `rem` (trunca
-em direção a zero, como C99); `/` e `%` por zero são coagidos a 0 no
-caminho quente.
+Binary operators accepted in a `t:ast/0`, with C precedence/associativity:
+arithmetic (`+ - * / %`), relational (`< > <= >=`), equality (`== !=`) and
+short-circuit logical (`&&` `||`). `%` uses `rem` (truncates toward zero,
+like C99); `/` and `%` by zero are coerced to 0 on the hot path.
 """.
 -type op() ::
     '+'
@@ -373,37 +370,37 @@ caminho quente.
 %% =========================
 
 -doc """
-Compila a expressão do cabeçalho `Plural-Forms:` de um `.po` num bundle
-`plural_compiled()` (mapa `nplurals`/`expr`/`raw`) reutilizado por cada
+Compiles a `.po` `Plural-Forms:` header expression into a
+`plural_compiled()` bundle (a `nplurals`/`expr`/`raw` map) reused by each
 `evaluate/2`.
 
-`Header` é a string do cabeçalho (`nplurals=N; plural=EXPR;`); os campos
-são localizados de forma tolerante a espaços. Retorna `{ok, Compiled}` ou
-`{error, compile_error()}`, sempre fail-closed (nunca levanta), pois roda
-sobre `.po` não-confiável dentro do `handle_call` do gen_server.
+`Header` is the header string (`nplurals=N; plural=EXPR;`); the fields are
+located in a whitespace-tolerant way. Returns `{ok, Compiled}` or
+`{error, compile_error()}`, always fail-closed (never raises), since it
+runs over untrusted `.po` inside the gen_server's `handle_call`.
 
-Rejeições estruturais relevantes:
-- `{expr_too_long, Size, Max}` — expressão acima de `?PLURAL_EXPR_MAX_BYTES`
-  (2048), recusada antes do parsing;
-- `{expr_too_deep, Depth, Pos}` — aninhamento acima de
-  `?PLURAL_EXPR_MAX_DEPTH` (64);
-- `{expr_too_complex, Nodes, Max}` — AST com mais nós que `?AST_MAX_NODES`
-  (256), barrando cadeias planas largas (`n*n*...*n`) que cresceriam um
-  bignum por lookup;
-- `{unsafe_plural_rule, Reason}` — regra ESTATICAMENTE faltosa: divisão/
-  módulo por divisor constante 0, ou regra constante cuja forma cai fora
-  de `[0, NPlurals)`. Casos que só falham para um N específico ficam para
-  o clamp dinâmico de `evaluate/2`;
+Relevant structural rejections:
+- `{expr_too_long, Size, Max}` — expression above `?PLURAL_EXPR_MAX_BYTES`
+  (2048), refused before parsing;
+- `{expr_too_deep, Depth, Pos}` — nesting above `?PLURAL_EXPR_MAX_DEPTH`
+  (64);
+- `{expr_too_complex, Nodes, Max}` — AST with more nodes than
+  `?AST_MAX_NODES` (256), barring wide flat chains (`n*n*...*n`) that
+  would grow a bignum per lookup;
+- `{unsafe_plural_rule, Reason}` — STATICALLY faulty rule: division/modulo
+  by a constant divisor of 0, or a constant rule whose form falls outside
+  `[0, NPlurals)`. Cases that fail only for a specific N are left to the
+  dynamic clamp of `evaluate/2`;
 - `{nplurals_too_many_digits, _, _}`, `{nplurals_out_of_range, _}`,
-  `{missing_nplurals, _}`, `{missing_plural_expr, _}` e `{syntax_error,
-  Reason, Pos}` para os demais defeitos do cabeçalho.
+  `{missing_nplurals, _}`, `{missing_plural_expr, _}` and `{syntax_error,
+  Reason, Pos}` for the remaining header defects.
 
-Casos de borda: parênteses redundantes e espaços são absorvidos pelo
-parser; `n` é o ÚNICO identificador permitido (`nx` ou `m` viram
-`syntax_error`); regras degeneradas `plural=0` (ja/zh/ko/vi/th) compilam
-como literal inteiro (PSD-008). Uma regra que só falha para um N
-específico (ex.: `n/(n-5)`) NÃO é rejeitada aqui — isso fica para o clamp
-dinâmico de `evaluate/2`.
+Edge cases: redundant parentheses and whitespace are absorbed by the
+parser; `n` is the ONLY allowed identifier (`nx` or `m` become a
+`syntax_error`); degenerate rules `plural=0` (ja/zh/ko/vi/th) compile as
+an integer literal (PSD-008). A rule that fails only for a specific N
+(e.g. `n/(n-5)`) is NOT rejected here — that is left to the dynamic clamp
+of `evaluate/2`.
 
 ```erlang
 1> erli18n_plural:compile(<<"nplurals=2; plural=n != 1;">>).
@@ -418,8 +415,8 @@ dinâmico de `evaluate/2`.
 {error,{missing_plural_expr,<<"nplurals=2;">>}}
 ```
 
-Veja também `evaluate/2` (consumir o bundle), `plural_by_po_header/2`
-(compile+evaluate de uma vez) e `t:compile_error/0`.
+See also `evaluate/2` (consume the bundle), `plural_by_po_header/2`
+(compile+evaluate at once) and `t:compile_error/0`.
 """.
 -spec compile(binary()) -> {ok, plural_compiled()} | {error, compile_error()}.
 compile(Header) when is_binary(Header) ->
@@ -492,24 +489,25 @@ compile_validated(Header, NPlurals, Ast) ->
 %% `non_neg_integer()` for every N and every AST. Callers that want to
 %% OBSERVE the anomaly as data use `evaluate_checked/2` instead.
 -doc """
-Avalia uma regra de plural compilada para um dado `N` e devolve o índice
-da forma plural — função TOTAL do caminho quente, usada por cada
+Evaluates a compiled plural rule for a given `N` and returns the plural
+form index — the TOTAL hot-path function, used by every
 `ngettext`/`npgettext`.
 
-`Compiled` é o bundle de `compile/1`; `N` é a contagem (inteiro, pode ser
-negativo — a regra decide a semântica). O retorno é sempre um
-`non_neg_integer()` em `[0, NPlurals)`: a regra é interpretada e o
-resultado coagido a inteiro.
+`Compiled` is the bundle from `compile/1`; `N` is the count (an integer,
+may be negative — the rule decides the semantics). The return is always a
+`non_neg_integer()` in `[0, NPlurals)`: the rule is interpreted and the
+result coerced to an integer.
 
-Nunca levanta, mesmo sobre regra malformada (paridade com GNU libintl):
-divisão/módulo por zero é coagida a 0 (`eval_div/2`/`eval_rem/2` em vez de
-deixar `div`/`rem` lançar `badarith`) e uma forma fora de `[0, NPlurals)`
-sofre clamp para 0 (`if index >= nplurals -> index = 0`).
+Never raises, even on a malformed rule (parity with GNU libintl):
+division/modulo by zero is coerced to 0 (`eval_div/2`/`eval_rem/2` instead
+of letting `div`/`rem` raise `badarith`) and a form outside
+`[0, NPlurals)` is clamped to 0 (`if index >= nplurals -> index = 0`).
 
-Sem alocações além do retorno e sem cache de resultado: o custo é
-re-pagar a interpretação do AST a cada chamada — por isso os caps de
-`compile/1` mantêm o AST pequeno. `N` negativo é passado adiante sem
-`abs()`; a regra decide a semântica (e o clamp protege o resultado).
+No allocations beyond the return value and no result cache: the cost is
+re-paying the AST interpretation on every call — which is why the
+`compile/1` caps keep the AST small. A negative `N` is passed through
+without `abs()`; the rule decides the semantics (and the clamp protects
+the result).
 
 ```erlang
 1> {ok, C} = erli18n_plural:compile(<<"nplurals=2; plural=n != 1;">>).
@@ -517,17 +515,17 @@ re-pagar a interpretação do AST a cada chamada — por isso os caps de
 0
 3> erli18n_plural:evaluate(C, 5).
 1
-%% Divisor DEPENDE de n (passa na checagem estática de compile/1),
-%% mas dá zero em runtime para N=7: clamp para 0, sem crash.
+%% Divisor DEPENDS on n (passes compile/1's static check),
+%% but evaluates to zero at runtime for N=7: clamp to 0, no crash.
 4> {ok, Bad} = erli18n_plural:compile(<<"nplurals=2; plural=1/(n-7);">>).
 5> erli18n_plural:evaluate(Bad, 7).
 0
 ```
 
-Casos de borda: o curto-circuito de `&&`/`||` é honrado, então um divisor
-zero atrás de um ramo falso nunca é alcançado. Para OBSERVAR a anomalia
-(em vez de clamp silencioso) use `evaluate_checked/2`. Veja também
-`compile/1` e `plural_by_po_header/2`.
+Edge cases: the short-circuit of `&&`/`||` is honoured, so a zero divisor
+behind a false branch is never reached. To OBSERVE the anomaly (instead of
+silent clamping) use `evaluate_checked/2`. See also `compile/1` and
+`plural_by_po_header/2`.
 """.
 -spec evaluate(plural_compiled(), integer()) -> non_neg_integer().
 evaluate(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
@@ -535,28 +533,27 @@ evaluate(#{nplurals := NPlurals, expr := Ast}, N) when is_integer(N) ->
     clamp_form(Form, NPlurals).
 
 -doc """
-Irmã estruturada de `evaluate/2`: em vez de fazer clamp silencioso,
-reporta uma regra malformada como dado para que o consumidor possa
-logar/alertar.
+Structured sibling of `evaluate/2`: instead of clamping silently, it
+reports a malformed rule as data so the consumer can log/alert.
 
-`Compiled` e `N` são como em `evaluate/2`. Retorna `{ok, Form}` com a
-forma em `[0, NPlurals)`, ou `{error, plural_eval_error()}`:
-`{division_by_zero, '/' | '%'}` quando o divisor avaliado é 0, ou
-`{form_out_of_range, Form, NPlurals}` quando a forma sai da faixa. Mantém
-o curto-circuito de `&&`/`||` (um divisor zero atrás de ramo falso não é
-reportado) e, como `evaluate/2`, é total — nunca levanta.
+`Compiled` and `N` are as in `evaluate/2`. Returns `{ok, Form}` with the
+form in `[0, NPlurals)`, or `{error, plural_eval_error()}`:
+`{division_by_zero, '/' | '%'}` when the evaluated divisor is 0, or
+`{form_out_of_range, Form, NPlurals}` when the form leaves the range. It
+keeps the short-circuit of `&&`/`||` (a zero divisor behind a false branch
+is not reported) and, like `evaluate/2`, is total — never raises.
 
-Use isto fora do caminho quente, quando quiser logar/alertar a regra
-malformada; no caminho quente continue em `evaluate/2`, cujo clamp é mais
-barato. Onde `evaluate/2` devolveria `0` por clamp, esta função devolve o
-`{error, _}` correspondente.
+Use this off the hot path, when you want to log/alert the malformed rule;
+on the hot path stay with `evaluate/2`, whose clamp is cheaper. Where
+`evaluate/2` would return `0` by clamping, this function returns the
+corresponding `{error, _}`.
 
 ```erlang
 1> {ok, C} = erli18n_plural:compile(<<"nplurals=2; plural=n != 1;">>).
 2> erli18n_plural:evaluate_checked(C, 5).
 {ok,1}
-%% Mesma regra do exemplo de evaluate/2 (divisor depende de n).
-%% Onde evaluate/2 faria clamp para 0, aqui a anomalia vem como dado.
+%% Same rule as the evaluate/2 example (divisor depends on n).
+%% Where evaluate/2 would clamp to 0, here the anomaly comes back as data.
 3> {ok, Bad} = erli18n_plural:compile(<<"nplurals=2; plural=1/(n-7);">>).
 4> erli18n_plural:evaluate_checked(Bad, 7).
 {error,{division_by_zero,'/'}}
@@ -564,9 +561,9 @@ barato. Onde `evaluate/2` devolveria `0` por clamp, esta função devolve o
 {ok,1}
 ```
 
-Casos de borda: uma forma fora de `[0, NPlurals)` (onde `evaluate/2` faria
-clamp) vira `{error, {form_out_of_range, Form, NPlurals}}`. Veja também
-`evaluate/2` (irmã que faz clamp) e `t:plural_eval_error/0`.
+Edge cases: a form outside `[0, NPlurals)` (where `evaluate/2` would
+clamp) becomes `{error, {form_out_of_range, Form, NPlurals}}`. See also
+`evaluate/2` (the sibling that clamps) and `t:plural_eval_error/0`.
 """.
 -spec evaluate_checked(plural_compiled(), integer()) ->
     {ok, non_neg_integer()} | {error, plural_eval_error()}.
@@ -592,16 +589,16 @@ clamp_form(_Form, _NPlurals) ->
     0.
 
 -doc """
-Conveniência que compila e avalia num só passo: dado o cabeçalho bruto
-`Header` e a contagem `N`, retorna `{ok, Form}` ou propaga o
-`{error, compile_error()}` de `compile/1`.
+Convenience that compiles and evaluates in a single step: given the raw
+header `Header` and the count `N`, returns `{ok, Form}` or propagates the
+`{error, compile_error()}` from `compile/1`.
 
-Recompila a cada chamada, então é para uso pontual; no caminho quente,
-chame `compile/1` uma vez no load e reuse o bundle com `evaluate/2`.
+Recompiles on every call, so it is for one-off use; on the hot path, call
+`compile/1` once at load and reuse the bundle with `evaluate/2`.
 
-A avaliação interna usa `evaluate/2` (total), então um `{ok, _}` jamais
-embute uma anomalia de avaliação — a parte que pode falhar é só o
-`compile/1`, cujo erro é propagado tal-e-qual.
+The internal evaluation uses `evaluate/2` (total), so an `{ok, _}` never
+embeds an evaluation anomaly — the only part that can fail is `compile/1`,
+whose error is propagated as-is.
 
 ```erlang
 1> erli18n_plural:plural_by_po_header(<<"nplurals=2; plural=n != 1;">>, 1).
@@ -612,7 +609,7 @@ embute uma anomalia de avaliação — a parte que pode falhar é só o
 {error,{syntax_error,{unknown_identifier_after_n,$x},1}}
 ```
 
-Veja também `compile/1` e `evaluate/2`.
+See also `compile/1` and `evaluate/2`.
 """.
 -spec plural_by_po_header(binary(), integer()) ->
     {ok, non_neg_integer()} | {error, compile_error()}.
@@ -623,39 +620,39 @@ plural_by_po_header(Header, N) when is_binary(Header), is_integer(N) ->
     end.
 
 -doc """
-Procura a expressão canônica CLDR de plural para `Locale` na tabela
-embutida.
+Looks up the CLDR canonical plural expression for `Locale` in the embedded
+table.
 
-Retorna `{ok, Expr}`, onde `Expr` é o binário da expressão C de plural
-equivalente à regra CLDR daquele locale, ou `undefined` se nem o locale
-nem sua língua-base estiverem na tabela. O casamento é sensível a
-maiúsculas; tags de região caem na língua-base quando a própria região
-não está listada (ex.: `fr_BE` -> `fr`, já que `fr_BE` não tem linha
-própria na tabela).
+Returns `{ok, Expr}`, where `Expr` is the binary of the C plural
+expression equivalent to that locale's CLDR rule, or `undefined` if
+neither the locale nor its base language is in the table. The match is
+case-sensitive; region tags fall back to the base language when the region
+itself is not listed (e.g. `fr_BE` -> `fr`, since `fr_BE` has no row of
+its own in the table).
 
-Função de consulta/observabilidade — NÃO está no caminho quente (PSD-004:
-o cabeçalho do `.po` é a fonte-de-verdade em runtime). A tabela embutida
-(`cldr_data/0`) cobre ~49 locales. Separadores `_` e `-` são ambos aceitos
-na queda para a língua-base.
+A lookup/observability function — NOT on the hot path (PSD-004: the `.po`
+header is the runtime source-of-truth). The embedded table (`cldr_data/0`)
+covers ~49 locales. Both `_` and `-` separators are accepted in the
+fallback to the base language.
 
 ```erlang
-%% Hit direto: a entrada existe na tabela.
+%% Direct hit: the entry exists in the table.
 1> erli18n_plural:cldr_rule(<<"ru">>).
 {ok,<<"n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>}
-%% Hit direto: `fr_CA` TEM linha própria, então resolve sem cair na base.
+%% Direct hit: `fr_CA` HAS its own row, so it resolves without falling back.
 2> erli18n_plural:cldr_rule(<<"fr_CA">>).
 {ok,<<"n > 1">>}
-%% Queda para a língua-base: `fr_BE` não está na tabela, cai em `fr`.
+%% Fallback to the base language: `fr_BE` is not in the table, falls back to `fr`.
 3> erli18n_plural:cldr_rule(<<"fr_BE">>).
 {ok,<<"n > 1">>}
-%% Nem o locale nem a base existem.
+%% Neither the locale nor the base exists.
 4> erli18n_plural:cldr_rule(<<"xx">>).
 undefined
 ```
 
-Casos de borda: `pt_PT` (`n != 1`) diverge da base `pt` (`n > 1`), então
-a entrada de região existe à parte. Veja também `validate_against_cldr/2`
-(comparar um cabeçalho contra a regra CLDR) e `fallback_rule/0`.
+Edge cases: `pt_PT` (`n != 1`) diverges from the base `pt` (`n > 1`), so
+the region entry exists separately. See also `validate_against_cldr/2`
+(compare a header against the CLDR rule) and `fallback_rule/0`.
 """.
 -spec cldr_rule(binary()) -> {ok, binary()} | undefined.
 cldr_rule(Locale) when is_binary(Locale) ->
@@ -681,42 +678,43 @@ cldr_rule(Locale) when is_binary(Locale) ->
 %% header always wins at runtime — this only produces observability.
 %%
 -doc """
-Compara a expressão de plural do cabeçalho `HeaderRule` (forma bruta)
-contra a regra canônica CLDR de `Locale`, produzindo apenas
-observabilidade — em runtime o cabeçalho sempre vence (PSD-004).
+Compares the plural expression of header `HeaderRule` (raw form) against
+the CLDR canonical rule of `Locale`, producing only observability — at
+runtime the header always wins (PSD-004).
 
-Compila `HeaderRule` UMA vez e delega a `validate_against_cldr_ast/2`.
-Retorna `ok` quando os ASTs `(nplurals, expr)` são estruturalmente
-iguais (insensível a espaços/parênteses) ou quando o locale não tem
-entrada CLDR; retorna
-`{warning, {plural_divergence, Locale, HeaderRule, CldrRaw}}` quando
-divergem — inclusive quando o cabeçalho é inválido mas o locale consta no
-CLDR.
+Compiles `HeaderRule` ONCE and delegates to `validate_against_cldr_ast/2`.
+Returns `ok` when the `(nplurals, expr)` ASTs are structurally equal
+(whitespace/paren-insensitive) or when the locale has no CLDR entry;
+returns `{warning, {plural_divergence, Locale, HeaderRule, CldrRaw}}` when
+they diverge — including when the header is invalid but the locale is
+listed in CLDR.
 
-Ponto de entrada de conveniência para quem só tem o cabeçalho bruto. O
-loader de catálogo, que já guarda o bundle compilado, deve usar
-`validate_against_cldr_ast/2` para não recompilar o cabeçalho no load.
+A convenience entry point for callers that only have the raw header. The
+catalog loader, which already keeps the compiled bundle, should use
+`validate_against_cldr_ast/2` to avoid recompiling the header at load.
 
-A comparação é ESTRUTURAL sobre o par `(nplurals, expr-AST)`, então é
-insensível a espaços e parênteses redundantes: `(n != 1)` casa com
-`n != 1`. Em runtime nada muda — o aviso existe só para telemetria.
+The comparison is STRUCTURAL over the `(nplurals, expr-AST)` pair, so it
+is insensitive to whitespace and redundant parentheses: `(n != 1)` matches
+`n != 1`. Nothing changes at runtime — the warning exists only for
+telemetry.
 
 ```erlang
-%% Cabeçalho concorda com o CLDR de fr (n > 1): sem aviso.
+%% Header agrees with fr's CLDR (n > 1): no warning.
 1> erli18n_plural:validate_against_cldr(<<"fr">>, <<"nplurals=2; plural=(n > 1);">>).
 ok
-%% Cabeçalho diverge do CLDR de fr: aviso (mas o header venceria em runtime).
+%% Header diverges from fr's CLDR: warning (but the header would win at runtime).
 2> erli18n_plural:validate_against_cldr(<<"fr">>, <<"nplurals=2; plural=n != 1;">>).
 {warning,{plural_divergence,<<"fr">>,<<"nplurals=2; plural=n != 1;">>,<<"n > 1">>}}
-%% Locale sem entrada CLDR: nada a validar.
+%% Locale with no CLDR entry: nothing to validate.
 3> erli18n_plural:validate_against_cldr(<<"xx">>, <<"nplurals=2; plural=n != 1;">>).
 ok
 ```
 
-Casos de borda: um cabeçalho INVÁLIDO contra um locale que CONSTA no CLDR
-ainda produz `{warning, _}` (não pode casar a regra canônica); contra um
-locale sem entrada CLDR vira `ok`. Veja também `validate_against_cldr_ast/2`
-(variante sem recompilar) e `cldr_rule/1`.
+Edge cases: an INVALID header against a locale that IS listed in CLDR
+still produces `{warning, _}` (it cannot match the canonical rule);
+against a locale with no CLDR entry it becomes `ok`. See also
+`validate_against_cldr_ast/2` (variant without recompiling) and
+`cldr_rule/1`.
 """.
 -spec validate_against_cldr(binary(), binary()) ->
     ok
@@ -753,21 +751,22 @@ validate_against_cldr(Locale, HeaderRule) when
 %% The warning payload keeps the raw header string (the bundle's `raw`
 %% field) and the raw CLDR expression, matching `validate_against_cldr/2`.
 -doc """
-Variante baseada em AST de `validate_against_cldr/2`: recebe o bundle JÁ
-compilado (`plural_compiled()`) e compara contra a regra CLDR de `Locale`
-sem recompilar nada (finding #17).
+AST-based variant of `validate_against_cldr/2`: takes the ALREADY compiled
+bundle (`plural_compiled()`) and compares it against the CLDR rule of
+`Locale` without recompiling anything (finding #17).
 
-Reusa o AST do cabeçalho como está e toma o lado CLDR de uma tabela
-memoizada de bundles compilados, então nenhuma regra é re-parseada no
-load. Retorna `ok` se os pares `(nplurals, expr)` coincidem ou se o locale
-não tem entrada CLDR; caso contrário
-`{warning, {plural_divergence, Locale, HeaderRaw, CldrRaw}}`, com o
-cabeçalho bruto (campo `raw` do bundle) e a expressão CLDR bruta.
+Reuses the header AST as-is and takes the CLDR side from a memoised table
+of compiled bundles, so no rule is re-parsed at load. Returns `ok` if the
+`(nplurals, expr)` pairs match or if the locale has no CLDR entry;
+otherwise `{warning, {plural_divergence, Locale, HeaderRaw, CldrRaw}}`,
+with the raw header (the bundle's `raw` field) and the raw CLDR
+expression.
 
-Esta é a forma PREFERIDA no loader (finding #17): como o bundle já foi
-compilado por `compile/1` no load, evita o segundo `compile/1` que
-`validate_against_cldr/2` faria, e o lado CLDR sai do cache em
-`persistent_term` (`cldr_compiled_table/0`), não re-sintetizado por carga.
+This is the PREFERRED form in the loader (finding #17): since the bundle
+was already compiled by `compile/1` at load, it avoids the second
+`compile/1` that `validate_against_cldr/2` would do, and the CLDR side
+comes from the `persistent_term` cache (`cldr_compiled_table/0`), not
+re-synthesised per load.
 
 ```erlang
 1> {ok, C} = erli18n_plural:compile(<<"nplurals=2; plural=n != 1;">>).
@@ -778,9 +777,9 @@ compilado por `compile/1` no load, evita o segundo `compile/1` que
 ok
 ```
 
-Casos de borda: locale sem entrada CLDR vira `ok` (nada a logar). Veja
-também `validate_against_cldr/2` (a partir do cabeçalho bruto) e
-`cldr_compiled/1` (a memoização do lado CLDR).
+Edge cases: a locale with no CLDR entry becomes `ok` (nothing to log). See
+also `validate_against_cldr/2` (from the raw header) and `cldr_compiled/1`
+(the memoisation of the CLDR side).
 """.
 -spec validate_against_cldr_ast(binary(), plural_compiled()) ->
     ok
@@ -801,15 +800,15 @@ validate_against_cldr_ast(Locale, #{nplurals := NH, expr := EH, raw := HeaderRaw
     end.
 
 -doc """
-Regra de plural de fallback usada quando um catálogo `.po` não traz
-nenhum cabeçalho `Plural-Forms:` (entrada degenerada mas tolerada).
+Fallback plural rule used when a `.po` catalog ships no `Plural-Forms:`
+header at all (a degenerate but tolerated input).
 
-Retorna `<<"nplurals=2; plural=n != 1;">>` — o default Germânico do C/
-inglês citado pelo manual do GNU gettext (§"Plural forms").
+Returns `<<"nplurals=2; plural=n != 1;">>` — the Germanic C/English
+default cited by the GNU gettext manual (§"Plural forms").
 
-Constante pura, sem efeitos. O resultado é um cabeçalho bruto pronto para
-`compile/1`, então o caminho de fallback do loader reusa exatamente o
-mesmo pipeline de um cabeçalho legítimo.
+A pure constant, no side effects. The result is a raw header ready for
+`compile/1`, so the loader's fallback path reuses exactly the same
+pipeline as a legitimate header.
 
 ```erlang
 1> erli18n_plural:fallback_rule().
@@ -819,7 +818,7 @@ mesmo pipeline de um cabeçalho legítimo.
 0
 ```
 
-Veja também `compile/1` e `cldr_rule/1`.
+See also `compile/1` and `cldr_rule/1`.
 """.
 -spec fallback_rule() -> binary().
 fallback_rule() ->
@@ -1292,17 +1291,18 @@ to_integer(false) -> 0;
 to_integer(N) when is_integer(N) -> N.
 
 -doc """
-Interpretador do caminho quente: percorre o `t:ast/0` para um dado `N` e
-devolve um inteiro (resultado aritmético) OU um booleano (resultado de
-comparação/lógico) — o chamador (`evaluate/2`) coage via `to_integer/1`.
+Hot-path interpreter: walks the `t:ast/0` for a given `N` and returns an
+integer (arithmetic result) OR a boolean (comparison/logical result) — the
+caller (`evaluate/2`) coerces via `to_integer/1`.
 
-Invariantes para o mantenedor: `&&`/`||` curto-circuitam (espelhando C),
-então o ramo direito só é avaliado quando necessário — é o que mantém
-`evaluate/2` total para `n != 0 && 1/n`. Divisão/módulo por zero passa por
-`eval_div/2`/`eval_rem/2` (coage a 0), nunca por `div`/`rem` cru. A
-profundidade da recursão é limitada pelo `?PLURAL_EXPR_MAX_DEPTH` aplicado
-em `compile/1`, então a pilha por lookup é limitada por construção. A irmã
-`eval_ast_checked/2` tem a MESMA forma, mas reporta a anomalia como dado.
+Invariants for the maintainer: `&&`/`||` short-circuit (mirroring C), so
+the right branch is only evaluated when needed — this is what keeps
+`evaluate/2` total for `n != 0 && 1/n`. Division/modulo by zero goes
+through `eval_div/2`/`eval_rem/2` (coerced to 0), never raw `div`/`rem`.
+The recursion depth is bounded by the `?PLURAL_EXPR_MAX_DEPTH` enforced in
+`compile/1`, so the stack per lookup is bounded by construction. The
+sibling `eval_ast_checked/2` has the SAME shape, but reports the anomaly
+as data.
 """.
 %% Walker. Returns either an integer (arithmetic result) or a boolean
 %% (comparison / logical result) — the caller coerces as needed.
@@ -1457,18 +1457,17 @@ apply_binop_checked(Op, L, R) -> {ok, apply_binop(Op, L, R)}.
 %%     [0, NPlurals) — selects a non-existent form for all N.
 
 -doc """
-Barreira de segurança estática de `compile/1` (Layer 3, finding #1):
-rejeita no LOAD apenas o que é provadamente faltoso para TODO N, para que
-o catálogo envenenado seja recusado em vez de carregar `{ok, _}` e crashar
-cada lookup.
+Static safety barrier of `compile/1` (Layer 3, finding #1): rejects at
+LOAD only what is provably faulty for EVERY N, so the poisoned catalog is
+refused instead of loading as `{ok, _}` and crashing every lookup.
 
-Detecta dois defeitos: (1) `/` ou `%` cujo divisor é constante (sem `n`) e
-avalia a 0 — via `static_div_zero/1`; (2) regra TOTALMENTE constante (sem
-`n` em lugar nenhum) cujo valor cai fora de `[0, NPlurals)` — sondada com
-`N=0` por `static_form_in_range/2`. Faltas que dependem de um N específico
-(ex.: `n/(n-5)`) NÃO são rejeitadas aqui — ficam para o clamp dinâmico de
-`evaluate/2` (Layer 1). Total: nunca levanta; o erro vira o payload de
-`{unsafe_plural_rule, _}` em `compile/1`.
+Detects two defects: (1) a `/` or `%` whose divisor is constant (no `n`)
+and evaluates to 0 — via `static_div_zero/1`; (2) a FULLY constant rule
+(no `n` anywhere) whose value falls outside `[0, NPlurals)` — probed with
+`N=0` by `static_form_in_range/2`. Faults that depend on a specific N
+(e.g. `n/(n-5)`) are NOT rejected here — they are left to the dynamic
+clamp of `evaluate/2` (Layer 1). Total: never raises; the error becomes
+the payload of `{unsafe_plural_rule, _}` in `compile/1`.
 """.
 -spec validate_safe(ast(), pos_integer()) -> ok | {error, plural_eval_error()}.
 validate_safe(Ast, NPlurals) ->
@@ -1672,20 +1671,20 @@ ast_node_count({ternary, C, T, E}) ->
 %% small and reviewable.
 
 -doc """
-Tabela CLDR embutida — a única fonte de dados CONFIÁVEL (literal estático)
-deste módulo, editada a cada sincronização de release do CLDR.
+Embedded CLDR table — the only TRUSTED data source (a static literal) of
+this module, edited on every CLDR release sync.
 
-Cada linha é `{Locale, NPlurals, ExprBin}`, onde `ExprBin` pareada com
-`nplurals=NPlurals` reproduz a regra canônica CLDR daquele locale. Linhas
-de região só existem onde divergem da língua-base (ex.: `pt_PT` = `n != 1`
-contra a base `pt` = `n > 1`); o resto cai na base via `cldr_rule/1`.
+Each row is `{Locale, NPlurals, ExprBin}`, where `ExprBin` paired with
+`nplurals=NPlurals` reproduces that locale's CLDR canonical rule. Region
+rows only exist where they diverge from the base language (e.g. `pt_PT` =
+`n != 1` against the base `pt` = `n > 1`); the rest falls back to the base
+via `cldr_rule/1`.
 
-Para o mantenedor: cada expressão DEVE ser válida para `compile/1` —
-`cldr_compiled_table/0` chama `compile/1` em cada linha no build do cache
-e DESCARTA silenciosamente a que falhar (a locale degrada para "sem
-entrada CLDR" em vez de crashar o loader). Logo, uma linha malformada vira
-um defeito silencioso de divergência, não um erro ruidoso; revise as
-edições com cuidado.
+For the maintainer: each expression MUST be valid for `compile/1` —
+`cldr_compiled_table/0` calls `compile/1` on each row when building the
+cache and silently DROPS the ones that fail (the locale degrades to "no
+CLDR entry" instead of crashing the loader). Hence a malformed row becomes
+a silent divergence defect, not a noisy error; review edits carefully.
 """.
 cldr_data() ->
     [
@@ -1827,19 +1826,19 @@ cldr_compiled(Locale) when is_binary(Locale) ->
     end.
 
 -doc """
-Mapa memoizado `locale => bundle compilado` — o ÚNICO efeito colateral do
-módulo, construído exatamente uma vez por nó e cacheado em
-`persistent_term`.
+Memoised `locale => compiled bundle` map — the ONLY side effect of the
+module, built exactly once per node and cached in `persistent_term`.
 
-Para o mantenedor: o cache é um singleton de escopo de módulo, gravado sob
-a chave fixa `?CLDR_COMPILED_KEY` (a tupla `{?MODULE, cldr_compiled_table}`,
-NÃO um hash do conteúdo) e NUNCA invalidado — `cldr_data/0` é um literal
-constante, então um cache global é seguro. A primeira chamada constrói via
-`build_cldr_compiled_table/0` e grava; as seguintes acertam o cache (o
-`eqwalizer:dynamic_cast/1` só estreita o tipo `term()` do
-`persistent_term:get/2`, pois a única escritora é a cláusula acima). É só
-para o caminho frio de divergência (`cldr_compiled/1`); jamais é tocado por
-`evaluate/2`.
+For the maintainer: the cache is a module-scoped singleton, written under
+the fixed key `?CLDR_COMPILED_KEY` (the tuple
+`{?MODULE, cldr_compiled_table}`, NOT a content hash) and NEVER
+invalidated — `cldr_data/0` is a constant literal, so a global cache is
+safe. The first call builds it via `build_cldr_compiled_table/0` and
+writes it; the following ones hit the cache (the
+`eqwalizer:dynamic_cast/1` only narrows the `term()` type from
+`persistent_term:get/2`, since the only writer is the clause above). It is
+only for the cold divergence path (`cldr_compiled/1`); it is never touched
+by `evaluate/2`.
 """.
 %% Return the memoised locale -> compiled-bundle map, building it exactly
 %% once per node and caching it in `persistent_term`. `cldr_data/0` is a

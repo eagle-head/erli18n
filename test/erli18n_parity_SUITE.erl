@@ -3,7 +3,7 @@
 %%%
 %%% Spec source-of-truth:
 %%%   * `parity_specs.md` §1-§4 — overall harness shape, oracle pin.
-%%%   * `parity_specs.md` §4 "Oracle canônico — pinning de versão msgfmt"
+%%%   * `parity_specs.md` §4 "Canonical oracle — msgfmt version pinning"
 %%%     — `msgfmt >= 0.21` is mandatory; we validate at suite init.
 %%%   * `parity_tests/01-singular-lookup.feature` (PARITY-01)
 %%%   * `parity_tests/02-plural-lookup.feature` (PARITY-02)
@@ -23,8 +23,8 @@
 %%%   * 5 core scenarios covering singular, plural fr, plural ru,
 %%%     contextual, empty-msgstr-fallback.
 %%%   * The remaining 4 `.feature` files in `parity_tests/` are
-%%%     documented as backlog in `parity_specs.md` §5 ("conjunto de
-%%%     fixtures (8 mínimos)"); they are not blocking v0.1.
+%%%     documented as backlog in `parity_specs.md` §5 ("fixture set
+%%%     (8 minimum)"); they are not blocking v0.1.
 %%% =====================================================================
 -module(erli18n_parity_SUITE).
 

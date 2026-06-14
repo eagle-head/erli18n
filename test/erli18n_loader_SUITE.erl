@@ -1,6 +1,6 @@
 -module(erli18n_loader_SUITE).
 
-%% Common Test suite for the load orchestration (Parte 5) in
+%% Common Test suite for the load orchestration (Part 5) in
 %% `erli18n_server`. Exercises `ensure_loaded/3,4`, `reload/3,4`,
 %% `lookup_header/2`, `lookup_plural_form/5`, `which_keys/2`, and
 %% `default_po_path/3`.
@@ -514,7 +514,7 @@ ensure_loaded_emits_cldr_divergence_warning(Config) ->
     ),
     ?assertMatch({ok, 1}, Result),
     %% header_state captures the divergence payload for downstream
-    %% telemetry consumption (Parte 7).
+    %% telemetry consumption (Part 7).
     {ok, HeaderState} = erli18n_server:lookup_header(default, <<"fr">>),
     ?assertMatch(
         {plural_divergence, _, _},

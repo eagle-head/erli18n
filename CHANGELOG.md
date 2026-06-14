@@ -42,7 +42,7 @@ changes on minor bumps per the `0.x` SemVer policy above.
   - PSD-003: empty `msgstr` preserved; fallback-to-msgid handled at lookup.
   - PSD-004: header `Plural-Forms` is runtime source of truth; CLDR consulted at load only for divergence warning.
   - PSD-005: BOM UTF-8 stripped silently.
-  - PSD-006: msgctxt stored as separate ETS key field (paridade com `gettexter`).
+  - PSD-006: msgctxt stored as separate ETS key field (parity with `gettexter`).
   - PSD-007: obsolete `#~` entries skipped.
   - PSD-008: degenerate plural (`nplurals=1`) accepted.
   - PSD-009: `nplurals` mismatch rejected with structured error.

@@ -22,78 +22,79 @@
 -module(erli18n_table_owner).
 
 -moduledoc """
-Dono dedicado e longevo da tabela ETS de catálogos (`?ETS_TABLE`), o
-`heir` que faz os catálogos carregados sobreviverem a um crash do worker.
+Dedicated, long-lived owner of the catalog ETS table (`?ETS_TABLE`), the
+`heir` that lets loaded catalogs survive a worker crash.
 
-## O que é e que problema resolve
+## What it is and what problem it solves
 
-O ETS destrói uma tabela quando seu *dono* (owner) morre. Antes deste
-módulo, a tabela de catálogos era criada e possuída pelo próprio
-`erli18n_server` — que também é o único processo que a muta e, portanto, o
-mais propenso a crashar. Qualquer término do worker (um `badmatch` numa
-cláusula, um `exit(Pid, kill)` operacional, um bug futuro) levava junto
-TODOS os catálogos carregados: o supervisor reiniciava o worker, mas ele
-ressurgia com uma tabela nova e vazia, e cada `lookup_*` passava a devolver
-o msgid cru até que cada catálogo fosse recarregado pelo consumidor. Uma
-falha transitória virava perda total de disponibilidade das traduções
-(Finding #10, `ets-owned-by-server-no-heir-crash-loses-all-catalogs`).
+ETS destroys a table when its *owner* dies. Before this module, the catalog
+table was created and owned by `erli18n_server` itself — which is also the
+only process that mutates it and therefore the most likely to crash. Any
+worker termination (a `badmatch` in a clause, an operational
+`exit(Pid, kill)`, a future bug) took down ALL loaded catalogs with it: the
+supervisor restarted the worker, but it came back with a fresh, empty
+table, and every `lookup_*` started returning the raw msgid until each
+catalog was reloaded by the consumer. A transient failure turned into a
+total loss of translation availability (Finding #10,
+`ets-owned-by-server-no-heir-crash-loses-all-catalogs`).
 
-Este módulo separa *propriedade* de *mutação*. Sua única
-responsabilidade é: criar a tabela, segurá-la como seu próprio `heir`,
-entregá-la (`give_away`) ao worker e reavê-la — com todas as linhas
-intactas — quando o worker morre, re-armando para a próxima reivindicação.
+This module separates *ownership* from *mutation*. Its sole responsibility
+is to create the table, hold it as its own `heir`, give it away
+(`give_away`) to the worker, and reclaim it — with all rows intact — when
+the worker dies, re-arming for the next claim.
 
-## Escopo: o que sobrevive vs. o que é reconstruído
+## Scope: what survives vs. what is rebuilt
 
-Este owner preserva apenas a tabela de DADOS (`?ETS_TABLE`,
-`erli18n_catalog`) — as linhas de catálogo. O `erli18n` mantém uma SEGUNDA
-tabela, o índice O(1) por catálogo (`?CATALOG_INDEX_TABLE`,
-`erli18n_catalog_index`), que NÃO é gerida por este módulo: ela é estado
-privado do worker (`erli18n_server`), `protected` e owned por ele, e por
-isso MORRE junto com o worker num crash. Não há heir para o índice de
-propósito: ele é estado barato e derivável, reconstruído em
-`erli18n_server:init/1` (via `rebuild_catalog_index/0`) a partir das linhas
-sobreviventes da tabela de dados — um único passo O(linhas), nunca no
-hot-path de carga. Em resumo: o padrão heir aqui salva os DADOS de
-tradução; o índice de aceleração é re-derivado deles no boot do worker.
+This owner preserves only the DATA table (`?ETS_TABLE`,
+`erli18n_catalog`) — the catalog rows. `erli18n` keeps a SECOND table, the
+O(1) per-catalog index (`?CATALOG_INDEX_TABLE`, `erli18n_catalog_index`),
+which is NOT managed by this module: it is private state of the worker
+(`erli18n_server`), `protected` and owned by it, and therefore DIES along
+with the worker on a crash. There is deliberately no heir for the index: it
+is cheap, derivable state, rebuilt in `erli18n_server:init/1` (via
+`rebuild_catalog_index/0`) from the surviving rows of the data table — a
+single O(rows) pass, never on the load hot-path. In short: the heir pattern
+here saves the translation DATA; the acceleration index is re-derived from
+it on worker boot.
 
-## Modelo mental
+## Mental model
 
-- *Propriedade vs. mutação.* O dono possui a tabela mas nunca escreve nela.
-  O worker (`erli18n_server`) é o único *writer*. A tabela é `protected`:
-  só o dono corrente escreve; qualquer processo lê. Como o dono nada muta,
-  sua superfície de crash é mínima — ele praticamente nunca cai.
-- *Quem é o dono ao longo do tempo.* No boot, o dono cria a tabela e é o
-  proprietário (leituras já funcionam). Ao reivindicação do worker, a
-  propriedade passa para o worker via `ets:give_away/3`. Quando o worker
-  morre, o ETS devolve a propriedade ao dono (o `heir`) automaticamente,
-  com todas as linhas preservadas. O dono re-arma e aguarda o próximo
-  `claim` do worker reiniciado.
-- *Tabela nomeada e leituras lock-free.* A tabela é `named_table`, então o
-  hot-path de leitura do `erli18n` acessa-a pelo nome (`?ETS_TABLE`),
-  direto do processo chamador, sem passar por nenhum gen_server. A troca de
-  dono entre worker e heir é transparente para os leitores — o nome nunca
-  muda.
-- *Dois marcadores de transferência.* `?ETS_HANDOFF_DATA` rotula o
-  give_away deliberado dono->worker; `?ETS_HEIR_DATA` rotula o retorno
-  automático worker-morto->dono (reclaim do heir). Cada receptor casa
-  exatamente a transferência que espera.
-- *Topologia load-bearing.* Sob a estratégia `rest_for_one` do
-  `erli18n_sup`, o dono sobe ANTES do worker. Um crash do worker não
-  derruba o dono (ele vem antes na ordem de start), então a tabela
-  sobrevive; um crash do dono reinicia o worker também, e o novo dono
-  recria a tabela do zero. Inverter a ordem reintroduz o Finding #10.
+- *Ownership vs. mutation.* The owner holds the table but never writes to
+  it. The worker (`erli18n_server`) is the only *writer*. The table is
+  `protected`: only the current owner writes; any process reads. Since the
+  owner mutates nothing, its crash surface is minimal — it practically
+  never goes down.
+- *Who owns it over time.* At boot, the owner creates the table and is the
+  proprietor (reads already work). On the worker's claim, ownership passes
+  to the worker via `ets:give_away/3`. When the worker dies, ETS returns
+  ownership to the owner (the `heir`) automatically, with all rows
+  preserved. The owner re-arms and waits for the next `claim` from the
+  restarted worker.
+- *Named table and lock-free reads.* The table is `named_table`, so
+  `erli18n`'s read hot-path accesses it by name (`?ETS_TABLE`), directly
+  from the calling process, without going through any gen_server. The
+  ownership swap between worker and heir is transparent to readers — the
+  name never changes.
+- *Two transfer markers.* `?ETS_HANDOFF_DATA` labels the deliberate
+  give_away owner->worker; `?ETS_HEIR_DATA` labels the automatic return
+  dead-worker->owner (heir reclaim). Each receiver matches exactly the
+  transfer it expects.
+- *Load-bearing topology.* Under `erli18n_sup`'s `rest_for_one` strategy,
+  the owner starts BEFORE the worker. A worker crash does not bring down
+  the owner (it comes earlier in the start order), so the table survives; an
+  owner crash restarts the worker too, and the new owner recreates the
+  table from scratch. Reversing the order reintroduces Finding #10.
 
-## Quando um dev encosta neste módulo
+## When a dev touches this module
 
-Quase nunca, diretamente. O consumidor da biblioteca usa `erli18n` e
-`erli18n_server` e não toca aqui. O único ponto de contato em produção é
-`erli18n_server:init/1`, que chama `claim_table/0` para receber a tabela.
-Você lê este módulo se: está depurando perda de catálogos após um crash,
-mexendo na ordem de filhos do supervisor, ou investigando o evento de log
-`catalog_table_reclaimed`.
+Almost never, directly. The library consumer uses `erli18n` and
+`erli18n_server` and does not touch here. The only point of contact in
+production is `erli18n_server:init/1`, which calls `claim_table/0` to
+receive the table. You read this module if: you are debugging catalog loss
+after a crash, changing the supervisor's child order, or investigating the
+`catalog_table_reclaimed` log event.
 
-## Quickstart (sob a árvore de supervisão real)
+## Quickstart (under the real supervision tree)
 
 ```erlang
 1> application:ensure_all_started(erli18n).
@@ -101,28 +102,28 @@ mexendo na ordem de filhos do supervisor, ou investigando o evento de log
 2> ok = erli18n_server:ensure_loaded(my_domain, <<"fr">>,
 2>     <<"priv/locale/fr/LC_MESSAGES/my_domain.po">>).
 ok
-3> %% O dono é um processo registrado, vivo e separado do worker:
+3> %% The owner is a registered process, alive and separate from the worker:
 3> is_pid(whereis(erli18n_table_owner)).
 true
 4> ets:info(erli18n_catalog, owner) =:= whereis(erli18n_server).
 true
 5> ets:info(erli18n_catalog, heir) =:= whereis(erli18n_table_owner).
 true
-6> %% Mate o worker; o dono reaver a tabela e o worker reiniciado a reassume.
+6> %% Kill the worker; the owner reclaims the table and the restarted worker retakes it.
 6> exit(whereis(erli18n_server), kill), timer:sleep(50).
 ok
 7> erli18n:gettext(my_domain, <<"Hello, world">>, <<"fr">>).
 <<"Bonjour, monde">>
 ```
 
-## Funções e callbacks-chave
+## Key functions and callbacks
 
-- `start_link/0` — inicia o dono (chamado pelo `erli18n_sup`).
-- `claim_table/0` — o worker pede a tabela ao dono (chamado em
+- `start_link/0` — starts the owner (called by `erli18n_sup`).
+- `claim_table/0` — the worker requests the table from the owner (called in
   `erli18n_server:init/1`).
-- `init/1` — cria a tabela ETS e fixa o dono como `heir`.
-- `handle_call/3` — trata `{claim, WorkerPid}` e faz o give_away.
-- `handle_info/2` — coração do padrão owner/heir: reclaim e `'DOWN'`.
+- `init/1` — creates the ETS table and pins the owner as `heir`.
+- `handle_call/3` — handles `{claim, WorkerPid}` and performs the give_away.
+- `handle_info/2` — heart of the owner/heir pattern: reclaim and `'DOWN'`.
 """.
 
 -behaviour(gen_server).
@@ -141,16 +142,16 @@ ok
 ]).
 
 -doc """
-Estado interno do dono. Carrega a tabela (nomeada) e o rastreamento do
-worker que a segura no momento:
+Internal state of the owner. Carries the (named) table and tracking of the
+worker that currently holds it:
 
-- `table` — a `ets:table()` de catálogos; constante por toda a vida do
-  processo (recriada apenas se o dono em si reiniciar).
-- `worker` — `{Pid, Mon}` enquanto um worker corrente segura a tabela
-  (`Mon` é o monitor desse worker), ou `undefined` quando a propriedade
-  está com o dono: no boot, antes do primeiro `claim`, e após reaver a
-  tabela de um worker morto. O valor `undefined` é o gatilho que permite o
-  próximo give_away sem risco de duplicidade.
+- `table` — the catalog `ets:table()`; constant for the whole life of the
+  process (recreated only if the owner itself restarts).
+- `worker` — `{Pid, Mon}` while a current worker holds the table (`Mon` is
+  that worker's monitor), or `undefined` when ownership is with the owner:
+  at boot, before the first `claim`, and after reclaiming the table from a
+  dead worker. The `undefined` value is the trigger that enables the next
+  give_away with no risk of duplication.
 """.
 -type state() :: #{
     table := ets:table(),
@@ -158,24 +159,24 @@ worker que a segura no momento:
 }.
 
 -doc """
-Inicia o gen_server dono da tabela, registrado localmente sob
+Starts the table owner gen_server, registered locally under
 `?TABLE_OWNER` (`erli18n_table_owner`).
 
-Chamado pelo `erli18n_sup` como o PRIMEIRO filho (antes do
-`erli18n_server`), ordem que é load-bearing para o padrão owner/heir. Em
-`init/1` o dono cria a tabela ETS de catálogos e fixa a si mesmo como
-`heir`; ao retornar, a tabela já existe e está pronta para leituras e para
-o primeiro `claim_table/0`.
+Called by `erli18n_sup` as the FIRST child (before `erli18n_server`), an
+order that is load-bearing for the owner/heir pattern. In `init/1` the owner
+creates the catalog ETS table and pins itself as `heir`; on return, the
+table already exists and is ready for reads and for the first
+`claim_table/0`.
 
-## Retorno
+## Return
 
-O resultado padrão de `gen_server:start_link/4`: `{ok, Pid}` em sucesso. O
-processo é registrado localmente, então `whereis(erli18n_table_owner)`
-passa a resolver para `Pid`. Um segundo `start_link/0` com o nome já
-registrado falharia com `{error, {already_started, Pid}}` — na prática isso
-não acontece porque só o supervisor o inicia.
+The standard result of `gen_server:start_link/4`: `{ok, Pid}` on success.
+The process is registered locally, so `whereis(erli18n_table_owner)`
+resolves to `Pid`. A second `start_link/0` with the name already registered
+would fail with `{error, {already_started, Pid}}` — in practice this does
+not happen because only the supervisor starts it.
 
-## Exemplo
+## Example
 
 ```erlang
 1> {ok, Pid} = erli18n_table_owner:start_link().
@@ -186,8 +187,8 @@ true
 true
 ```
 
-Veja também `claim_table/0` (o worker reivindica a tabela) e `init/1` (a
-criação da tabela).
+See also `claim_table/0` (the worker claims the table) and `init/1` (table
+creation).
 """.
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
@@ -198,41 +199,43 @@ start_link() ->
 %% the initial `'ETS-TRANSFER'' is (or is about to be) in the caller's
 %% mailbox. The owner only gives the table to a live, local worker.
 -doc """
-Reivindica a tabela de catálogos: pede ao dono que a entregue via
-`ets:give_away/3` para o processo chamador. Após o retorno, o chamador
-torna-se o dono (writer) da tabela.
+Claims the catalog table: asks the owner to hand it over via
+`ets:give_away/3` to the calling process. After it returns, the caller
+becomes the owner (writer) of the table.
 
-Chamada pelo `erli18n_server` dentro do próprio `init/1`, que então faz um
-`receive` do `{'ETS-TRANSFER', ?ETS_TABLE, _OwnerPid, ?ETS_HANDOFF_DATA}`
-para consumir a tabela. NÃO recebe argumentos: o destino do give_away é
-sempre `self()` (o chamador), nunca um pid arbitrário — esse é o limite de
-segurança que impede um processo de redirecionar a tabela para outro.
+Called by `erli18n_server` inside its own `init/1`, which then does a
+`receive` of `{'ETS-TRANSFER', ?ETS_TABLE, _OwnerPid, ?ETS_HANDOFF_DATA}`
+to consume the table. It takes NO arguments: the give_away target is always
+`self()` (the caller), never an arbitrary pid — that is the safety boundary
+that prevents a process from redirecting the table to another.
 
-## Retorno
+## Return
 
-Sempre `ok` quando a call vinga (é um `gen_server:call/3` com timeout
-`infinity`, casado contra `ok = ...`). Ao retornar, a mensagem
-`{'ETS-TRANSFER', ...}` inicial já está — ou está prestes a estar — na
-mailbox do chamador. A síncronia garante a ordem: o `ok` chega depois de o
-dono ter disparado (ou ao menos enfileirado) o give_away.
+Always `ok` when the call succeeds (it is a `gen_server:call/3` with timeout
+`infinity`, matched against `ok = ...`). On return, the initial
+`{'ETS-TRANSFER', ...}` message is already — or is about to be — in the
+caller's mailbox. The synchronicity guarantees ordering: the `ok` arrives
+after the owner has fired (or at least enqueued) the give_away.
 
-## Modos de falha
+## Failure modes
 
-- Se `whereis(erli18n_table_owner)` for `undefined` (dono não iniciado), a
-  call falha com `noproc`. Sob a árvore de supervisão isso não ocorre: o
-  dono é iniciado antes do worker (`rest_for_one`).
-- Se o worker chamador morrer na janela entre o give_away e o consumo, o
-  dono detecta o give_away falho — `ets:give_away/3` lança `badarg`, que
-  `safe_give_away/2` converte em `{error, give_away_failed}` — e mantém a
-  tabela consigo; veja `handle_call/3` e `safe_give_away/2`.
-- `timeout` `infinity` é deliberado: o handoff é parte do boot e não deve
-  ser cortado por um prazo arbitrário. O `erli18n_server` impõe seu próprio
-  prazo de 5 s no `receive` do `'ETS-TRANSFER'` e crasha se estourar.
+- If `whereis(erli18n_table_owner)` is `undefined` (owner not started), the
+  call fails with `noproc`. Under the supervision tree this does not occur:
+  the owner is started before the worker (`rest_for_one`).
+- If the calling worker dies in the window between the give_away and the
+  consumption, the owner detects the failed give_away — `ets:give_away/3`
+  raises `badarg`, which `safe_give_away/2` converts into
+  `{error, give_away_failed}` — and keeps the table with itself; see
+  `handle_call/3` and `safe_give_away/2`.
+- The `infinity` `timeout` is deliberate: the handoff is part of boot and
+  must not be cut short by an arbitrary deadline. `erli18n_server` enforces
+  its own 5 s deadline on the `'ETS-TRANSFER'` `receive` and crashes if it
+  overflows.
 
-## Exemplo
+## Example
 
 ```erlang
-1> %% Executado de dentro do processo que vai virar dono da tabela:
+1> %% Run from inside the process that will become the table owner:
 1> ok = erli18n_table_owner:claim_table().
 ok
 2> receive {'ETS-TRANSFER', erli18n_catalog, _Owner, _Tag} -> got_table end.
@@ -241,7 +244,7 @@ got_table
 true
 ```
 
-Veja também `handle_call/3` (lado do dono que atende ao `{claim, _}`) e
+See also `handle_call/3` (the owner side that serves the `{claim, _}`) and
 `start_link/0`.
 """.
 -spec claim_table() -> ok.
@@ -249,51 +252,51 @@ claim_table() ->
     ok = gen_server:call(?TABLE_OWNER, {claim, self()}, infinity).
 
 -doc """
-Callback `c:gen_server:init/1`. CRIA a tabela ETS de catálogos e devolve o
-estado inicial sem worker.
+`c:gen_server:init/1` callback. CREATES the catalog ETS table and returns
+the initial state with no worker.
 
-## Comportamento
+## Behavior
 
-Cria `?ETS_TABLE` (`erli18n_catalog`) com as opções (cada uma
+Creates `?ETS_TABLE` (`erli18n_catalog`) with the options (each
 load-bearing):
 
-- `set` — chaves únicas; uma linha por entrada de catálogo.
-- `protected` — só o dono corrente escreve; qualquer processo lê. É o que
-  preserva a invariante de writer único (RISK-012) mantendo o hot-path de
-  leitura aberto a todos.
-- `named_table` — acesso pelo átomo `erli18n_catalog`, para que os leitores
-  e o worker reiniciado encontrem a MESMA tabela apesar das trocas de dono.
-- `{read_concurrency, true}` — otimiza o padrão "muitas leituras
-  concorrentes, escritas serializadas pelo worker".
-- `{keypos, 1}` — a chave é o 1º elemento da tupla-linha.
-- `{heir, self(), ?ETS_HEIR_DATA}` — o cerne do Finding #10: o dono é o
-  herdeiro de si mesmo. Se o worker (futuro dono) morrer, o ETS devolve a
-  tabela a ESTE processo carregando o marcador `?ETS_HEIR_DATA`.
+- `set` — unique keys; one row per catalog entry.
+- `protected` — only the current owner writes; any process reads. This is
+  what preserves the single-writer invariant (RISK-012) while keeping the
+  read hot-path open to all.
+- `named_table` — access by the atom `erli18n_catalog`, so that readers and
+  the restarted worker find the SAME table despite ownership swaps.
+- `{read_concurrency, true}` — optimizes the "many concurrent reads, writes
+  serialized by the worker" pattern.
+- `{keypos, 1}` — the key is the 1st element of the row tuple.
+- `{heir, self(), ?ETS_HEIR_DATA}` — the core of Finding #10: the owner is
+  its own heir. If the worker (future owner) dies, ETS returns the table to
+  THIS process carrying the `?ETS_HEIR_DATA` marker.
 
-Enquanto nenhum worker reivindicou a tabela, o dono é o proprietário e as
-leituras já funcionam (tabela nomeada e protegida) — útil entre o boot do
-dono e o primeiro `claim_table/0` do worker.
+While no worker has claimed the table, the owner is the proprietor and
+reads already work (named, protected table) — useful between the owner's
+boot and the worker's first `claim_table/0`.
 
-## Retorno
+## Return
 
-`{ok, #{table => Table, worker => undefined}}`. O `worker => undefined`
-marca que a propriedade está com o dono e libera o primeiro give_away.
+`{ok, #{table => Table, worker => undefined}}`. The `worker => undefined`
+marks that ownership is with the owner and unlocks the first give_away.
 
-## Modos de falha
+## Failure modes
 
-`ets:new/2` pode lançar `badarg` se a tabela nomeada já existir (p.ex. um
-dono fantasma de uma geração anterior ainda viva) — o que sob a árvore de
-supervisão não acontece, pois a tabela morre junto com seu dono. Um crash
-aqui aborta o start do dono; o supervisor reavalia.
+`ets:new/2` may raise `badarg` if the named table already exists (e.g. a
+ghost owner from a previous generation still alive) — which under the
+supervision tree does not happen, since the table dies along with its
+owner. A crash here aborts the owner's start; the supervisor re-evaluates.
 
-## Exemplo
+## Example
 
-Em produção `init/1` é chamado UMA vez, pelo `gen_server` no
-`start_link/0`, sob a árvore de supervisão. O exemplo abaixo só funciona
-num node "limpo", onde a tabela nomeada `erli18n_catalog` ainda NÃO existe
-(ou seja, com a app `erli18n` parada e sem um dono/worker vivo). Chamar
-`init([])` uma segunda vez, ou com a app já de pé, faz `ets:new/2` lançar
-`badarg` por tabela nomeada duplicada (veja "Modos de falha" acima).
+In production `init/1` is called ONCE, by the `gen_server` in
+`start_link/0`, under the supervision tree. The example below only works on
+a "clean" node, where the named table `erli18n_catalog` does NOT yet exist
+(i.e. with the `erli18n` app stopped and no owner/worker alive). Calling
+`init([])` a second time, or with the app already up, makes `ets:new/2`
+raise `badarg` for a duplicate named table (see "Failure modes" above).
 
 ```erlang
 1> {ok, State} = erli18n_table_owner:init([]).
@@ -304,12 +307,12 @@ protected
 true
 ```
 
-Para inspecionar o dono com a app já iniciada, use o caminho via supervisor
-(como o moduledoc faz com `whereis/1` e `ets:info/2`) em vez de chamar
-`init/1` de novo.
+To inspect the owner with the app already started, use the path via the
+supervisor (as the moduledoc does with `whereis/1` and `ets:info/2`)
+instead of calling `init/1` again.
 
-Veja também `handle_info/2` (a cláusula `'ETS-TRANSFER'` que casa
-`?ETS_HEIR_DATA`) e `terminate/2`.
+See also `handle_info/2` (the `'ETS-TRANSFER'` clause that matches
+`?ETS_HEIR_DATA`) and `terminate/2`.
 """.
 -spec init([]) -> {ok, state()}.
 init([]) ->
@@ -327,51 +330,51 @@ init([]) ->
     {ok, #{table => Table, worker => undefined}}.
 
 -doc """
-Callback `c:gen_server:handle_call/3`. Entrega a tabela ao worker que a
-reivindica.
+`c:gen_server:handle_call/3` callback. Hands the table over to the worker
+that claims it.
 
-## Protocolo de mensagens
+## Message protocol
 
-- `{claim, WorkerPid}` (de `claim_table/0`, com `WorkerPid = self()` do
-  chamador) — o caminho central:
-  1. `reclaim_if_needed/1` garante que o dono é o proprietário corrente,
-     descartando o monitor de qualquer worker anterior (a posse física já
-     voltou, ou voltará, via `'ETS-TRANSFER'`).
-  2. monitora o novo `WorkerPid` para detectar sua morte futura.
-  3. tenta `safe_give_away/2`. Se vinga (retorna `ok`), guarda
-     `{WorkerPid, Mon}` em `worker` e responde `ok`. Se o worker morreu na
-     janela de handoff, `safe_give_away/2` captura o `badarg` de
-     `ets:give_away/3` e devolve `{error, give_away_failed}` (o átomo
-     concreto que esta cláusula casa em `{error, _}`); então o dono solta o
-     monitor, mantém a tabela consigo (`worker => undefined`) e mesmo assim
-     responde `ok` — o supervisor reinicia o worker, que chamará
-     `claim_table/0` de novo.
-- Qualquer outra call — responde `{error, unknown_call}` sem alterar o
-  estado. O dono não expõe outra API síncrona.
+- `{claim, WorkerPid}` (from `claim_table/0`, with `WorkerPid = self()` of
+  the caller) — the central path:
+  1. `reclaim_if_needed/1` ensures the owner is the current proprietor,
+     dropping the monitor of any previous worker (physical ownership has
+     already returned, or will return, via `'ETS-TRANSFER'`).
+  2. monitors the new `WorkerPid` to detect its future death.
+  3. attempts `safe_give_away/2`. If it succeeds (returns `ok`), it stores
+     `{WorkerPid, Mon}` in `worker` and replies `ok`. If the worker died in
+     the handoff window, `safe_give_away/2` catches the `badarg` from
+     `ets:give_away/3` and returns `{error, give_away_failed}` (the concrete
+     atom this clause matches in `{error, _}`); then the owner drops the
+     monitor, keeps the table with itself (`worker => undefined`), and still
+     replies `ok` — the supervisor restarts the worker, which will call
+     `claim_table/0` again.
+- Any other call — replies `{error, unknown_call}` without changing the
+  state. The owner exposes no other synchronous API.
 
-A guarda `is_pid(WorkerPid)` no cabeçalho da cláusula garante que um
-`{claim, NaoPid}` malformado caia na cláusula catch-all e receba
-`{error, unknown_call}` em vez de crashar.
+The `is_pid(WorkerPid)` guard in the clause head ensures that a malformed
+`{claim, NotAPid}` falls into the catch-all clause and gets
+`{error, unknown_call}` instead of crashing.
 
-## Invariante
+## Invariant
 
-Em ambos os desfechos do claim a call responde `ok`; o estado resultante
-ou tem `worker => {Pid, Mon}` (handoff bem-sucedido) ou
-`worker => undefined` (worker morreu na janela). Nunca fica com um monitor
-órfão.
+In both outcomes of the claim the call replies `ok`; the resulting state
+either has `worker => {Pid, Mon}` (successful handoff) or
+`worker => undefined` (worker died in the window). It never ends up with an
+orphan monitor.
 
-## Exemplo
+## Example
 
 ```erlang
-1> %% O worker chama isto indiretamente via claim_table/0:
+1> %% The worker calls this indirectly via claim_table/0:
 1> ok = gen_server:call(erli18n_table_owner, {claim, self()}, infinity).
 ok
-2> gen_server:call(erli18n_table_owner, {ping, qualquer}).
+2> gen_server:call(erli18n_table_owner, {ping, anything}).
 {error,unknown_call}
 ```
 
-Veja também `claim_table/0` (lado do worker), `reclaim_if_needed/1`,
-`safe_give_away/2` e `handle_info/2`.
+See also `claim_table/0` (the worker side), `reclaim_if_needed/1`,
+`safe_give_away/2`, and `handle_info/2`.
 """.
 -spec handle_call(term(), gen_server:from(), state()) ->
     {reply, ok | {error, unknown_call}, state()}.
@@ -402,64 +405,63 @@ handle_call(_Other, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
 -doc """
-Callback `c:gen_server:handle_cast/2`. O dono não tem protocolo assíncrono:
-ignora qualquer cast e mantém o estado inalterado. Existe apenas para
-satisfazer o contrato do `gen_server` (toda mutação relevante é dirigida
-por `handle_call/3` e `handle_info/2`).
+`c:gen_server:handle_cast/2` callback. The owner has no asynchronous
+protocol: it ignores any cast and keeps the state unchanged. It exists only
+to satisfy the `gen_server` contract (every relevant mutation is driven by
+`handle_call/3` and `handle_info/2`).
 """.
 -spec handle_cast(term(), state()) -> {noreply, state()}.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 -doc """
-Callback `c:gen_server:handle_info/2`. Coração do padrão owner/heir: é aqui
-que a tabela retorna ao dono quando o worker morre.
+`c:gen_server:handle_info/2` callback. Heart of the owner/heir pattern:
+this is where the table returns to the owner when the worker dies.
 
-## Protocolo de mensagens
+## Message protocol
 
-- `{'ETS-TRANSFER', Table, _FromPid, ?ETS_HEIR_DATA}` — o worker que
-  segurava a tabela morreu e o ETS devolveu a propriedade ao dono (o
-  `heir`) com TODAS as linhas intactas. A cláusula casa só quando o
-  `Table` recebido é o mesmo do estado e o marcador é `?ETS_HEIR_DATA`
-  (distingue-o do give_away dono->worker). Solta o monitor do worker
-  (`drop_worker_monitor/1`), emite o log `catalog_table_reclaimed` com o
-  tamanho da tabela (via `safe_size/1`) e re-arma `worker => undefined`
-  para o próximo `claim`.
-- `{'DOWN', Mon, process, Pid, _Reason}` do worker corrente (casa apenas
-  quando `worker` é exatamente `{Pid, Mon}`) — o `'DOWN'` pode chegar ANTES
-  do `'ETS-TRANSFER'`. A cláusula deliberadamente NÃO toca na tabela (o ETS
-  a transferirá de volta); apenas marca `worker => undefined` para evitar
-  um give_away duplo. A posse efetiva retorna na cláusula de
-  `'ETS-TRANSFER'` acima.
-- Qualquer outra mensagem — ignorada com segurança. Inclui `'DOWN'` /
-  `'ETS-TRANSFER'` de gerações antigas (cujo monitor já não casa o estado
-  corrente) e ruído. É seguro descartar: a tabela é nomeada e seu dono é
-  sempre este processo ou o worker vivo.
+- `{'ETS-TRANSFER', Table, _FromPid, ?ETS_HEIR_DATA}` — the worker that held
+  the table died and ETS returned ownership to the owner (the `heir`) with
+  ALL rows intact. The clause matches only when the received `Table` is the
+  same as in the state and the marker is `?ETS_HEIR_DATA` (which
+  distinguishes it from the give_away owner->worker). It drops the worker's
+  monitor (`drop_worker_monitor/1`), emits the `catalog_table_reclaimed` log
+  with the table size (via `safe_size/1`), and re-arms `worker => undefined`
+  for the next `claim`.
+- `{'DOWN', Mon, process, Pid, _Reason}` from the current worker (matches
+  only when `worker` is exactly `{Pid, Mon}`) — the `'DOWN'` may arrive
+  BEFORE the `'ETS-TRANSFER'`. The clause deliberately does NOT touch the
+  table (ETS will transfer it back); it only marks `worker => undefined` to
+  avoid a double give_away. Effective ownership returns in the
+  `'ETS-TRANSFER'` clause above.
+- Any other message — safely ignored. This includes `'DOWN'` /
+  `'ETS-TRANSFER'` from old generations (whose monitor no longer matches the
+  current state) and noise. It is safe to discard: the table is named and
+  its owner is always this process or the live worker.
 
-## Invariante / ordenação
+## Invariant / ordering
 
-As duas mensagens do ciclo de morte do worker (`'DOWN'` e
-`'ETS-TRANSFER'`) podem chegar em qualquer ordem. O estado converge para
-`worker => undefined` em ambos os caminhos; a tabela só é considerada
-"reavida e logada" no clause de `'ETS-TRANSFER'`. O efeito colateral
-observável é o log `catalog_table_reclaimed` (domínio
-`[erli18n, table_owner]`).
+The two messages of the worker death cycle (`'DOWN'` and `'ETS-TRANSFER'`)
+may arrive in any order. The state converges to `worker => undefined` on
+both paths; the table is only considered "reclaimed and logged" in the
+`'ETS-TRANSFER'` clause. The observable side effect is the
+`catalog_table_reclaimed` log (domain `[erli18n, table_owner]`).
 
-## Exemplo
+## Example
 
 ```erlang
-1> %% Com o worker segurando a tabela, mate-o e observe o reclaim:
+1> %% With the worker holding the table, kill it and observe the reclaim:
 1> Worker = whereis(erli18n_server).
 <0.205.0>
 2> exit(Worker, kill), timer:sleep(50).
 ok
-3> %% A tabela voltou ao dono (e logo será repassada ao worker reiniciado):
+3> %% The table returned to the owner (and will soon be handed to the restarted worker):
 3> ets:info(erli18n_catalog, owner) =/= Worker.
 true
 ```
 
-Veja também `init/1` (onde `?ETS_HEIR_DATA` é fixado como heir data),
-`handle_call/3` (o give_away de volta ao worker reiniciado) e
+See also `init/1` (where `?ETS_HEIR_DATA` is pinned as heir data),
+`handle_call/3` (the give_away back to the restarted worker), and
 `drop_worker_monitor/1`.
 """.
 -spec handle_info(term(), state()) -> {noreply, state()}.
@@ -496,18 +498,19 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 -doc """
-Callback `c:gen_server:terminate/2`. No-op — não há recurso externo a
-liberar.
+`c:gen_server:terminate/2` callback. No-op — there is no external resource
+to release.
 
-Se o DONO cai, a tabela cai com ele (ele é o dono/heir e o ETS destrói a
-tabela com o dono). Isso é aceitável e por design: sob `rest_for_one` o
-worker (posterior na ordem de start) é reiniciado junto, e o novo dono
-recria a tabela vazia em `init/1` — os catálogos precisariam ser
-recarregados, mas isso só ocorre num crash do dono, que é raro porque ele
-nada muta (superfície de crash mínima). O caso comum — crash do worker — é
-o que o padrão heir protege, e esse caminho não passa por aqui.
+If the OWNER goes down, the table goes with it (it is the owner/heir and ETS
+destroys the table along with the owner). This is acceptable and by design:
+under `rest_for_one` the worker (later in the start order) is restarted too,
+and the new owner recreates the empty table in `init/1` — the catalogs would
+need to be reloaded, but this only happens on an owner crash, which is rare
+because it mutates nothing (minimal crash surface). The common case — a
+worker crash — is what the heir pattern protects against, and that path does
+not pass through here.
 
-Não há retorno significativo; devolve `ok`.
+There is no meaningful return; it returns `ok`.
 """.
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, _State) ->
@@ -518,10 +521,10 @@ terminate(_Reason, _State) ->
     ok.
 
 -doc """
-Callback `c:gen_server:code_change/3`. Sem migração de estado: devolve
-`{ok, State}` inalterado. O estado é um mapa simples
-(`#{table, worker}`) cujo formato não mudou entre versões; existe apenas
-para satisfazer o contrato do `gen_server` em hot code upgrades.
+`c:gen_server:code_change/3` callback. No state migration: returns
+`{ok, State}` unchanged. The state is a simple map (`#{table, worker}`)
+whose shape has not changed between versions; it exists only to satisfy the
+`gen_server` contract on hot code upgrades.
 """.
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
@@ -532,15 +535,16 @@ code_change(_OldVsn, State, _Extra) ->
 %% =========================
 
 -doc """
-Garante que o dono está pronto para um novo handoff, descartando o
-rastreamento de qualquer worker anterior.
+Ensures the owner is ready for a new handoff, discarding the tracking of any
+previous worker.
 
-Chamada no início de cada `{claim, _}` em `handle_call/3`. Se `worker` já é
-`undefined`, devolve o estado intacto. Caso ainda haja um `{Pid, Mon}`
-remanescente, solta o monitor (`drop_worker_monitor/1`) e zera para
-`worker => undefined`. A posse FÍSICA da tabela não é mexida aqui: ela já
-voltou — ou voltará — ao dono via `'ETS-TRANSFER'`; esta função só limpa o
-estado lógico para evitar um monitor órfão antes do próximo give_away.
+Called at the start of each `{claim, _}` in `handle_call/3`. If `worker` is
+already `undefined`, it returns the state intact. If a `{Pid, Mon}` is still
+left over, it drops the monitor (`drop_worker_monitor/1`) and resets to
+`worker => undefined`. The PHYSICAL ownership of the table is not touched
+here: it has already returned — or will return — to the owner via
+`'ETS-TRANSFER'`; this function only cleans the logical state to avoid an
+orphan monitor before the next give_away.
 """.
 -spec reclaim_if_needed(state()) -> state().
 reclaim_if_needed(#{worker := undefined} = State) ->
@@ -550,12 +554,12 @@ reclaim_if_needed(#{worker := Worker} = State) ->
     State#{worker => undefined}.
 
 -doc """
-Solta o monitor de um worker, se houver. Para `undefined` é um no-op; para
-`{_Pid, Mon}` chama `erlang:demonitor(Mon, [flush])` — o `flush` remove da
-mailbox qualquer `'DOWN'` já enfileirado daquele monitor, evitando que uma
-geração antiga dispare a cláusula `'DOWN'` de `handle_info/2`. Sempre
-devolve `ok`. Usada por `reclaim_if_needed/1` e pela cláusula
-`'ETS-TRANSFER'` de `handle_info/2`.
+Drops a worker's monitor, if any. For `undefined` it is a no-op; for
+`{_Pid, Mon}` it calls `erlang:demonitor(Mon, [flush])` — the `flush`
+removes from the mailbox any `'DOWN'` already enqueued from that monitor,
+preventing an old generation from triggering the `'DOWN'` clause of
+`handle_info/2`. Always returns `ok`. Used by `reclaim_if_needed/1` and by
+the `'ETS-TRANSFER'` clause of `handle_info/2`.
 """.
 -spec drop_worker_monitor(undefined | {pid(), reference()}) -> ok.
 drop_worker_monitor(undefined) ->
@@ -565,23 +569,23 @@ drop_worker_monitor({_Pid, Mon}) ->
     ok.
 
 -doc """
-Embrulho defensivo sobre `ets:give_away/3`.
+Defensive wrapper over `ets:give_away/3`.
 
-A spec de `ets:give_away/3` é `true`, mas ela LANÇA `error:badarg` se o
-destino não está apto — destino morto, não-local, ou já o dono. O caso que
-importa aqui é a corrida em que `WorkerPid` morre na janela entre o
-`erlang:monitor/2` e o give_away. Em vez de deixar o `badarg` propagar e
-crashar o dono (o que perderia a tabela!), capturamos e devolvemos um
-resultado tipado:
+The spec of `ets:give_away/3` is `true`, but it RAISES `error:badarg` if the
+target is not eligible — dead target, non-local, or already the owner. The
+case that matters here is the race in which `WorkerPid` dies in the window
+between `erlang:monitor/2` and the give_away. Instead of letting the
+`badarg` propagate and crash the owner (which would lose the table!), we
+catch it and return a typed result:
 
-- `ok` — o give_away vingou; a propriedade passou para `WorkerPid`, que
-  recebe um `'ETS-TRANSFER'` marcado com `?ETS_HANDOFF_DATA`.
-- `{error, give_away_failed}` — o destino não estava apto; a tabela
-  permanece com o dono. `handle_call/3` então solta o monitor e mantém
+- `ok` — the give_away succeeded; ownership passed to `WorkerPid`, which
+  receives an `'ETS-TRANSFER'` marked with `?ETS_HANDOFF_DATA`.
+- `{error, give_away_failed}` — the target was not eligible; the table stays
+  with the owner. `handle_call/3` then drops the monitor and keeps
   `worker => undefined`.
 
-Manter o `badarg` contido aqui é o que torna o dono praticamente
-imune a crash mesmo sob corridas de boot/restart.
+Keeping the `badarg` contained here is what makes the owner practically
+crash-immune even under boot/restart races.
 """.
 -spec safe_give_away(ets:table(), pid()) -> ok | {error, give_away_failed}.
 safe_give_away(Table, WorkerPid) ->
@@ -592,12 +596,12 @@ safe_give_away(Table, WorkerPid) ->
     end.
 
 -doc """
-Lê `ets:info(Table, size)` de forma tolerante, para uso no log
-`catalog_table_reclaimed`. Devolve o número de linhas quando `ets:info/2`
-retorna um inteiro não-negativo; em qualquer outro caso (p.ex. a tabela ter
-sumido numa corrida, fazendo `ets:info/2` devolver `undefined`) devolve `0`
-em vez de crashar. O propósito é puramente observacional: o reclaim nunca
-deve falhar por causa do cálculo do tamanho para o log.
+Reads `ets:info(Table, size)` tolerantly, for use in the
+`catalog_table_reclaimed` log. Returns the number of rows when `ets:info/2`
+returns a non-negative integer; in any other case (e.g. the table having
+vanished in a race, making `ets:info/2` return `undefined`) it returns `0`
+instead of crashing. The purpose is purely observational: the reclaim must
+never fail because of the size computation for the log.
 """.
 -spec safe_size(ets:table()) -> non_neg_integer().
 safe_size(Table) ->
