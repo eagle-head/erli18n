@@ -4,6 +4,7 @@ _build/
 *.plt
 .eunit/
 erl_crash.dump
+rebar3.crashdump
 .erlang.cookie
 ebin/
 log/
