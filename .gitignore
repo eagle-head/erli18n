@@ -11,3 +11,6 @@ logs/
 *.swp
 *~
 .DS_Store
+
+# Generated API documentation (scripts/gen_docs.sh -> ex_doc; published to HexDocs)
+doc/
