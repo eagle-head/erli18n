@@ -174,7 +174,7 @@ end_per_suite(_Config) -> ok.
 %% =========================
 
 eng() -> <<"nplurals=2; plural=n != 1;">>.
-fre() -> <<"nplurals=2; plural=n > 1;">>.
+ptbr() -> <<"nplurals=2; plural=n > 1;">>.
 ja() -> <<"nplurals=1; plural=0;">>.
 ru() ->
     <<
@@ -225,7 +225,7 @@ evaluate_english_n_eq_2(_Config) ->
 
 %% French treats 0 and 1 as singular, 2+ plural.
 compile_french_n_gt_1(_Config) ->
-    C = compile_ok(fre()),
+    C = compile_ok(ptbr()),
     ?assertEqual(0, erli18n_plural:evaluate(C, 0)),
     ?assertEqual(0, erli18n_plural:evaluate(C, 1)),
     ?assertEqual(1, erli18n_plural:evaluate(C, 2)),
@@ -308,7 +308,7 @@ fallback_rule_returns_c_default(_Config) ->
 
 cldr_rule_known_locales(_Config) ->
     ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"en">>)),
-    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"fr">>)),
+    ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"pt_BR">>)),
     ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"ja">>)),
     ?assertMatch({ok, _}, erli18n_plural:cldr_rule(<<"ru">>)),
     {ok, JaExpr} = erli18n_plural:cldr_rule(<<"ja">>),
@@ -327,18 +327,18 @@ cldr_rule_with_region(_Config) ->
     ).
 
 %% Decision: when the region tag is unknown, fall back to the base
-%% language tag. fr_BE is not in the table but fr is — return the fr
+%% language tag. pt_AO is not in the table but pt is — return the pt
 %% rule. Documented in src/erli18n_plural.erl on `cldr_rule/1`.
 cldr_rule_with_region_fallback(_Config) ->
-    {ok, BaseExpr} = erli18n_plural:cldr_rule(<<"fr">>),
+    {ok, BaseExpr} = erli18n_plural:cldr_rule(<<"pt">>),
     ?assertMatch(
         {ok, BaseExpr},
-        erli18n_plural:cldr_rule(<<"fr_BE">>)
+        erli18n_plural:cldr_rule(<<"pt_AO">>)
     ),
     %% Also for hyphen-separated BCP47 region tags.
     ?assertMatch(
         {ok, BaseExpr},
-        erli18n_plural:cldr_rule(<<"fr-BE">>)
+        erli18n_plural:cldr_rule(<<"pt-AO">>)
     ).
 
 %% =========================
@@ -354,7 +354,7 @@ validate_against_cldr_ok(_Config) ->
     %% The French header `n > 1` matches CLDR fr.
     ?assertEqual(
         ok,
-        erli18n_plural:validate_against_cldr(<<"fr">>, fre())
+        erli18n_plural:validate_against_cldr(<<"pt_BR">>, ptbr())
     ),
     %% Whitespace differences must not trigger a warning.
     ?assertEqual(
@@ -367,8 +367,8 @@ validate_against_cldr_ok(_Config) ->
 %% English `n != 1` declared for French (CLDR says `n > 1`) is a real
 %% divergence — must produce a warning, not an error.
 validate_against_cldr_divergence(_Config) ->
-    Result = erli18n_plural:validate_against_cldr(<<"fr">>, eng()),
-    ?assertMatch({warning, {plural_divergence, <<"fr">>, _, _}}, Result),
+    Result = erli18n_plural:validate_against_cldr(<<"pt_BR">>, eng()),
+    ?assertMatch({warning, {plural_divergence, <<"pt_BR">>, _, _}}, Result),
     {warning, {plural_divergence, _Locale, Hdr, Cldr}} = Result,
     ?assertEqual(eng(), Hdr),
     ?assert(is_binary(Cldr)).
@@ -383,9 +383,9 @@ validate_against_cldr_ast_matches_binary_api(_Config) ->
     Cases = [
         %% {Locale, HeaderBinary}
         {<<"en">>, eng()},
-        {<<"fr">>, fre()},
+        {<<"pt_BR">>, ptbr()},
         %% English rule declared for French is a real divergence.
-        {<<"fr">>, eng()},
+        {<<"pt_BR">>, eng()},
         %% Russian 3-form canonical header.
         {<<"ru">>, <<
             "nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
@@ -441,9 +441,9 @@ validate_against_cldr_ast_no_recompile(_Config) ->
     %% Warm any one-time memoised CLDR-AST table BEFORE we start counting,
     %% so the first-load amortised cost is not attributed to the per-load
     %% divergence check we are measuring.
-    _ = erli18n_plural:validate_against_cldr_ast(<<"fr">>, Compiled),
+    _ = erli18n_plural:validate_against_cldr_ast(<<"pt_BR">>, Compiled),
     Count = count_plural_compiles(fun() ->
-        erli18n_plural:validate_against_cldr_ast(<<"fr">>, Compiled)
+        erli18n_plural:validate_against_cldr_ast(<<"pt_BR">>, Compiled)
     end),
     ?assertEqual(
         0,

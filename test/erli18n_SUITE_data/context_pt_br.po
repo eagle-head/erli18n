@@ -1,7 +1,7 @@
 msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
-"Language: fr\n"
+"Language: pt_BR\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
 
 # Two entries sharing the same msgid but distinguished by context — a
@@ -10,15 +10,15 @@ msgstr ""
 # unknown context (e.g. "toolbar") must NOT fall back to the
 # context-less variant — it must fall back to the source msgid.
 msgid "File"
-msgstr "Fichier"
+msgstr "Arquivo"
 
 msgctxt "menu"
 msgid "File"
-msgstr "Menu Fichier"
+msgstr "Menu Arquivo"
 
 # Plural in a context.
 msgctxt "menu"
 msgid "tree"
 msgid_plural "trees"
-msgstr[0] "Menu arbre"
-msgstr[1] "Menu arbres"
+msgstr[0] "Menu árvore"
+msgstr[1] "Menu árvores"

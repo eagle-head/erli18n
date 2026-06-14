@@ -302,9 +302,9 @@ bom_utf8_stripped(_Config) ->
     Bin =
         <<16#EF, 16#BB, 16#BF, (minimal_header())/binary,
             "msgid \"Hello\"\n"
-            "msgstr \"Bonjour\"\n">>,
+            "msgstr \"Oi\"\n">>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{singular, undefined, <<"Hello">>, <<"Bonjour">>}] =
+    [{singular, undefined, <<"Hello">>, <<"Oi">>}] =
         maps:get(entries, Catalog).
 
 %% =========================
@@ -315,11 +315,11 @@ single_entry_singular(_Config) ->
     Bin = <<
         (minimal_header())/binary,
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Oi\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Bonjour">>}],
+        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
         maps:get(entries, Catalog)
     ).
 
@@ -505,7 +505,7 @@ dump_roundtrip_singular(_Config) ->
     Bin = <<
         (minimal_header())/binary,
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Oi\"\n"
     >>,
     {ok, C1} = erli18n_po:parse(Bin),
     Dumped = erli18n_po:dump(C1),
@@ -592,11 +592,11 @@ comments_skipped(_Config) ->
         "#: src/foo.erl:42\n"
         "#| msgid \"previous\"\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Oi\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Bonjour">>}],
+        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
         maps:get(entries, Catalog)
     ).
 
@@ -619,12 +619,12 @@ parse_file_ok(Config) ->
     Bin = <<
         (minimal_header())/binary,
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Oi\"\n"
     >>,
     ok = file:write_file(Path, Bin),
     {ok, Catalog} = erli18n_po:parse_file(Path),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Bonjour">>}],
+        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
         maps:get(entries, Catalog)
     ).
 
@@ -788,7 +788,7 @@ duplicate_header_dropped(_Config) ->
         "\"Content-Type: text/plain; charset=ISO-8859-1\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Oi\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     Header = maps:get(header, Catalog),
@@ -796,7 +796,7 @@ duplicate_header_dropped(_Config) ->
     %% header entry is dropped from entries.
     ?assertEqual(utf8, maps:get(charset, Header)),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Bonjour">>}],
+        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
         maps:get(entries, Catalog)
     ).
 
@@ -1365,10 +1365,10 @@ line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
         <<"\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"">>,
         <<"">>,
         <<"msgid \"Hello\"">>,
-        <<"msgstr \"Bonjour\"">>,
+        <<"msgstr \"Oi\"">>,
         <<"">>,
         <<"msgid \"Bye\"">>,
-        <<"msgstr \"Au revoir\"">>
+        <<"msgstr \"Tchau\"">>
     ],
     Join = fun(Sep) ->
         iolist_to_binary(lists:join(Sep, Lines))
@@ -1378,8 +1378,8 @@ line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
     LoneCrBin = Join(<<"\r">>),
 
     Expected = [
-        {singular, undefined, <<"Hello">>, <<"Bonjour">>},
-        {singular, undefined, <<"Bye">>, <<"Au revoir">>}
+        {singular, undefined, <<"Hello">>, <<"Oi">>},
+        {singular, undefined, <<"Bye">>, <<"Tchau">>}
     ],
 
     {ok, LfCatalog} = erli18n_po:parse(LfBin),

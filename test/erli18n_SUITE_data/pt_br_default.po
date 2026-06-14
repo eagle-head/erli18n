@@ -1,14 +1,14 @@
 msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
-"Language: fr\n"
+"Language: pt_BR\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
 
 msgid "Hello"
-msgstr "Bonjour"
+msgstr "Olá"
 
 msgid "Goodbye"
-msgstr "Au revoir"
+msgstr "Adeus"
 
 # An entry with msgstr "" — per PSD-003 the parser drops it, so a
 # lookup for "Untranslated" misses and falls back to the msgid.

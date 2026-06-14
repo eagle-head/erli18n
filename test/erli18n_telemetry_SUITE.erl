@@ -334,14 +334,14 @@ telemetry_lookup_miss_opt_in_enabled(Config) ->
     <<"nonexistent">> = erli18n:gettext(
         default,
         <<"nonexistent">>,
-        <<"fr">>
+        <<"pt_BR">>
     ),
     Events = captured_for(Config, [erli18n, lookup, miss]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"fr">>, maps:get(locale, Meta)),
+    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)),
     ?assertEqual(<<"nonexistent">>, maps:get(msgid, Meta)),
     ?assertEqual(gettext, maps:get(function, Meta)),
     ?assertEqual(undefined, maps:get(context, Meta)).
@@ -389,13 +389,13 @@ telemetry_lookup_fuzzy_skip_emits_on_load(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
     ok = attach(Config, [[erli18n, lookup, fuzzy_skip]]),
     Path = fixture(Config, "fuzzy_entry.po"),
-    {ok, _N} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    {ok, _N} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
     Events = captured_for(Config, [erli18n, lookup, fuzzy_skip]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"fr">>, maps:get(locale, Meta)).
+    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)).
 
 %% Spec: observability.md §4.2 — `include_fuzzy => true` means no
 %% entries are dropped, so the event is not emitted.
@@ -405,7 +405,7 @@ telemetry_lookup_fuzzy_skip_not_emitted_when_include_fuzzy(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
     {ok, _N} = erli18n_server:ensure_loaded(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         Path,
         #{include_fuzzy => true}
     ),
@@ -417,31 +417,31 @@ telemetry_lookup_fuzzy_skip_not_emitted_when_include_fuzzy(Config) ->
 %% =========================
 
 %% Spec: observability.md §4.2 — plural divergence is always-on (no
-%% opt-in). divergent_fr.po has French header `n != 1` while CLDR
-%% canonical for fr is `n > 1`.
+%% opt-in). divergent_pt_br.po has pt_BR header `n != 1` while CLDR
+%% canonical for pt_BR is `n > 1`.
 telemetry_plural_divergence_always_on(Config) ->
     %% Explicitly leave emit_lookup_telemetry off to prove this event
     %% is unconditional.
     application:set_env(erli18n, emit_lookup_telemetry, false),
     ok = attach(Config, [[erli18n, plural, divergence_warning]]),
-    Path = fixture(Config, "divergent_fr.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "divergent_pt_br.po"),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
     Events = captured_for(Config, [erli18n, plural, divergence_warning]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"fr">>, maps:get(locale, Meta)),
+    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)),
     %% Both rules carried so the consumer can render the diff.
     ?assert(is_binary(maps:get(po_rule, Meta))),
     ?assert(is_binary(maps:get(cldr_rule, Meta))).
 
 %% Spec: observability.md §4.2 — no event when header rule == CLDR
-%% canonical. plural_fr.po uses `n > 1` which matches CLDR for fr.
+%% canonical. plural_pt_br.po uses `n > 1` which matches CLDR for pt_BR.
 telemetry_plural_divergence_not_emitted_when_aligned(Config) ->
     ok = attach(Config, [[erli18n, plural, divergence_warning]]),
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, _} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, _} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
     Events = captured_for(Config, [erli18n, plural, divergence_warning]),
     ?assertEqual(0, length(Events)).
 
@@ -480,7 +480,7 @@ telemetry_memory_warning_rate_limited(Config) ->
     erli18n_telemetry:reset_caches(),
     ok = attach(Config, [[erli18n, catalog, memory_warning]]),
     Path1 = fixture(Config, "minimal_en.po"),
-    Path2 = fixture(Config, "plural_fr.po"),
+    Path2 = fixture(Config, "plural_pt_br.po"),
     %% Five distinct loads, all crossing the 1-byte threshold.
     {ok, 1} = erli18n_server:ensure_loaded(default, <<"l1">>, Path1),
     {ok, 1} = erli18n_server:ensure_loaded(default, <<"l2">>, Path1),

@@ -1,5 +1,11 @@
 %%% =====================================================================
-%%% Parity harness: erli18n (subject) vs gettexter + GNU msgfmt (oracle).
+%%% Parity harness: erli18n (subject) vs the GNU gettext CLI (oracle).
+%%%
+%%% The oracle is the real GNU `gettext` / `ngettext` command-line tools
+%%% (shelled out via `os:cmd/1`), driven against the same compiled `.mo`
+%%% catalog that `msgfmt` produces from each scenario's inline `.po`.
+%%% `msgfmt` remains the `.po -> .mo` compiler; the runtime lookups are
+%%% delegated to `gettext`/`ngettext` rather than an in-BEAM library.
 %%%
 %%% Spec source-of-truth:
 %%%   * `parity_specs.md` §1-§4 — overall harness shape, oracle pin.
@@ -17,10 +23,16 @@
 %%%     Alpine without `apk add gettext`, macOS without `brew install
 %%%     gettext`). CI is expected to install the toolchain and exercise
 %%%     the full suite.
-%%%   * If `gettexter` is not on the code path → same skip path.
+%%%   * If the `gettext`/`ngettext` runtime binaries are missing → same
+%%%     skip path.
+%%%   * If the required system locales (`pt_BR.UTF-8`, `ru_RU.UTF-8`)
+%%%     are not generated, GNU gettext returns the source msgid
+%%%     unchanged, so a round-trip probe at suite init detects this and
+%%%     skips with an actionable message instead of producing false
+%%%     parity results.
 %%%
 %%% Scope (v0.1):
-%%%   * 5 core scenarios covering singular, plural fr, plural ru,
+%%%   * 5 core scenarios covering singular, plural pt_BR, plural ru,
 %%%     contextual, empty-msgstr-fallback.
 %%%   * The remaining 4 `.feature` files in `parity_tests/` are
 %%%     documented as backlog in `parity_specs.md` §5 ("fixture set
@@ -43,15 +55,15 @@
 -export([
     parity_singular_lookup/1,
     parity_singular_miss_fallback/1,
-    parity_plural_fr/1,
+    parity_plural_pt_br/1,
     parity_plural_ru/1,
     parity_contextual_lookup/1,
     parity_empty_msgstr_fallback/1
 ]).
 
 %% Domain used across all scenarios. Must match the .po fixture's
-%% filename convention (`<DOMAIN>.po`) so `gettexter:bindtextdomain/2`
-%% and msgfmt can find it under
+%% filename convention (`<DOMAIN>.po`) so the GNU gettext CLI (via
+%% `TEXTDOMAINDIR` + `-d <DOMAIN>`) and msgfmt can find it under
 %%   `<base>/<locale>/LC_MESSAGES/<domain>.po|.mo`.
 -define(DOMAIN, parity_default).
 
@@ -62,7 +74,7 @@ all() ->
     [
         parity_singular_lookup,
         parity_singular_miss_fallback,
-        parity_plural_fr,
+        parity_plural_pt_br,
         parity_plural_ru,
         parity_contextual_lookup,
         parity_empty_msgstr_fallback
@@ -75,20 +87,36 @@ all() ->
 init_per_suite(Config) ->
     case check_msgfmt() of
         {ok, MsgfmtVersion} ->
-            case code:ensure_loaded(gettexter) of
-                {module, gettexter} ->
-                    {ok, _} = application:ensure_all_started(erli18n),
-                    {ok, _} = application:ensure_all_started(gettexter),
-                    Base = make_locale_root(),
-                    [
-                        {msgfmt_version, MsgfmtVersion},
-                        {locale_base, Base}
-                        | Config
-                    ];
-                _ ->
+            case check_gettext_cli() of
+                ok ->
+                    case check_locales([<<"pt_BR">>, <<"ru_RU">>]) of
+                        ok ->
+                            {ok, _} = application:ensure_all_started(erli18n),
+                            Base = make_locale_root(),
+                            [
+                                {msgfmt_version, MsgfmtVersion},
+                                {locale_base, Base}
+                                | Config
+                            ];
+                        {error, {locale_missing, Loc}} ->
+                            {skip,
+                                "system locale " ++ binary_to_list(Loc) ++
+                                    ".UTF-8 not generated — GNU gettext "
+                                    "returns the source string, so parity "
+                                    "cannot be checked. Generate it "
+                                    "(Debian/Ubuntu: add the line to "
+                                    "/etc/locale.gen and run `sudo "
+                                    "locale-gen`, or `sudo localedef -i " ++
+                                    binary_to_list(Loc) ++ " -f UTF-8 " ++
+                                    binary_to_list(Loc) ++ ".UTF-8`). "
+                                    "Required: pt_BR.UTF-8 and ru_RU.UTF-8."}
+                    end;
+                {error, missing} ->
                     {skip,
-                        "gettexter not on the code path — parity oracle "
-                        "unavailable"}
+                        "GNU gettext/ngettext runtime binaries not installed "
+                        "— parity oracle unavailable. Install GNU gettext "
+                        "(`apt install gettext`, `brew install gettext`, "
+                        "`apk add gettext`)."}
             end;
         {error, missing} ->
             {skip,
@@ -106,7 +134,6 @@ init_per_suite(Config) ->
     end.
 
 end_per_suite(_Config) ->
-    _ = application:stop(gettexter),
     _ = application:stop(erli18n),
     ok.
 
@@ -117,7 +144,7 @@ end_per_testcase(_TC, Config) ->
     %% Best-effort cleanup so iterations don't leak ETS state in either
     %% oracle or subject.
     Base = ?config(locale_base, Config),
-    Locales = [<<"fr">>, <<"ru">>, <<"xx">>, <<"en">>],
+    Locales = [<<"pt_BR">>, <<"ru_RU">>, <<"xx">>, <<"en">>],
     lists:foreach(
         fun(L) ->
             %% Best-effort: server may be down between tests, or the
@@ -128,9 +155,9 @@ end_per_testcase(_TC, Config) ->
             catch
                 _:_ -> ok
             end,
-            %% gettexter has no per-locale unload — the catalog stays
-            %% across tests but `bindtextdomain` is rebound for each
-            %% test so the path resolution is fresh.
+            %% The GNU gettext CLI oracle has no in-BEAM state to unload —
+            %% it reads the `.mo` from disk per call, and `Base` is
+            %% removed below, so nothing else to clean up here.
             ok
         end,
         Locales
@@ -146,48 +173,47 @@ end_per_testcase(_TC, Config) ->
 %% translation.
 parity_singular_lookup(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<
-        "msgid \"\"\n"
+    Po = <<"msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
-    >>,
-    install_fixture(Base, <<"fr">>, Po),
-    load_both(Base, <<"fr">>),
-    OracleOut = gettexter:gettext(<<"Hello">>, <<"fr">>),
-    SubjectOut = erli18n:gettext(?DOMAIN, <<"Hello">>, <<"fr">>),
-    ?assertEqual(<<"Bonjour">>, OracleOut),
+        "msgstr \"Olá\"\n"/utf8>>,
+    install_fixture(Base, <<"pt_BR">>, Po),
+    load_both(Base, <<"pt_BR">>),
+    OracleOut = oracle_gettext(Base, ?DOMAIN, <<"Hello">>, <<"pt_BR">>),
+    SubjectOut = erli18n:gettext(?DOMAIN, <<"Hello">>, <<"pt_BR">>),
+    ?assertEqual(<<"Olá"/utf8>>, OracleOut),
     ?assertEqual(OracleOut, SubjectOut),
     ok.
 
 %% PARITY-01 / R1-fallback scenario: lookup miss returns original input.
 parity_singular_miss_fallback(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<
-        "msgid \"\"\n"
+    Po = <<"msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
-    >>,
-    install_fixture(Base, <<"fr">>, Po),
-    load_both(Base, <<"fr">>),
-    OracleOut = gettexter:gettext(<<"NoTranslation">>, <<"fr">>),
-    SubjectOut = erli18n:gettext(?DOMAIN, <<"NoTranslation">>, <<"fr">>),
+        "msgstr \"Olá\"\n"/utf8>>,
+    install_fixture(Base, <<"pt_BR">>, Po),
+    load_both(Base, <<"pt_BR">>),
+    OracleOut =
+        oracle_gettext(Base, ?DOMAIN, <<"NoTranslation">>, <<"pt_BR">>),
+    SubjectOut = erli18n:gettext(?DOMAIN, <<"NoTranslation">>, <<"pt_BR">>),
     %% Per R1 (BR-MIGRAR-001): miss returns msgid unchanged.
     ?assertEqual(<<"NoTranslation">>, OracleOut),
     ?assertEqual(OracleOut, SubjectOut),
     ok.
 
-%% PARITY-02 (Scenario Outline: English-style French plural).
-%% gettexter pluralization uses gettexter's compiled .mo plural rule;
-%% erli18n evaluates the same C-expression from the .po header.
-parity_plural_fr(Config) ->
+%% PARITY-02 (Scenario Outline: English-style Brazilian Portuguese
+%% plural). The GNU `ngettext` CLI selects the form from the compiled
+%% `.mo` plural rule; erli18n evaluates the same C-expression from the
+%% `.po` header. pt_BR uses `plural=(n > 1)`, identical to the prior
+%% French fixture, so the [0,1,2,5,100] expectations are unchanged.
+parity_plural_pt_br(Config) ->
     Base = ?config(locale_base, Config),
     Po = <<
         "msgid \"\"\n"
@@ -197,14 +223,16 @@ parity_plural_fr(Config) ->
         "\n"
         "msgid \"Fish\"\n"
         "msgid_plural \"Fishes\"\n"
-        "msgstr[0] \"Poisson\"\n"
-        "msgstr[1] \"Poissons\"\n"
+        "msgstr[0] \"Peixe\"\n"
+        "msgstr[1] \"Peixes\"\n"
     >>,
-    install_fixture(Base, <<"fr">>, Po),
-    load_both(Base, <<"fr">>),
-    %% French (n > 1): 0 -> singular(0); 1 -> singular(0); 2+ -> plural(1).
+    install_fixture(Base, <<"pt_BR">>, Po),
+    load_both(Base, <<"pt_BR">>),
+    %% pt_BR (n > 1): 0 -> singular(0); 1 -> singular(0); 2+ -> plural(1).
     lists:foreach(
-        fun(N) -> check_plural(<<"Fish">>, <<"Fishes">>, N, <<"fr">>) end,
+        fun(N) ->
+            check_plural(Base, <<"Fish">>, <<"Fishes">>, N, <<"pt_BR">>)
+        end,
         [0, 1, 2, 5, 100]
     ),
     ok.
@@ -225,10 +253,12 @@ parity_plural_ru(Config) ->
         "msgstr[1] \"Kamnia\"\n"
         "msgstr[2] \"Kamney\"\n"
     >>,
-    install_fixture(Base, <<"ru">>, Po),
-    load_both(Base, <<"ru">>),
+    install_fixture(Base, <<"ru_RU">>, Po),
+    load_both(Base, <<"ru_RU">>),
     lists:foreach(
-        fun(N) -> check_plural(<<"Stone">>, <<"Stones">>, N, <<"ru">>) end,
+        fun(N) ->
+            check_plural(Base, <<"Stone">>, <<"Stones">>, N, <<"ru_RU">>)
+        end,
         [1, 2, 5, 11, 21, 100]
     ),
     ok.
@@ -247,21 +277,21 @@ parity_contextual_lookup(Config) ->
         "\n"
         "msgctxt \"button\"\n"
         "msgid \"Save\"\n"
-        "msgstr \"Sauver\"\n"
+        "msgstr \"Salvar\"\n"
         "\n"
         "msgctxt \"menu\"\n"
         "msgid \"Save\"\n"
-        "msgstr \"Enregistrer\"\n"
+        "msgstr \"Gravar\"\n"
     >>,
-    install_fixture(Base, <<"fr">>, Po),
-    load_both(Base, <<"fr">>),
-    O1 = gettexter:pgettext(<<"button">>, <<"Save">>, <<"fr">>),
-    S1 = erli18n:pgettext(?DOMAIN, <<"button">>, <<"Save">>, <<"fr">>),
-    O2 = gettexter:pgettext(<<"menu">>, <<"Save">>, <<"fr">>),
-    S2 = erli18n:pgettext(?DOMAIN, <<"menu">>, <<"Save">>, <<"fr">>),
-    ?assertEqual(<<"Sauver">>, O1),
+    install_fixture(Base, <<"pt_BR">>, Po),
+    load_both(Base, <<"pt_BR">>),
+    O1 = oracle_pgettext(Base, ?DOMAIN, <<"button">>, <<"Save">>, <<"pt_BR">>),
+    S1 = erli18n:pgettext(?DOMAIN, <<"button">>, <<"Save">>, <<"pt_BR">>),
+    O2 = oracle_pgettext(Base, ?DOMAIN, <<"menu">>, <<"Save">>, <<"pt_BR">>),
+    S2 = erli18n:pgettext(?DOMAIN, <<"menu">>, <<"Save">>, <<"pt_BR">>),
+    ?assertEqual(<<"Salvar">>, O1),
     ?assertEqual(O1, S1),
-    ?assertEqual(<<"Enregistrer">>, O2),
+    ?assertEqual(<<"Gravar">>, O2),
     ?assertEqual(O2, S2),
     ok.
 
@@ -269,22 +299,20 @@ parity_contextual_lookup(Config) ->
 %% libraries (R1).
 parity_empty_msgstr_fallback(Config) ->
     Base = ?config(locale_base, Config),
-    Po = <<
-        "msgid \"\"\n"
+    Po = <<"msgid \"\"\n"
         "msgstr \"\"\n"
         "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
         "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
         "\n"
         "msgid \"Hello\"\n"
-        "msgstr \"Bonjour\"\n"
+        "msgstr \"Olá\"\n"
         "\n"
         "msgid \"Empty\"\n"
-        "msgstr \"\"\n"
-    >>,
-    install_fixture(Base, <<"fr">>, Po),
-    load_both(Base, <<"fr">>),
-    OracleEmpty = gettexter:gettext(<<"Empty">>, <<"fr">>),
-    SubjectEmpty = erli18n:gettext(?DOMAIN, <<"Empty">>, <<"fr">>),
+        "msgstr \"\"\n"/utf8>>,
+    install_fixture(Base, <<"pt_BR">>, Po),
+    load_both(Base, <<"pt_BR">>),
+    OracleEmpty = oracle_gettext(Base, ?DOMAIN, <<"Empty">>, <<"pt_BR">>),
+    SubjectEmpty = erli18n:gettext(?DOMAIN, <<"Empty">>, <<"pt_BR">>),
     ?assertEqual(<<"Empty">>, OracleEmpty),
     ?assertEqual(OracleEmpty, SubjectEmpty),
     ok.
@@ -293,8 +321,8 @@ parity_empty_msgstr_fallback(Config) ->
 %% Plural-comparison helper
 %% =========================
 
-check_plural(Singular, Plural, N, Locale) ->
-    Oracle = gettexter:ngettext(Singular, Plural, N, Locale),
+check_plural(Base, Singular, Plural, N, Locale) ->
+    Oracle = oracle_ngettext(Base, ?DOMAIN, Singular, Plural, N, Locale),
     Subject = erli18n:ngettext(?DOMAIN, Singular, Plural, N, Locale),
     case Oracle =:= Subject of
         true ->
@@ -307,6 +335,110 @@ check_plural(Singular, Plural, N, Locale) ->
             ),
             ?assert(false)
     end.
+
+%% =========================
+%% GNU gettext CLI oracle
+%% =========================
+%%
+%% The oracle shells out to the real GNU `gettext`/`ngettext` binaries.
+%% Each helper builds an env prefix that points the CLI at the compiled
+%% `.mo` (`TEXTDOMAINDIR=<Base>` + `-d <DOMAIN>`) and forces the locale
+%% (`LANGUAGE`/`LC_ALL=<Locale>.UTF-8`), then captures stdout and strips
+%% exactly one trailing newline.
+
+%% Shell out to GNU `gettext` for a singular lookup.
+oracle_gettext(Base, Domain, Msgid, Locale) ->
+    Cmd = io_lib:format(
+        "~s gettext -d ~s ~s",
+        [oracle_env(Base, Locale), atom_to_list(Domain), oracle_quote(Msgid)]
+    ),
+    run_oracle(Cmd).
+
+%% Shell out to GNU `ngettext` for a plural lookup. `N` is a
+%% non-negative integer rendered as bare digits (the CLI's COUNT arg).
+oracle_ngettext(Base, Domain, Singular, Plural, N, Locale) ->
+    Cmd = io_lib:format(
+        "~s ngettext -d ~s ~s ~s ~w",
+        [
+            oracle_env(Base, Locale),
+            atom_to_list(Domain),
+            oracle_quote(Singular),
+            oracle_quote(Plural),
+            N
+        ]
+    ),
+    run_oracle(Cmd).
+
+%% Shell out to GNU `gettext` for a contextual (msgctxt) lookup. The
+%% `.mo` contextual key is `Context <EOT> Msgid` where `<EOT>` is byte
+%% `0x04`; GNU gettext has no context flag, so we pass that exact byte
+%% sequence as the single msgid argument.
+oracle_pgettext(Base, Domain, Context, Msgid, Locale) ->
+    Key = iolist_to_binary([Context, <<4>>, Msgid]),
+    Cmd = io_lib:format(
+        "~s gettext -d ~s ~s",
+        [oracle_env(Base, Locale), atom_to_list(Domain), oracle_quote(Key)]
+    ),
+    run_oracle(Cmd).
+
+%% Build the "TEXTDOMAINDIR=.. LANGUAGE=.. LC_ALL=..UTF-8" env prefix.
+oracle_env(Base, Locale) ->
+    L = binary_to_list(Locale),
+    io_lib:format(
+        "TEXTDOMAINDIR=~ts LANGUAGE=~s LC_ALL=~s.UTF-8",
+        [Base, L, L]
+    ).
+
+%% Run the oracle command and capture stdout as RAW BYTES, dropping
+%% exactly one trailing "\n". We read via a port in `binary` mode rather
+%% than `os:cmd/1` on purpose: `os:cmd/1` decodes its output using the
+%% emulator's unicode mode, so a UTF-8 translation like "Olá" comes back
+%% as the codepoint list `[$O, $l, 225]` and `list_to_binary/1` would then
+%% re-truncate it to Latin-1 (`<<$O, $l, 225>>`), failing the byte-for-byte
+%% comparison against the subject. The port hands us the exact UTF-8 bytes
+%% the `gettext` CLI emitted. We go through `/bin/sh -c` so the
+%% `VAR=val cmd` env prefix built by `oracle_env/2` is honoured.
+run_oracle(CmdIoList) ->
+    Cmd = lists:flatten(CmdIoList),
+    Port = open_port(
+        {spawn_executable, "/bin/sh"},
+        [binary, stream, eof, hide, {args, ["-c", Cmd]}]
+    ),
+    strip_trailing_nl(drain_port(Port, <<>>)).
+
+drain_port(Port, Acc) ->
+    receive
+        {Port, {data, Bytes}} ->
+            drain_port(Port, <<Acc/binary, Bytes/binary>>);
+        {Port, eof} ->
+            catch port_close(Port),
+            Acc
+    end.
+
+strip_trailing_nl(<<>>) ->
+    <<>>;
+strip_trailing_nl(Bin) ->
+    Sz = byte_size(Bin),
+    case binary:at(Bin, Sz - 1) of
+        $\n -> binary:part(Bin, 0, Sz - 1);
+        _ -> Bin
+    end.
+
+%% POSIX single-quote a binary/iolist for safe inclusion in an os:cmd
+%% shell string. Single quotes preserve every byte literally (incl. the
+%% 0x04 EOT used for msgctxt keys); only the single-quote char needs the
+%% classic '\'' break-out.
+oracle_quote(Bin) when is_binary(Bin) ->
+    oracle_quote(binary_to_list(Bin));
+oracle_quote(Str) when is_list(Str) ->
+    Escaped = lists:flatmap(
+        fun
+            ($') -> "'\\''";
+            (C) -> [C]
+        end,
+        Str
+    ),
+    "'" ++ Escaped ++ "'".
 
 %% =========================
 %% Install fixture: write .po to disk, run msgfmt to produce .mo
@@ -332,13 +464,12 @@ install_fixture(Base, Locale, PoBin) ->
         false -> error({msgfmt_failed, PoPath, MoPath})
     end.
 
-%% Load the same locale into both libraries. `gettexter` discovers the
-%% `.mo` via its `bindtextdomain` + `ensure_loaded` convention; erli18n
-%% loads the `.po` directly (its native format) — both ultimately
-%% surface identical translations from the same source.
+%% Load the locale into the subject (erli18n). The GNU gettext CLI oracle
+%% needs no in-BEAM bind — it reads the compiled `.mo` from disk directly
+%% (via `TEXTDOMAINDIR`/`-d <DOMAIN>`), which `install_fixture` already
+%% wrote. Both ultimately surface translations from the same `.po`
+%% source.
 load_both(Base, Locale) ->
-    ok = gettexter:bindtextdomain(?DOMAIN, Base),
-    {ok, _} = gettexter:ensure_loaded(?DOMAIN, lc_messages, Locale),
     PoPath = po_path(Base, Locale),
     case erli18n:ensure_loaded(?DOMAIN, Locale, PoPath) of
         {ok, _} -> ok;
@@ -369,6 +500,57 @@ make_locale_root() ->
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
     Dir.
+
+%% =========================
+%% Runtime CLI + locale availability checks
+%% =========================
+
+%% Both runtime binaries must exist; they ship together in
+%% gettext-runtime.
+check_gettext_cli() ->
+    case {os:find_executable("gettext"), os:find_executable("ngettext")} of
+        {false, _} -> {error, missing};
+        {_, false} -> {error, missing};
+        {_, _} -> ok
+    end.
+
+%% A locale is "usable" iff GNU gettext, pointed at a tiny throwaway
+%% catalog under that locale, returns the TRANSLATION rather than the
+%% source string. This is the only reliable cross-distro probe: parsing
+%% `locale -a` is brittle (names vary: pt_BR vs pt_BR.utf8). We compile a
+%% one-entry .mo with msgfmt and check the round-trip. We probe with the
+%% exact locale strings the tests use so the probe and the real lookups
+%% share fate.
+check_locales([]) ->
+    ok;
+check_locales([Loc | Rest]) ->
+    Probe = make_locale_root(),
+    try
+        Dir = filename:join([Probe, binary_to_list(Loc), "LC_MESSAGES"]),
+        ok = filelib:ensure_dir(filename:join(Dir, "x")),
+        Po = <<
+            "msgid \"\"\n"
+            "msgstr \"\"\n"
+            "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
+            "\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n"
+            "\nmsgid \"__probe__\"\nmsgstr \"__ok__\"\n"
+        >>,
+        PoP = filename:join(Dir, "probe.po"),
+        MoP = filename:join(Dir, "probe.mo"),
+        ok = file:write_file(PoP, Po),
+        _ = os:cmd(
+            lists:flatten(
+                io_lib:format("msgfmt -o ~ts ~ts 2>&1", [MoP, PoP])
+            )
+        ),
+        Got = oracle_gettext(Probe, probe, <<"__probe__">>, Loc),
+        case Got of
+            <<"__ok__">> -> check_locales(Rest);
+            _ -> {error, {locale_missing, Loc}}
+        end
+    after
+        file:del_dir_r(Probe)
+    end.
 
 %% =========================
 %% msgfmt version check

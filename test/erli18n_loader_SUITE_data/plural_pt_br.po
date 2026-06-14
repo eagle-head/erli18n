@@ -1,10 +1,10 @@
 msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
-"Language: fr\n"
+"Language: pt_BR\n"
 "Plural-Forms: nplurals=2; plural=n > 1;\n"
 
 msgid "tree"
 msgid_plural "trees"
-msgstr[0] "arbre"
-msgstr[1] "arbres"
+msgstr[0] "árvore"
+msgstr[1] "árvores"

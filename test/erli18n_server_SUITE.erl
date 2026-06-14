@@ -90,16 +90,16 @@ end_per_testcase(_TC, _Config) ->
 insert_lookup_singular(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
@@ -109,7 +109,7 @@ insert_lookup_plural(_Config) ->
     Entries = [{0, <<"un arbre">>}, {1, <<"des arbres">>}],
     ok = erli18n_server:insert_plural(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"tree">>,
         Entries
@@ -120,27 +120,27 @@ insert_lookup_plural(_Config) ->
     %% by erli18n_loader_SUITE where a real Plural-Forms header exists.
     ?assertEqual(
         {ok, <<"un arbre">>},
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 0)
     ),
     ?assertEqual(
         {ok, <<"des arbres">>},
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 1)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 1)
     ).
 
 insert_catalog_mixed(_Config) ->
     Entries = [
-        {singular, undefined, <<"Hello">>, <<"Bonjour">>},
+        {singular, undefined, <<"Hello">>, <<"Olá"/utf8>>},
         {singular, <<"menu">>, <<"File">>, <<"Fichier">>},
         {plural, undefined, <<"tree">>, <<"trees">>, [
             {0, <<"arbre">>}, {1, <<"arbres">>}
         ]}
     ],
-    ok = erli18n_server:insert_catalog(default, <<"fr">>, Entries),
+    ok = erli18n_server:insert_catalog(default, <<"pt_BR">>, Entries),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
@@ -149,14 +149,14 @@ insert_catalog_mixed(_Config) ->
         {ok, <<"Fichier">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             <<"menu">>,
             <<"File">>
         )
     ),
     ?assertEqual(
         {ok, <<"arbres">>},
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 1)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 1)
     ).
 
 lookup_missing_returns_undefined(_Config) ->
@@ -164,23 +164,23 @@ lookup_missing_returns_undefined(_Config) ->
         undefined,
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"NotThere">>
         )
     ),
     ?assertEqual(
         undefined,
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 0)
     ).
 
 unload_removes_only_target(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     ok = erli18n_server:insert_singular(
         default,
@@ -191,24 +191,24 @@ unload_removes_only_target(_Config) ->
     ),
     ok = erli18n_server:insert_plural(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"tree">>,
         [{0, <<"arbre">>}, {1, <<"arbres">>}]
     ),
-    ok = erli18n_server:unload(default, <<"fr">>),
+    ok = erli18n_server:unload(default, <<"pt_BR">>),
     ?assertEqual(
         undefined,
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
     ),
     ?assertEqual(
         undefined,
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 0)
     ),
     ?assertEqual(
         {ok, <<"Hola">>},
@@ -232,10 +232,10 @@ memory_info_accuracy(_Config) ->
 
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     ok = erli18n_server:insert_singular(
         default,
@@ -246,7 +246,7 @@ memory_info_accuracy(_Config) ->
     ),
     ok = erli18n_server:insert_plural(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"tree">>,
         [{0, <<"arbre">>}, {1, <<"arbres">>}]
@@ -259,14 +259,14 @@ memory_info_accuracy(_Config) ->
 loaded_catalogs_grouping(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"a">>,
         <<"a-fr">>
     ),
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"b">>,
         <<"b-fr">>
@@ -279,26 +279,26 @@ loaded_catalogs_grouping(_Config) ->
         <<"a-es">>
     ),
     Catalogs = lists:sort(erli18n_server:loaded_catalogs()),
-    ?assertEqual([{default, <<"es">>, 1}, {default, <<"fr">>, 2}], Catalogs).
+    ?assertEqual([{default, <<"es">>, 1}, {default, <<"pt_BR">>, 2}], Catalogs).
 
 context_undefined_distinct_from_binary(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"File">>,
         <<"Fichier">>
     ),
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         <<"menu">>,
         <<"File">>,
         <<"Fichier (menu)">>
     ),
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         <<"verb">>,
         <<"File">>,
         <<"Classer">>
@@ -307,7 +307,7 @@ context_undefined_distinct_from_binary(_Config) ->
         {ok, <<"Fichier">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"File">>
         )
@@ -316,7 +316,7 @@ context_undefined_distinct_from_binary(_Config) ->
         {ok, <<"Fichier (menu)">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             <<"menu">>,
             <<"File">>
         )
@@ -325,7 +325,7 @@ context_undefined_distinct_from_binary(_Config) ->
         {ok, <<"Classer">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             <<"verb">>,
             <<"File">>
         )
@@ -334,14 +334,14 @@ context_undefined_distinct_from_binary(_Config) ->
 overwrite_on_reinsert(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
         <<"Salut">>
@@ -350,7 +350,7 @@ overwrite_on_reinsert(_Config) ->
         {ok, <<"Salut">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
@@ -496,15 +496,15 @@ code_change_no_op(_Config) ->
 catalog_survives_worker_kill(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
-            default, <<"fr">>, undefined, <<"Hello">>
+            default, <<"pt_BR">>, undefined, <<"Hello">>
         )
     ),
     Pid =
@@ -526,24 +526,24 @@ catalog_survives_worker_kill(_Config) ->
     ?assertNotEqual(Pid, NewPid),
     %% The catalog must have survived the crash via the heir handoff.
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
-            default, <<"fr">>, undefined, <<"Hello">>
+            default, <<"pt_BR">>, undefined, <<"Hello">>
         )
     ),
     ?assertNotEqual([], erli18n_server:loaded_catalogs()),
     %% The restarted worker must still be a functional writer.
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Bye">>,
-        <<"Au revoir">>
+        <<"Adeus">>
     ),
     ?assertEqual(
-        {ok, <<"Au revoir">>},
+        {ok, <<"Adeus">>},
         erli18n_server:lookup_singular(
-            default, <<"fr">>, undefined, <<"Bye">>
+            default, <<"pt_BR">>, undefined, <<"Bye">>
         )
     ).
 
@@ -566,13 +566,13 @@ catalog_index_maintained_incrementally(_Config) ->
     assert_index_matches(0),
 
     ok = erli18n_server:insert_singular(
-        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+        default, <<"pt_BR">>, undefined, <<"Hello">>, <<"Olá"/utf8>>
     ),
     assert_index_matches(1),
 
     %% Same (D, L) again — idempotent, still one catalog.
     ok = erli18n_server:insert_singular(
-        default, <<"fr">>, undefined, <<"Bye">>, <<"Au revoir">>
+        default, <<"pt_BR">>, undefined, <<"Bye">>, <<"Adeus">>
     ),
     assert_index_matches(1),
 
@@ -599,7 +599,7 @@ catalog_index_maintained_incrementally(_Config) ->
     assert_index_matches(2),
 
     %% Unload the rest.
-    ok = erli18n_server:unload(default, <<"fr">>),
+    ok = erli18n_server:unload(default, <<"pt_BR">>),
     ok = erli18n_server:unload(default, <<"de">>),
     assert_index_matches(0).
 
@@ -610,7 +610,7 @@ catalog_index_maintained_incrementally(_Config) ->
 %% crash even though catalogs are still loaded.
 catalog_index_rebuilt_after_worker_kill(_Config) ->
     ok = erli18n_server:insert_singular(
-        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+        default, <<"pt_BR">>, undefined, <<"Hello">>, <<"Olá"/utf8>>
     ),
     ok = erli18n_server:insert_singular(
         default, <<"es">>, undefined, <<"Hello">>, <<"Hola">>
@@ -637,7 +637,7 @@ catalog_index_rebuilt_after_worker_kill(_Config) ->
     ?assertEqual(2, maps:get(num_catalogs, erli18n_server:memory_info())),
 
     %% Clean up.
-    ok = erli18n_server:unload(default, <<"fr">>),
+    ok = erli18n_server:unload(default, <<"pt_BR">>),
     ok = erli18n_server:unload(default, <<"es">>),
     assert_index_matches(0).
 
@@ -669,13 +669,13 @@ assert_index_matches(Expected) ->
 unload_uses_key_index_not_full_scan(_Config) ->
     %% Target catalog: 2 singulars + 1 plural (2 forms) => 4 data keys.
     ok = erli18n_server:insert_singular(
-        default, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>
+        default, <<"pt_BR">>, undefined, <<"Hello">>, <<"Olá"/utf8>>
     ),
     ok = erli18n_server:insert_singular(
-        default, <<"fr">>, <<"menu">>, <<"File">>, <<"Fichier">>
+        default, <<"pt_BR">>, <<"menu">>, <<"File">>, <<"Fichier">>
     ),
     ok = erli18n_server:insert_plural(
-        default, <<"fr">>, undefined, <<"tree">>, [
+        default, <<"pt_BR">>, undefined, <<"tree">>, [
             {0, <<"arbre">>}, {1, <<"arbres">>}
         ]
     ),
@@ -688,23 +688,23 @@ unload_uses_key_index_not_full_scan(_Config) ->
     %% not merely a {{D, L}} membership marker. This is the per-(D, L) key
     %% index the O(catalog) unload relies on.
     ExpectedKeys = lists:sort([
-        {singular, default, <<"fr">>, undefined, <<"Hello">>},
-        {singular, default, <<"fr">>, <<"menu">>, <<"File">>},
-        {plural, default, <<"fr">>, undefined, <<"tree">>, 0},
-        {plural, default, <<"fr">>, undefined, <<"tree">>, 1}
+        {singular, default, <<"pt_BR">>, undefined, <<"Hello">>},
+        {singular, default, <<"pt_BR">>, <<"menu">>, <<"File">>},
+        {plural, default, <<"pt_BR">>, undefined, <<"tree">>, 0},
+        {plural, default, <<"pt_BR">>, undefined, <<"tree">>, 1}
     ]),
-    ?assertEqual(ExpectedKeys, index_catalog_keys(default, <<"fr">>)),
+    ?assertEqual(ExpectedKeys, index_catalog_keys(default, <<"pt_BR">>)),
 
     %% (2) Unload removes exactly the target's keys and its index row.
-    ok = erli18n_server:unload(default, <<"fr">>),
-    ?assertEqual([], index_catalog_keys(default, <<"fr">>)),
+    ok = erli18n_server:unload(default, <<"pt_BR">>),
+    ?assertEqual([], index_catalog_keys(default, <<"pt_BR">>)),
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_singular(default, <<"fr">>, undefined, <<"Hello">>)
+        erli18n_server:lookup_singular(default, <<"pt_BR">>, undefined, <<"Hello">>)
     ),
     ?assertEqual(
         undefined,
-        plural_row(default, <<"fr">>, undefined, <<"tree">>, 0)
+        plural_row(default, <<"pt_BR">>, undefined, <<"tree">>, 0)
     ),
     %% Neighbour catalog is fully intact.
     ?assertEqual(
@@ -767,7 +767,7 @@ load_pipeline_runs_in_caller_only_commit_in_server(_Config) ->
             erli18n_server:ensure_loaded(default, <<"caller_phase">>, Path, #{})
         ),
         ?assertEqual(
-            {ok, <<"Bonjour">>},
+            {ok, <<"Olá"/utf8>>},
             erli18n_server:lookup_singular(
                 default, <<"caller_phase">>, undefined, <<"Hello">>
             )
@@ -842,7 +842,7 @@ read_api_guards_reject_bad_args(_Config) ->
     ?assertError(
         function_clause,
         erli18n_server:lookup_singular(
-            BadDomain, <<"fr">>, undefined, <<"Hello">>
+            BadDomain, <<"pt_BR">>, undefined, <<"Hello">>
         )
     ),
     %% Non-binary locale.
@@ -853,19 +853,19 @@ read_api_guards_reject_bad_args(_Config) ->
     %% Context that is neither `undefined` nor a binary.
     ?assertError(
         function_clause,
-        erli18n_server:lookup_singular(default, <<"fr">>, BadContext, <<"Hello">>)
+        erli18n_server:lookup_singular(default, <<"pt_BR">>, BadContext, <<"Hello">>)
     ),
     %% Non-binary msgid.
     ?assertError(
         function_clause,
-        erli18n_server:lookup_singular(default, <<"fr">>, undefined, BadMsgid)
+        erli18n_server:lookup_singular(default, <<"pt_BR">>, undefined, BadMsgid)
     ),
     %% A well-formed call on the same shape still works (guards do not
     %% reject valid input).
     ?assertEqual(
         undefined,
         erli18n_server:lookup_singular(
-            default, <<"fr">>, undefined, <<"Missing">>
+            default, <<"pt_BR">>, undefined, <<"Missing">>
         )
     ).
 
@@ -884,7 +884,7 @@ plural_row(Domain, Locale, Context, Msgid, Index) ->
         [] -> undefined
     end.
 
-%% Write a minimal valid .po (one singular "Hello" -> "Bonjour") to a unique
+%% Write a minimal valid .po (one singular "Hello" -> "Olá") to a unique
 %% temp path and return it. Used by the finding-#6 cases that need a real
 %% on-disk catalog the caller-side phase can read+parse.
 write_minimal_po() ->
@@ -897,7 +897,7 @@ write_minimal_po() ->
             "msgstr \"\"\n"
             "\"Content-Type: text/plain; charset=UTF-8\\n\"\n\n"
             "msgid \"Hello\"\n"
-            "msgstr \"Bonjour\"\n"
+            "msgstr \"Olá\"\n"/utf8
         >>,
     ok = file:write_file(Path, Po),
     Path.

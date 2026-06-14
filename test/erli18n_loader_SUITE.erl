@@ -278,7 +278,7 @@ ensure_loaded_minimal_singular(Config) ->
     Result = erli18n_server:ensure_loaded(default, <<"en">>, Path),
     ?assertEqual({ok, 1}, Result),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
             <<"en">>,
@@ -292,37 +292,37 @@ ensure_loaded_minimal_singular(Config) ->
     ?assertEqual(false, maps:get(fuzzy_included, HeaderState)),
     ?assertEqual(none, maps:get(divergence, HeaderState)).
 
-%% Plural entry: French rule (n > 1). N=0,1 -> form 0 (singular); N>=2 ->
+%% Plural entry: pt_BR rule (n > 1). N=0,1 -> form 0 (singular); N>=2 ->
 %% form 1 (plural). Validates the lookup_plural_form integration.
 ensure_loaded_plural_with_form_lookup(Config) ->
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
-    %% N=0: French treats 0 as singular -> form 0 -> "arbre".
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    %% N=0: pt_BR treats 0 as singular -> form 0 -> "árvore".
     ?assertEqual(
-        {ok, <<"arbre">>},
+        {ok, <<"árvore"/utf8>>},
         erli18n_server:lookup_plural_form(
-            default, <<"fr">>, undefined, <<"tree">>, 0
+            default, <<"pt_BR">>, undefined, <<"tree">>, 0
         )
     ),
-    %% N=1: singular -> form 0 -> "arbre".
+    %% N=1: singular -> form 0 -> "árvore".
     ?assertEqual(
-        {ok, <<"arbre">>},
+        {ok, <<"árvore"/utf8>>},
         erli18n_server:lookup_plural_form(
-            default, <<"fr">>, undefined, <<"tree">>, 1
+            default, <<"pt_BR">>, undefined, <<"tree">>, 1
         )
     ),
-    %% N=2: plural -> form 1 -> "arbres".
+    %% N=2: plural -> form 1 -> "árvores".
     ?assertEqual(
-        {ok, <<"arbres">>},
+        {ok, <<"árvores"/utf8>>},
         erli18n_server:lookup_plural_form(
-            default, <<"fr">>, undefined, <<"tree">>, 2
+            default, <<"pt_BR">>, undefined, <<"tree">>, 2
         )
     ),
     %% N=100: still plural.
     ?assertEqual(
-        {ok, <<"arbres">>},
+        {ok, <<"árvores"/utf8>>},
         erli18n_server:lookup_plural_form(
-            default, <<"fr">>, undefined, <<"tree">>, 100
+            default, <<"pt_BR">>, undefined, <<"tree">>, 100
         )
     ).
 
@@ -330,17 +330,17 @@ ensure_loaded_plural_with_form_lookup(Config) ->
 %% Verifies via `loaded_at` timestamp: it does NOT change between calls.
 ensure_loaded_idempotent(Config) ->
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
-    {ok, HeaderState1} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    {ok, HeaderState1} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     LoadedAt1 = maps:get(loaded_at, HeaderState1),
     %% Wait > 1ms so a re-read would produce a different timestamp.
     timer:sleep(5),
     %% Second call: must be `{ok, already}` and must NOT mutate state.
     ?assertEqual(
         {ok, already},
-        erli18n_server:ensure_loaded(default, <<"fr">>, Path)
+        erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path)
     ),
-    {ok, HeaderState2} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, HeaderState2} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     LoadedAt2 = maps:get(loaded_at, HeaderState2),
     ?assertEqual(
         LoadedAt1,
@@ -354,12 +354,12 @@ ensure_loaded_file_not_found(_Config) ->
             integer_to_list(erlang:unique_integer([positive])) ++ ".po",
     ?assertMatch(
         {error, {file_error, enoent}},
-        erli18n_server:ensure_loaded(default, <<"fr">>, Path)
+        erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path)
     ),
     %% Failure leaves ETS untouched.
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_header(default, <<"fr">>)
+        erli18n_server:lookup_header(default, <<"pt_BR">>)
     ).
 
 %% Findings #12 / #18: the load-orchestration error boundary must be TOTAL
@@ -455,13 +455,13 @@ ensure_loaded_no_plural_header_uses_fallback(Config) ->
 %% PSD-001: fuzzy entries dropped by default.
 ensure_loaded_fuzzy_dropped_by_default(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
-    {ok, NumLoaded} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    {ok, NumLoaded} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(1, NumLoaded),
     ?assertEqual(
         undefined,
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"uncertain">>
         )
@@ -470,7 +470,7 @@ ensure_loaded_fuzzy_dropped_by_default(Config) ->
         {ok, <<"vivant">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"alive">>
         )
@@ -482,7 +482,7 @@ ensure_loaded_fuzzy_included_with_opt(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
     {ok, 2} = erli18n_server:ensure_loaded(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         Path,
         #{include_fuzzy => true}
     ),
@@ -490,24 +490,24 @@ ensure_loaded_fuzzy_included_with_opt(Config) ->
         {ok, <<"incerto">>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"uncertain">>
         )
     ),
-    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     ?assertEqual(true, maps:get(fuzzy_included, HeaderState)).
 
 %% PSD-004: header rule is source-of-truth, but CLDR divergence is logged
-%% (and persisted in header_state.divergence). Uses divergent_fr.po with
-%% French header `n != 1` while CLDR canonical for `fr` is `n > 1`.
+%% (and persisted in header_state.divergence). Uses divergent_pt_br.po with
+%% pt_BR header `n != 1` while CLDR canonical for `pt_BR` is `n > 1`.
 ensure_loaded_emits_cldr_divergence_warning(Config) ->
-    Path = fixture(Config, "divergent_fr.po"),
+    Path = fixture(Config, "divergent_pt_br.po"),
     {Result, Logs} = with_log_capture(
         fun() ->
             erli18n_server:ensure_loaded(
                 default,
-                <<"fr">>,
+                <<"pt_BR">>,
                 Path
             )
         end
@@ -515,7 +515,7 @@ ensure_loaded_emits_cldr_divergence_warning(Config) ->
     ?assertMatch({ok, 1}, Result),
     %% header_state captures the divergence payload for downstream
     %% telemetry consumption (Part 7).
-    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     ?assertMatch(
         {plural_divergence, _, _},
         maps:get(divergence, HeaderState)
@@ -538,59 +538,59 @@ ensure_loaded_emits_cldr_divergence_warning(Config) ->
 %% AMB-001: reload overwrites the existing catalog with the new .po
 %% contents. The old catalog is gone.
 reload_replaces_catalog(Config) ->
-    % "Hello" -> "Bonjour"
+    % "Hello" -> "Olá"
     PathA = fixture(Config, "minimal_en.po"),
-    % "tree"  -> "arbre"/"arbres"
-    PathB = fixture(Config, "plural_fr.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, PathA),
+    % "tree"  -> "árvore"/"árvores"
+    PathB = fixture(Config, "plural_pt_br.po"),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, PathA),
     ?assertMatch(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
     ),
-    {ok, NumLoaded} = erli18n_server:reload(default, <<"fr">>, PathB),
+    {ok, NumLoaded} = erli18n_server:reload(default, <<"pt_BR">>, PathB),
     ?assertEqual(1, NumLoaded),
     %% Old singular gone.
     ?assertEqual(
         undefined,
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
     ),
     %% New plural present. Finding #16: read through the form-aware public
-    %% entry point. `plural_fr.po` pins `plural=n > 1`, so N=2 selects form 1
-    %% ("arbres") — the same row the raw index 1 used to address, but now via
+    %% entry point. `plural_pt_br.po` pins `plural=n > 1`, so N=2 selects form 1
+    %% ("árvores") — the same row the raw index 1 used to address, but now via
     %% the evaluated Plural-Forms rule.
     ?assertEqual(
-        {ok, <<"arbres">>},
+        {ok, <<"árvores"/utf8>>},
         erli18n_server:lookup_plural_form(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"tree">>,
             2
         )
     ),
     %% Header now reflects the new file path.
-    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, HeaderState} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     ?assertEqual(PathB, maps:get(po_path, HeaderState)).
 
 %% reload bypasses the idempotency check: even when the same file is
 %% reloaded, the timestamp must advance (re-execution).
 reload_idempotency_bypassed(Config) ->
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
-    {ok, H1} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    {ok, H1} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     timer:sleep(5),
-    {ok, 1} = erli18n_server:reload(default, <<"fr">>, Path),
-    {ok, H2} = erli18n_server:lookup_header(default, <<"fr">>),
+    {ok, 1} = erli18n_server:reload(default, <<"pt_BR">>, Path),
+    {ok, H2} = erli18n_server:lookup_header(default, <<"pt_BR">>),
     ?assert(
         maps:get(loaded_at, H2) >= maps:get(loaded_at, H1),
         "reload must update loaded_at"
@@ -626,18 +626,18 @@ reload_failure_preserves_catalog(Config) ->
     lists:foreach(
         fun({Tag, BadPath}) ->
             %% Fresh good catalog before each reload attempt.
-            {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, GoodPath),
+            {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, GoodPath),
             ?assertEqual(
-                {ok, <<"Bonjour">>},
+                {ok, <<"Olá"/utf8>>},
                 erli18n_server:lookup_singular(
-                    default, <<"fr">>, undefined, <<"Hello">>
+                    default, <<"pt_BR">>, undefined, <<"Hello">>
                 )
             ),
             {ok, HeaderBefore} =
-                erli18n_server:lookup_header(default, <<"fr">>),
+                erli18n_server:lookup_header(default, <<"pt_BR">>),
             %% The reload must fail with a structured error.
             ReloadResult =
-                erli18n_server:reload(default, <<"fr">>, BadPath),
+                erli18n_server:reload(default, <<"pt_BR">>, BadPath),
             ?assertMatch(
                 {error, _},
                 ReloadResult,
@@ -648,9 +648,9 @@ reload_failure_preserves_catalog(Config) ->
             %% The previously-good catalog must STILL be present and
             %% serving the original translation — not destroyed.
             ?assertEqual(
-                {ok, <<"Bonjour">>},
+                {ok, <<"Olá"/utf8>>},
                 erli18n_server:lookup_singular(
-                    default, <<"fr">>, undefined, <<"Hello">>
+                    default, <<"pt_BR">>, undefined, <<"Hello">>
                 ),
                 lists:flatten(
                     io_lib:format(
@@ -662,14 +662,14 @@ reload_failure_preserves_catalog(Config) ->
             %% loaded_at — the failed reload never mutated ETS).
             ?assertEqual(
                 {ok, HeaderBefore},
-                erli18n_server:lookup_header(default, <<"fr">>),
+                erli18n_server:lookup_header(default, <<"pt_BR">>),
                 lists:flatten(
                     io_lib:format(
                         "~p reload must preserve header_state", [Tag]
                     )
                 )
             ),
-            ok = erli18n_server:unload(default, <<"fr">>)
+            ok = erli18n_server:unload(default, <<"pt_BR">>)
         end,
         AllBad
     ).
@@ -686,11 +686,11 @@ reload_no_empty_window(Config) ->
     %% Load the catalog whose <<"Hello">> key is present in both the
     %% current and the reloaded content (we reload the SAME file, so the
     %% key is retained across the swap).
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
-            default, <<"fr">>, undefined, <<"Hello">>
+            default, <<"pt_BR">>, undefined, <<"Hello">>
         )
     ),
     Parent = self(),
@@ -707,7 +707,7 @@ reload_no_empty_window(Config) ->
     %% window the pre-fix code would have exposed.
     lists:foreach(
         fun(_) ->
-            {ok, 1} = erli18n_server:reload(default, <<"fr">>, Path)
+            {ok, 1} = erli18n_server:reload(default, <<"pt_BR">>, Path)
         end,
         lists:seq(1, 30)
     ),
@@ -723,7 +723,7 @@ reload_no_empty_window(Config) ->
         TotalMisses,
         "a retained key must never miss across a successful reload"
     ),
-    ok = erli18n_server:unload(default, <<"fr">>).
+    ok = erli18n_server:unload(default, <<"pt_BR">>).
 
 %% Tight loop: look up the retained key N times, counting how often the
 %% lookup returned a miss (`undefined`) instead of the translation.
@@ -733,28 +733,28 @@ hammer_lookup(N, Misses) ->
     Misses1 =
         case
             erli18n_server:lookup_singular(
-                default, <<"fr">>, undefined, <<"Hello">>
+                default, <<"pt_BR">>, undefined, <<"Hello">>
             )
         of
-            {ok, <<"Bonjour">>} -> Misses;
+            {ok, <<"Olá"/utf8>>} -> Misses;
             _Other -> Misses + 1
         end,
     hammer_lookup(N - 1, Misses1).
 
 unload_removes_header_too(Config) ->
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, Path),
-    ?assertMatch({ok, _}, erli18n_server:lookup_header(default, <<"fr">>)),
-    ok = erli18n_server:unload(default, <<"fr">>),
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    ?assertMatch({ok, _}, erli18n_server:lookup_header(default, <<"pt_BR">>)),
+    ok = erli18n_server:unload(default, <<"pt_BR">>),
     ?assertEqual(
         undefined,
-        erli18n_server:lookup_header(default, <<"fr">>)
+        erli18n_server:lookup_header(default, <<"pt_BR">>)
     ),
     ?assertEqual(
         undefined,
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
@@ -768,11 +768,11 @@ which_keys_returns_unique_msgids(_Config) ->
         {singular, undefined, <<"b">>, <<"B">>},
         {singular, undefined, <<"c">>, <<"C">>},
         {plural, undefined, <<"tree">>, <<"trees">>, [
-            {0, <<"arbre">>}, {1, <<"arbres">>}
+            {0, <<"árvore"/utf8>>}, {1, <<"árvores"/utf8>>}
         ]}
     ],
-    ok = erli18n_server:insert_catalog(default, <<"fr">>, Entries),
-    Keys = erli18n_server:which_keys(default, <<"fr">>),
+    ok = erli18n_server:insert_catalog(default, <<"pt_BR">>, Entries),
+    Keys = erli18n_server:which_keys(default, <<"pt_BR">>),
     ?assertEqual(4, length(Keys)),
     %% Each type appears as expected.
     Singulars = [K || {singular, _, _} = K <- Keys],
@@ -831,8 +831,8 @@ lookup_plural_form_with_fallback_locale(Config) ->
 atomicidade_load_fails(Config) ->
     GoodPath = fixture(Config, "minimal_en.po"),
     BadPath = fixture(Config, "shift_jis.po"),
-    %% Pre-load: 1 catalog (default, fr).
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"fr">>, GoodPath),
+    %% Pre-load: 1 catalog (default, pt_BR).
+    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, GoodPath),
     BeforeMem = erli18n_server:memory_info(),
     %% Attempt a bad load on a different (D, L) so we can confirm the
     %% partial-failure does not leak into ETS at all.
@@ -843,10 +843,10 @@ atomicidade_load_fails(Config) ->
     AfterMem = erli18n_server:memory_info(),
     %% Pre-existing catalog still intact.
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
-            <<"fr">>,
+            <<"pt_BR">>,
             undefined,
             <<"Hello">>
         )
@@ -959,7 +959,7 @@ ensure_loaded_accepts_binary_path(Config) ->
         )
     ),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default,
             <<"en_binpath">>,
@@ -983,14 +983,14 @@ ensure_loaded_fuzzy_skip_with_lookup_telemetry(Config) ->
         %% by re-parsing with include_fuzzy => true.
         ?assertEqual(
             {ok, 1},
-            erli18n_server:ensure_loaded(default, <<"fr">>, Path)
+            erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path)
         ),
         %% Non-fuzzy entry is reachable.
         ?assertEqual(
             {ok, <<"vivant">>},
             erli18n_server:lookup_singular(
                 default,
-                <<"fr">>,
+                <<"pt_BR">>,
                 undefined,
                 <<"alive">>
             )
@@ -1012,7 +1012,7 @@ ensure_loaded_no_fuzzy_with_lookup_telemetry(Config) ->
             erli18n_server:ensure_loaded(default, <<"en">>, Path)
         ),
         ?assertEqual(
-            {ok, <<"Bonjour">>},
+            {ok, <<"Olá"/utf8>>},
             erli18n_server:lookup_singular(
                 default,
                 <<"en">>,
@@ -1057,13 +1057,13 @@ lookup_plural_form_unloaded_catalog(_Config) ->
 %% the catch-all `collect_key(_, _, _Obj, Acc) -> Acc` clause that
 %% drops rows for the non-matching catalog.
 which_keys_filters_other_catalogs(_Config) ->
-    %% Catalog A: (default, fr) — 1 singular.
+    %% Catalog A: (default, pt_BR) — 1 singular.
     ok = erli18n_server:insert_singular(
         default,
-        <<"fr">>,
+        <<"pt_BR">>,
         undefined,
         <<"Hello">>,
-        <<"Bonjour">>
+        <<"Olá"/utf8>>
     ),
     %% Catalog B (different locale): (default, es) — 1 singular + 1 plural.
     ok = erli18n_server:insert_singular(
@@ -1080,9 +1080,9 @@ which_keys_filters_other_catalogs(_Config) ->
         <<"tree">>,
         [{0, <<"arbol">>}, {1, <<"arboles">>}]
     ),
-    %% which_keys for (default, fr) returns only the fr key — the es
+    %% which_keys for (default, pt_BR) returns only the pt_BR key — the es
     %% rows fall into the catch-all and are dropped.
-    KeysFr = erli18n_server:which_keys(default, <<"fr">>),
+    KeysFr = erli18n_server:which_keys(default, <<"pt_BR">>),
     ?assertEqual([{singular, undefined, <<"Hello">>}], KeysFr),
     %% Sanity: querying the other catalog returns its rows.
     KeysEs = lists:sort(erli18n_server:which_keys(default, <<"es">>)),
@@ -1160,7 +1160,7 @@ ensure_loaded_bounds_default_to_legacy(Config) ->
         )
     ),
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default, <<"legacy">>, undefined, <<"Hello">>
         )
@@ -1265,7 +1265,7 @@ big_po(Config, N) ->
 %% (undefined function).
 ensure_loaded_many_equals_n_singles(Config) ->
     Min = fixture(Config, "minimal_en.po"),
-    Plu = fixture(Config, "plural_fr.po"),
+    Plu = fixture(Config, "plural_pt_br.po"),
     Specs = [
         {default, <<"bulk_a">>, Min, #{}},
         {default, <<"bulk_b">>, Plu, #{}}
@@ -1280,15 +1280,15 @@ ensure_loaded_many_equals_n_singles(Config) ->
     ),
     %% Both catalogs are queryable.
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default, <<"bulk_a">>, undefined, <<"Hello">>
         )
     ),
-    %% Finding #16: form-aware read. `plural_fr.po` pins `plural=n > 1`, so
-    %% N=2 selects form 1 ("arbres").
+    %% Finding #16: form-aware read. `plural_pt_br.po` pins `plural=n > 1`, so
+    %% N=2 selects form 1 ("árvores").
     ?assertEqual(
-        {ok, <<"arbres">>},
+        {ok, <<"árvores"/utf8>>},
         erli18n_server:lookup_plural_form(
             default, <<"bulk_b">>, undefined, <<"tree">>, 2
         )
@@ -1326,7 +1326,7 @@ ensure_loaded_many_reports_errors_per_spec(Config) ->
     ),
     %% The good catalog landed despite the sibling error.
     ?assertEqual(
-        {ok, <<"Bonjour">>},
+        {ok, <<"Olá"/utf8>>},
         erli18n_server:lookup_singular(
             default, <<"bulk_ok">>, undefined, <<"Hello">>
         )

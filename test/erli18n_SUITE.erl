@@ -169,45 +169,45 @@ fixture(Config, Name) ->
 %% Singular — gettext family
 %% =========================
 
-%% R6 (locale + domain resolution): setlocale puts <<"fr">> in the PD;
+%% R6 (locale + domain resolution): setlocale puts <<"pt_BR">> in the PD;
 %% gettext/1 picks the default domain and uses the resolved locale.
 gettext_1_uses_defaults(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
-    ?assertEqual(<<"Bonjour">>, erli18n:gettext(<<"Hello">>)).
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
+    ?assertEqual(<<"Olá"/utf8>>, erli18n:gettext(<<"Hello">>)).
 
 %% gettext/2 takes the domain explicitly; locale still comes from PD.
 gettext_2_explicit_domain(Config) ->
-    Path = fixture(Config, "fr_my_domain.po"),
-    {ok, _} = erli18n:ensure_loaded(my_domain, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
-    ?assertEqual(<<"Salut">>, erli18n:gettext(my_domain, <<"Hello">>)).
+    Path = fixture(Config, "pt_br_my_domain.po"),
+    {ok, _} = erli18n:ensure_loaded(my_domain, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
+    ?assertEqual(<<"Oi">>, erli18n:gettext(my_domain, <<"Hello">>)).
 
 %% gettext/3 must ignore the per-process locale and use the one passed
 %% explicitly — useful for one-off server-side rendering in a different
 %% locale than the caller's session.
 gettext_3_explicit_locale(Config) ->
-    FrPath = fixture(Config, "fr_default.po"),
+    PtBrPath = fixture(Config, "pt_br_default.po"),
     EsPath = fixture(Config, "es_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, FrPath),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, PtBrPath),
     {ok, _} = erli18n:ensure_loaded(default, <<"es">>, EsPath),
-    ok = erli18n:setlocale(<<"fr">>),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     %% 3-arity overrides the PD and uses <<"es">>.
     ?assertEqual(
         <<"Hola">>,
         erli18n:gettext(default, <<"Hello">>, <<"es">>)
     ),
     %% The PD locale is untouched.
-    ?assertEqual(<<"fr">>, erli18n:which_locale()).
+    ?assertEqual(<<"pt_BR">>, erli18n:which_locale()).
 
 %% R1 (BR-MIGRAR-001): a miss returns the original msgid.
 gettext_fallback_to_msgid_when_missing(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         <<"NotInCatalog">>,
-        erli18n:gettext(default, <<"NotInCatalog">>, <<"fr">>)
+        erli18n:gettext(default, <<"NotInCatalog">>, <<"pt_BR">>)
     ).
 
 %% PSD-003: msgstr "" is treated as untranslated. The parser drops the
@@ -215,58 +215,58 @@ gettext_fallback_to_msgid_when_missing(Config) ->
 %% facade's empty-binary guard is defence-in-depth (an empty translation
 %% should never reach the UI even if a row leaked through).
 gettext_fallback_when_translation_empty(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         <<"Untranslated">>,
-        erli18n:gettext(default, <<"Untranslated">>, <<"fr">>)
+        erli18n:gettext(default, <<"Untranslated">>, <<"pt_BR">>)
     ).
 
 %% dgettext/2 and gettext/2 must be exact aliases (GNU naming parity).
 dgettext_alias(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
         erli18n:gettext(default, <<"Hello">>),
         erli18n:dgettext(default, <<"Hello">>)
     ),
     ?assertEqual(
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>),
-        erli18n:dgettext(default, <<"Hello">>, <<"fr">>)
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>),
+        erli18n:dgettext(default, <<"Hello">>, <<"pt_BR">>)
     ).
 
 dcgettext_alias(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>),
-        erli18n:dcgettext(default, <<"Hello">>, <<"fr">>)
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>),
+        erli18n:dcgettext(default, <<"Hello">>, <<"pt_BR">>)
     ).
 
 %% =========================
 %% Plural — ngettext family
 %% =========================
 
-%% French rule: (n > 1) — N=0,1 -> form 0 (singular); N>=2 -> form 1.
+%% pt_BR rule: (n > 1) — N=0,1 -> form 0 (singular); N>=2 -> form 1.
 ngettext_uses_compiled_plural_for_locale(Config) ->
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
-        <<"arbre">>,
+        <<"árvore"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, 0)
     ),
     ?assertEqual(
-        <<"arbre">>,
+        <<"árvore"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, 1)
     ),
     ?assertEqual(
-        <<"arbres">>,
+        <<"árvores"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, 2)
     ),
     ?assertEqual(
-        <<"arbres">>,
+        <<"árvores"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, 100)
     ).
 
@@ -292,12 +292,12 @@ ngettext_fallback_when_no_translation(_Config) ->
 %% the singular translation; N=2 misses form 1 and falls back to
 %% msgid_plural.
 ngettext_fallback_when_form_empty(Config) ->
-    Path = fixture(Config, "plural_fr_partial.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "plural_pt_br_partial.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     %% Form 0 present → translated.
     ?assertEqual(
-        <<"feuille">>,
+        <<"folha">>,
         erli18n:ngettext(<<"leaf">>, <<"leaves">>, 1)
     ),
     %% Form 1 dropped → fallback to msgid_plural.
@@ -313,100 +313,100 @@ ngettext_fallback_when_form_empty(Config) ->
 %% N can be a bignum (e.g. 2^31, 2^63, more). The plural evaluator is
 %% bignum-clean; the facade must pass through untouched.
 ngettext_bignum_huge_n(Config) ->
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     %% 2^31, breaks int32
     BigN = 2147483648,
     ?assertEqual(
-        <<"arbres">>,
+        <<"árvores"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, BigN)
     ),
     %% 2^64, well into bignum land
     HugeN = 1 bsl 64,
     ?assertEqual(
-        <<"arbres">>,
+        <<"árvores"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, HugeN)
     ),
-    %% Negative N: French rule (n > 1) evaluates false, so form 0
+    %% Negative N: pt_BR rule (n > 1) evaluates false, so form 0
     %% (singular). The point is the evaluator does NOT crash.
     ?assertEqual(
-        <<"arbre">>,
+        <<"árvore"/utf8>>,
         erli18n:ngettext(<<"tree">>, <<"trees">>, -1)
     ).
 
 %% 5-arity ngettext: explicit locale overrides the PD locale.
 ngettext_with_explicit_locale(Config) ->
-    FrPath = fixture(Config, "plural_fr.po"),
+    PtBrPath = fixture(Config, "plural_pt_br.po"),
     EsPath = fixture(Config, "es_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, FrPath),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, PtBrPath),
     {ok, _} = erli18n:ensure_loaded(default, <<"es">>, EsPath),
     ok = erli18n:setlocale(<<"es">>),
-    %% Explicit fr overrides es PD.
+    %% Explicit pt_BR overrides es PD.
     ?assertEqual(
-        <<"arbre">>,
+        <<"árvore"/utf8>>,
         erli18n:ngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             1,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     ?assertEqual(
-        <<"arbres">>,
+        <<"árvores"/utf8>>,
         erli18n:ngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             5,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 dngettext_alias(Config) ->
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:ngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     %% dngettext/4 uses resolved locale.
-    ok = erli18n:setlocale(<<"fr">>),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
         erli18n:ngettext(default, <<"tree">>, <<"trees">>, 2),
         erli18n:dngettext(default, <<"tree">>, <<"trees">>, 2)
     ).
 
 dcngettext_alias(Config) ->
-    Path = fixture(Config, "plural_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "plural_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:ngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dcngettext(
             default,
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
@@ -431,84 +431,84 @@ ngettext_japanese_degenerate_plural(Config) ->
 
 %% A msgid in a context returns its context-specific translation.
 pgettext_singular_with_context(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
-        <<"Menu Fichier">>,
+        <<"Menu Arquivo">>,
         erli18n:pgettext(
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 %% A miss in a context does NOT fall back to the no-context entry — it
 %% falls back to the source msgid (R3).
 pgettext_fallback_to_msgid_when_context_missing(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     %% No entry for context "toolbar"; must NOT leak the no-context
-    %% translation "Fichier". Must fall back to msgid "File".
+    %% translation "Arquivo". Must fall back to msgid "File".
     ?assertEqual(
         <<"File">>,
         erli18n:pgettext(
             default,
             <<"toolbar">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 %% Confirm the same msgid with and without context yields different
 %% translations.
 pgettext_distinct_from_undefined_context(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
-        <<"Fichier">>,
+        <<"Arquivo">>,
         erli18n:pgettext(
             default,
             undefined,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     ?assertEqual(
-        <<"Menu Fichier">>,
+        <<"Menu Arquivo">>,
         erli18n:pgettext(
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 %% Plural-in-context resolves through the per-locale rule.
 npgettext_plural_with_context(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     %% (n > 1): N=1 -> form 0; N=2 -> form 1.
     ?assertEqual(
-        <<"Menu arbre">>,
+        <<"Menu árvore"/utf8>>,
         erli18n:npgettext(
             default,
             <<"menu">>,
             <<"tree">>,
             <<"trees">>,
             1,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     ?assertEqual(
-        <<"Menu arbres">>,
+        <<"Menu árvores"/utf8>>,
         erli18n:npgettext(
             default,
             <<"menu">>,
             <<"tree">>,
             <<"trees">>,
             5,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     %% Unknown context falls back to msgid/msgid_plural per R4.
@@ -520,7 +520,7 @@ npgettext_plural_with_context(Config) ->
             <<"tree">>,
             <<"trees">>,
             1,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ),
     ?assertEqual(
@@ -531,13 +531,13 @@ npgettext_plural_with_context(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 dpgettext_alias(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:pgettext(default, <<"menu">>, <<"File">>),
         erli18n:dpgettext(default, <<"menu">>, <<"File">>)
@@ -547,19 +547,19 @@ dpgettext_alias(Config) ->
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dpgettext(
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 dnpgettext_alias(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:npgettext(
             default,
@@ -567,7 +567,7 @@ dnpgettext_alias(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dnpgettext(
             default,
@@ -575,31 +575,31 @@ dnpgettext_alias(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 dcpgettext_alias(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:pgettext(
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dcpgettext(
             default,
             <<"menu">>,
             <<"File">>,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
 dcnpgettext_alias(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
         erli18n:npgettext(
             default,
@@ -607,7 +607,7 @@ dcnpgettext_alias(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:dcnpgettext(
             default,
@@ -615,7 +615,7 @@ dcnpgettext_alias(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         )
     ).
 
@@ -625,29 +625,29 @@ dcnpgettext_alias(Config) ->
 %% Behavioural assertion: the returned translation matches the one the
 %% caller would get from the explicit 4-arity call.
 pgettext_2_uses_defaults(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
-        <<"Menu Fichier">>,
+        <<"Menu Arquivo">>,
         erli18n:pgettext(<<"menu">>, <<"File">>)
     ),
     %% Parity with the explicit 4-arity call.
     ?assertEqual(
-        erli18n:pgettext(default, <<"menu">>, <<"File">>, <<"fr">>),
+        erli18n:pgettext(default, <<"menu">>, <<"File">>, <<"pt_BR">>),
         erli18n:pgettext(<<"menu">>, <<"File">>)
     ).
 
 %% npgettext/4 arity shortcut: domain from `textdomain/0`, locale from
 %% `which_locale/0`. Exercises the contextual+plural path with N>1, which
-%% selects plural form 1 under the French rule (n > 1).
+%% selects plural form 1 under the pt_BR rule (n > 1).
 npgettext_4_uses_defaults(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     %% N=1 -> form 0 (singular).
     ?assertEqual(
-        <<"Menu arbre">>,
+        <<"Menu árvore"/utf8>>,
         erli18n:npgettext(
             <<"menu">>,
             <<"tree">>,
@@ -657,7 +657,7 @@ npgettext_4_uses_defaults(Config) ->
     ),
     %% N=2 -> form 1 (plural).
     ?assertEqual(
-        <<"Menu arbres">>,
+        <<"Menu árvores"/utf8>>,
         erli18n:npgettext(
             <<"menu">>,
             <<"tree">>,
@@ -673,7 +673,7 @@ npgettext_4_uses_defaults(Config) ->
             <<"tree">>,
             <<"trees">>,
             2,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:npgettext(
             <<"menu">>,
@@ -688,11 +688,11 @@ npgettext_4_uses_defaults(Config) ->
 %% `my_domain` so the lookup hits and the assertion can compare against a
 %% known translation, while setlocale picks the right catalog.
 npgettext_5_uses_defaults_for_locale(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(my_domain, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(my_domain, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
-        <<"Menu arbre">>,
+        <<"Menu árvore"/utf8>>,
         erli18n:npgettext(
             my_domain,
             <<"menu">>,
@@ -702,7 +702,7 @@ npgettext_5_uses_defaults_for_locale(Config) ->
         )
     ),
     ?assertEqual(
-        <<"Menu arbres">>,
+        <<"Menu árvores"/utf8>>,
         erli18n:npgettext(
             my_domain,
             <<"menu">>,
@@ -712,7 +712,7 @@ npgettext_5_uses_defaults_for_locale(Config) ->
         )
     ),
     %% Parity with the explicit 6-arity call: same Domain, Context,
-    %% Msgid, Plural, N — the 5-arity must pick up <<"fr">> from PD.
+    %% Msgid, Plural, N — the 5-arity must pick up <<"pt_BR">> from PD.
     ?assertEqual(
         erli18n:npgettext(
             my_domain,
@@ -720,7 +720,7 @@ npgettext_5_uses_defaults_for_locale(Config) ->
             <<"tree">>,
             <<"trees">>,
             5,
-            <<"fr">>
+            <<"pt_BR">>
         ),
         erli18n:npgettext(
             my_domain,
@@ -735,9 +735,9 @@ npgettext_5_uses_defaults_for_locale(Config) ->
 %% Locale comes from the PD via setlocale). Must return the exact same
 %% translation as the underlying npgettext/5 call.
 dnpgettext_5_alias(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(my_domain, <<"fr">>, Path),
-    ok = erli18n:setlocale(<<"fr">>),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(my_domain, <<"pt_BR">>, Path),
+    ok = erli18n:setlocale(<<"pt_BR">>),
     ?assertEqual(
         erli18n:npgettext(
             my_domain,
@@ -912,8 +912,8 @@ textdomain_getter_setter(_Config) ->
 %% Critical BEAM property: process dictionary is per-process. Setting
 %% locale in the parent must NOT bleed into a spawned child.
 process_dict_isolation(_Config) ->
-    ok = erli18n:setlocale(<<"fr">>),
-    ?assertEqual(<<"fr">>, erli18n:which_locale()),
+    ok = erli18n:setlocale(<<"pt_BR">>),
+    ?assertEqual(<<"pt_BR">>, erli18n:which_locale()),
     Parent = self(),
     Pid = spawn_link(fun() ->
         Parent ! {self(), erli18n:which_locale()}
@@ -925,64 +925,64 @@ process_dict_isolation(_Config) ->
         ct:fail(timeout)
     end,
     %% Parent dict still intact.
-    ?assertEqual(<<"fr">>, erli18n:which_locale()).
+    ?assertEqual(<<"pt_BR">>, erli18n:which_locale()).
 
 %% =========================
 %% Passthrough load API
 %% =========================
 
 ensure_loaded_via_facade(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    Result = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    Result = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertMatch({ok, N} when is_integer(N), Result),
     %% Idempotent second call.
     ?assertEqual(
         {ok, already},
-        erli18n:ensure_loaded(default, <<"fr">>, Path)
+        erli18n:ensure_loaded(default, <<"pt_BR">>, Path)
     ),
     %% With opts (include_fuzzy is irrelevant for this fixture; we
     %% only test that the 4-arity passes through).
     ?assertEqual(
         {ok, already},
-        erli18n:ensure_loaded(default, <<"fr">>, Path, #{})
+        erli18n:ensure_loaded(default, <<"pt_BR">>, Path, #{})
     ).
 
 reload_via_facade(Config) ->
-    FrPath = fixture(Config, "fr_default.po"),
+    PtBrPath = fixture(Config, "pt_br_default.po"),
     EsPath = fixture(Config, "es_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, FrPath),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, PtBrPath),
     %% Reload under the same (D, L) with a different file; the catalog
     %% is replaced (AMB-001).
-    {ok, _} = erli18n:reload(default, <<"fr">>, EsPath),
-    %% "Hello" -> "Hola" now (es content under fr key).
+    {ok, _} = erli18n:reload(default, <<"pt_BR">>, EsPath),
+    %% "Hello" -> "Hola" now (es content under pt_BR key).
     ?assertEqual(
         <<"Hola">>,
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>)
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>)
     ),
     %% reload/4 also passes through.
-    {ok, _} = erli18n:reload(default, <<"fr">>, FrPath, #{}),
+    {ok, _} = erli18n:reload(default, <<"pt_BR">>, PtBrPath, #{}),
     ?assertEqual(
-        <<"Bonjour">>,
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>)
+        <<"Olá"/utf8>>,
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>)
     ).
 
 unload_via_facade(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     ?assertEqual(
-        <<"Bonjour">>,
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>)
+        <<"Olá"/utf8>>,
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>)
     ),
-    ok = erli18n:unload(default, <<"fr">>),
+    ok = erli18n:unload(default, <<"pt_BR">>),
     %% After unload, lookup misses → fallback to msgid.
     ?assertEqual(
         <<"Hello">>,
-        erli18n:gettext(default, <<"Hello">>, <<"fr">>)
+        erli18n:gettext(default, <<"Hello">>, <<"pt_BR">>)
     ).
 
 memory_info_passthrough(Config) ->
-    Path = fixture(Config, "fr_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
+    Path = fixture(Config, "pt_br_default.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
     Info = erli18n:memory_info(),
     ?assertMatch(
         #{
@@ -998,21 +998,21 @@ memory_info_passthrough(Config) ->
     ?assertEqual(1, maps:get(num_catalogs, Info)).
 
 loaded_catalogs_passthrough(Config) ->
-    FrPath = fixture(Config, "fr_default.po"),
+    PtBrPath = fixture(Config, "pt_br_default.po"),
     EsPath = fixture(Config, "es_default.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, FrPath),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, PtBrPath),
     {ok, _} = erli18n:ensure_loaded(default, <<"es">>, EsPath),
     Cats = erli18n:loaded_catalogs(),
     ?assertEqual(2, length(Cats)),
     %% Project each tuple to {Domain, Locale} for set comparison so the
     %% test does not depend on row counts.
     Pairs = lists:sort([{D, L} || {D, L, _N} <- Cats]),
-    ?assertEqual([{default, <<"es">>}, {default, <<"fr">>}], Pairs).
+    ?assertEqual([{default, <<"es">>}, {default, <<"pt_BR">>}], Pairs).
 
 which_keys_passthrough(Config) ->
-    Path = fixture(Config, "context_fr.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"fr">>, Path),
-    Keys = erli18n:which_keys(default, <<"fr">>),
+    Path = fixture(Config, "context_pt_br.po"),
+    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
+    Keys = erli18n:which_keys(default, <<"pt_BR">>),
     %% Two singular "File" entries (context undefined + "menu") +
     %% one plural "tree" in "menu". Plural is deduped.
     ?assert(length(Keys) >= 3),
