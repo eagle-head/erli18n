@@ -1,0 +1,86 @@
+name: Release
+
+# Tag-triggered publish to Hex.pm. Pushing a `vX.Y.Z` tag (or running this
+# workflow manually with a tag input) publishes the package to
+# https://hex.pm/packages/erli18n and the docs to https://hexdocs.pm/erli18n.
+#
+# Why a tag — not push/merge to main: Hex versions are IMMUTABLE (a published
+# version can never be overwritten, only reverted within 24h). Merges to main
+# happen many times per release, so publishing is gated on a deliberate version
+# tag instead. The tag must match the `vsn` in src/erli18n.app.src (checked
+# below) so the git tag and the Hex version can never drift.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. v0.2.0). Must match src/erli18n.app.src vsn.'
+        required: true
+
+concurrency:
+  # Never cancel an in-flight publish — a half-published release is worse than
+  # a queued one. Serialize per ref.
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to Hex.pm
+    runs-on: ubuntu-24.04
+    # The HEX_API_KEY secret lives in this environment. Declaring it here is
+    # what grants access to that secret (and runs any environment protection
+    # rules, e.g. required reviewers, that you configure in repo settings).
+    environment: hex-publish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tag push -> github.ref_name is the tag; dispatch -> the tag input.
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24'
+
+      - name: Validate tag matches src/erli18n.app.src vsn
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          TAG_VSN="${TAG#v}"
+          APP_VSN=$(sed -n 's/.*{[[:space:]]*vsn[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p' src/erli18n.app.src | head -1)
+          echo "tag=$TAG  tag_vsn=$TAG_VSN  app_vsn=$APP_VSN"
+          if [ "$TAG_VSN" != "$APP_VSN" ]; then
+            echo "::error::Tag '$TAG' (version '$TAG_VSN') does not match src/erli18n.app.src vsn '$APP_VSN'. Bump the .app.src vsn and re-tag."
+            exit 1
+          fi
+          echo "Publishing erli18n $APP_VSN"
+
+      - name: Publish package to Hex.pm
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: rebar3 hex publish package --yes
+
+      # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh
+      # calls the ex_doc escript directly, skipping the vestigial EDoc step
+      # that crashes `rebar3 ex_doc`/`rebar3 hex publish docs` on a Markdown
+      # backtick in a `%%` comment (see notes/edoc-exdoc-native-doc-bug.md).
+      - name: Build docs (bypassing the EDoc bug)
+        run: scripts/gen_docs.sh
+
+      # Publish the pre-built doc/ directory directly. `--doc-dir` makes
+      # rebar3_hex upload the given directory as-is instead of invoking a doc
+      # provider, so the EDoc crash is never hit here either.
+      - name: Publish docs to HexDocs
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: rebar3 hex publish docs --doc-dir doc --yes
