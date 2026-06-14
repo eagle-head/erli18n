@@ -15,8 +15,8 @@ Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) in all interactions.
 
 ### Prerequisites
 
-- **Erlang/OTP 25.3 or later** — `25.3` is the minimum supported; CI exercises `25.3`, `27`, `28`.
-- **`rebar3 3.22+`** — version pinned per-OTP in `.github/workflows/ci.yml`.
+- **Erlang/OTP 27 or later** — `27` is the minimum supported (the native `-doc`/`-moduledoc` EEP-59 attributes require OTP 27+); CI exercises `27` and `28`.
+- **`rebar3 3.24`** — the version pinned in `.github/workflows/ci.yml`.
 - **`mise`** ([https://mise.jdx.dev](https://mise.jdx.dev/)) — recommended for tool pinning. The `mise.toml` at the repo root pins `actionlint` for workflow validation; you can add Erlang/`rebar3` pins locally if you like.
 
 Optional but useful:
@@ -31,7 +31,7 @@ Optional but useful:
 git clone git@github.com:eagle-head/erli18n.git
 cd erli18n
 rebar3 compile
-rebar3 do ct, cover    # 238 tests, ~30s on a recent laptop
+rebar3 do ct, cover    # 289 tests, ~30s on a recent laptop
 ```
 
 ### Quality gate
@@ -96,15 +96,15 @@ rebar.config         build configuration + project plugins (erlfmt / hank / lint
    ```sh
    bin/quality-gate.sh --full
    ```
-7. **Commit** following the convention in `.github/commit-convention.md` (when added). For now: imperative mood, present tense, one sentence first line, body explains why not what.
-8. **Push** and open a pull request against `main`.
+7. **Commit** following the convention: imperative mood, present tense, one sentence first line, body explains why not what.
+8. **Push** and open a pull request against `main`. CI does **not** run automatically on pull requests — the local quality gate (step 6) is the gate. A maintainer can trigger the CI workflow on demand via **Run workflow** (`workflow_dispatch`) when needed.
 9. **Respond to review** — address feedback or push back with rationale. Force-pushes to feature branches are fine; force-pushes to `main` are not.
 
 ## Telemetry / public API changes
 
 If your PR changes a function exported from `erli18n`, the structure of a `:telemetry` event, or the schema of an application env key, it is **public API** and triggers a minor bump on the next release (per the `0.x` SemVer policy in `CHANGELOG.md`).
 
-For telemetry events, follow the `@stable` / `@unstable` annotation policy in `observability.md` §7 — events marked `@stable` cannot change schema within the `0.x` series.
+For telemetry events, follow the `@stable` / `@unstable` annotation policy documented in the `erli18n_telemetry` module `-moduledoc` — events marked `@stable` cannot change schema within the `0.x` series.
 
 ## Release process
 
@@ -114,7 +114,7 @@ Releases are tag-driven. Maintainers cut a release by:
 2. Updating `CHANGELOG.md`: move `[Unreleased]` content under a new `[X.Y.Z] — YYYY-MM-DD` heading.
 3. Bumping `vsn` in `src/erli18n.app.src`.
 4. Tagging: `git tag -a vX.Y.Z -m "..."` and pushing the tag.
-5. CI publishes to Hex.pm on tag push (workflow `release.yml` — planned for Phase 10).
+5. CI publishes to Hex.pm on tag push via the `release.yml` workflow (pushing a `vX.Y.Z` tag publishes the package to Hex.pm, the docs to HexDocs, and creates a GitHub Release).
 
 ## Questions
 
