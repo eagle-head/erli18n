@@ -8,7 +8,7 @@ Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) in all interactions.
 
 - **Report bugs** via GitHub Issues. Include OTP version, `erli18n` version, a minimal reproducer (ideally a Common Test case or `.po` fixture), and the actual vs expected behavior.
 - **Suggest features** via GitHub Issues. For non-trivial proposals, lay out the motivation, the proposed API, and impact on the parity SUITE before opening a PR — this saves a round-trip if the design is contentious.
-- **Improve documentation** in `README.md`, `CHANGELOG.md`, `-doc` module-level attributes, or the planned VitePress site.
+- **Improve documentation** in `README.md`, `CHANGELOG.md`, or the `-doc` module-level attributes.
 - **Submit pull requests** for bug fixes or features. Smaller, focused PRs are reviewed faster than omnibus ones.
 
 ## Development setup
@@ -96,7 +96,7 @@ rebar.config         build configuration + project plugins (erlfmt / hank / lint
    ```sh
    bin/quality-gate.sh --full
    ```
-7. **Commit** following the convention in [`commit-convention.md`](.github/commit-convention.md) (when added). For now: imperative mood, present tense, one sentence first line, body explains why not what.
+7. **Commit** following the convention in `.github/commit-convention.md` (when added). For now: imperative mood, present tense, one sentence first line, body explains why not what.
 8. **Push** and open a pull request against `main`.
 9. **Respond to review** — address feedback or push back with rationale. Force-pushes to feature branches are fine; force-pushes to `main` are not.
 

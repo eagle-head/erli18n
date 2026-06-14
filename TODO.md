@@ -11,12 +11,11 @@ Cutoff context (2026-05-18): `v0.1.0` is tagged, pushed, and released on GitHub.
 | Phase        | Scope                                                             | Needs CI quota?                                       | Wall time        |
 | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- | ---------------- |
 | **Phase 10** | Hex.pm publish v0.1.0 + HexDocs                                   | No (manual local)                                     | ~30min           |
-| **Phase 11** | VitePress documentation + GitHub Pages (classic mode)             | No (classic Pages = branch-served, not Actions-built) | ~3–4h first pass |
 | **Phase 12** | Repo hardening: issue/PR templates, Dependabot, commit convention | No                                                    | ~30min           |
-| **Phase 13** | Automated workflows (release.yml, docs.yml)                       | **YES — defer until quota renews**                    | ~1h              |
+| **Phase 13** | Automated workflows (release.yml)                                 | **YES — defer until quota renews**                    | ~1h              |
 | **Appendix** | Optional polishing (CODEOWNERS, Discussions, Security advisories) | Mixed                                                 | varies           |
 
-Recommended execution order: 10 → 12 → 11 → 13. (Hex first because it makes the lib actually consumable. Then 12 because it's cheap. Then 11 because it's the biggest. 13 last because it's quota-gated.)
+Recommended execution order: 10 → 12 → 13. (Hex first because it makes the lib actually consumable. Then 12 because it's cheap. 13 last because it's quota-gated.)
 
 ---
 
@@ -90,294 +89,6 @@ curl -sI https://hexdocs.pm/erli18n/0.1.0/ | head -3
 - https://hex.pm/packages/erli18n shows v0.1.0 with description, links (GitHub/Changelog/Issues), license, downloads counter.
 - https://hexdocs.pm/erli18n/0.1.0 renders the EDoc.
 - Consumers add `{erli18n, "0.1.0"}` to `rebar.config` and it just works.
-
----
-
-## Phase 11 — VitePress documentation site + GitHub Pages (classic mode)
-
-**Goal**: public documentation site at `https://eagle-head.github.io/erli18n/`, built locally and served by GitHub Pages from the `gh-pages` branch. **Does not use GitHub Actions** — the classic Pages mode just serves the branch contents directly.
-
-**Prereqs**: Node.js 18+. Either install globally (`apt install nodejs npm`) or via mise: `mise use -g node@20`.
-
-### Layout to create
-
-```
-docs/
-├── .vitepress/
-│   ├── config.mjs       # site config
-│   └── theme/           # (optional) custom CSS/components
-├── index.md             # landing page
-├── getting-started.md
-├── guide/
-│   ├── catalogs.md      # loading .po files
-│   ├── lookup-api.md    # gettext / ngettext / pgettext / npgettext
-│   ├── pluralization.md
-│   ├── telemetry.md
-│   └── parity.md        # gettext compatibility notes
-├── reference/
-│   ├── plurals.md       # CLDR locale coverage
-│   └── psds.md          # PO Semantics Decisions 001-009
-└── public/              # static assets (favicon, og images)
-```
-
-### Step 1 — Initialize VitePress
-
-```sh
-cd /home/eduardo/Documents/erlang-programming-language/erli18n
-mkdir -p docs/.vitepress
-
-# Create a minimal package.json scoped to the docs build only.
-cat > docs/package.json <<'EOF'
-{
-  "name": "erli18n-docs",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vitepress dev .",
-    "build": "vitepress build .",
-    "preview": "vitepress preview ."
-  },
-  "devDependencies": {
-    "vitepress": "^1.5.0"
-  }
-}
-EOF
-
-cd docs && npm install && cd ..
-```
-
-### Step 2 — Configure VitePress
-
-Create `docs/.vitepress/config.mjs`:
-
-```js
-import { defineConfig } from "vitepress";
-
-export default defineConfig({
-  lang: "en-US",
-  title: "erli18n",
-  description:
-    "Modern internationalization (i18n) library for Erlang/OTP, GNU gettext compatible.",
-  base: "/erli18n/", // required for project Pages (not user/org Pages)
-  cleanUrls: true,
-  lastUpdated: true,
-
-  head: [
-    ["link", { rel: "icon", href: "/erli18n/favicon.ico" }],
-    ["meta", { name: "theme-color", content: "#a90533" }],
-  ],
-
-  themeConfig: {
-    logo: "/logo.svg", // drop one in docs/public/logo.svg later
-    nav: [
-      { text: "Guide", link: "/getting-started" },
-      { text: "Reference", link: "/reference/plurals" },
-      { text: "API (HexDocs)", link: "https://hexdocs.pm/erli18n/" },
-      {
-        text: "v0.1.0",
-        items: [
-          {
-            text: "Changelog",
-            link: "https://github.com/eagle-head/erli18n/blob/main/CHANGELOG.md",
-          },
-          {
-            text: "Releases",
-            link: "https://github.com/eagle-head/erli18n/releases",
-          },
-        ],
-      },
-    ],
-
-    sidebar: {
-      "/": [
-        {
-          text: "Introduction",
-          items: [
-            { text: "What is erli18n", link: "/" },
-            { text: "Getting started", link: "/getting-started" },
-          ],
-        },
-        {
-          text: "Guide",
-          items: [
-            { text: "Loading catalogs", link: "/guide/catalogs" },
-            { text: "Lookup API", link: "/guide/lookup-api" },
-            { text: "Pluralization", link: "/guide/pluralization" },
-            { text: "Telemetry", link: "/guide/telemetry" },
-            { text: "gettext parity", link: "/guide/parity" },
-          ],
-        },
-        {
-          text: "Reference",
-          items: [
-            { text: "CLDR plural coverage", link: "/reference/plurals" },
-            { text: "PO Semantics Decisions", link: "/reference/psds" },
-          ],
-        },
-      ],
-    },
-
-    socialLinks: [
-      { icon: "github", link: "https://github.com/eagle-head/erli18n" },
-    ],
-
-    editLink: {
-      pattern: "https://github.com/eagle-head/erli18n/edit/main/docs/:path",
-      text: "Edit this page on GitHub",
-    },
-
-    footer: {
-      message: "Released under the Apache 2.0 License.",
-      copyright: "Copyright © 2026 eagle-head",
-    },
-
-    search: { provider: "local" },
-  },
-});
-```
-
-### Step 3 — Stub the landing page
-
-Create `docs/index.md`:
-
-```markdown
----
-layout: home
-hero:
-  name: erli18n
-  text: GNU gettext for Erlang
-  tagline: Modern internationalization library for Erlang/OTP. Drop-in compatible with the standard gettext toolchain (Poedit, Crowdin, Transifex, msgfmt).
-  actions:
-    - theme: brand
-      text: Get Started
-      link: /getting-started
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/eagle-head/erli18n
-features:
-  - icon: 📦
-    title: GNU gettext compatible
-    details: Full .po / .pot format support. Works with every standard translation tool out of the box.
-  - icon: 🔢
-    title: CLDR-backed pluralization
-    details: 49 locales inlined. PO header is runtime source of truth; CLDR validates at load.
-  - icon: 📡
-    title: First-class telemetry
-    details: Seven :telemetry events. Optional dep — no overhead if you do not ship it.
-  - icon: 🧪
-    title: 238 tests, 100% behavioral coverage
-    details: Common Test + PropEr + fuzz + parity oracle against gettexter + msgfmt.
-  - icon: ⚡
-    title: Anti-bottleneck hot path
-    details: Lookups read lock-free from the caller process. Writes serialized through the gen_server.
-  - icon: 🆓
-    title: Apache 2.0
-    details: Permissive license. Use in commercial, closed-source, or open-source projects.
----
-```
-
-Stub `docs/getting-started.md`:
-
-```markdown
-# Getting started
-
-## Install
-
-Add to your `rebar.config`:
-
-\`\`\`erlang
-{deps, [
-{erli18n, "0.1.0"}
-]}.
-\`\`\`
-
-## Your first translation
-
-(... fill in with actual usage examples; mirror the README quick example and expand.)
-```
-
-(Create the other guide/reference stubs similarly. Goal is to publish a usable site even if each page is short — iterate from there.)
-
-### Step 4 — Local development
-
-```sh
-cd docs
-npm run dev
-# Opens http://localhost:5173 with hot reload.
-```
-
-### Step 5 — Build and deploy to gh-pages branch (no Actions)
-
-```sh
-cd docs
-npm run build       # outputs to docs/.vitepress/dist/
-cd ..
-
-# Create the gh-pages branch if it doesn't exist.
-git worktree add /tmp/erli18n-gh-pages -b gh-pages
-
-# Copy the built site over.
-rm -rf /tmp/erli18n-gh-pages/*
-cp -r docs/.vitepress/dist/* /tmp/erli18n-gh-pages/
-
-# (Optional) Add a CNAME if you want a custom domain.
-# echo "docs.erli18n.dev" > /tmp/erli18n-gh-pages/CNAME
-
-# Disable Jekyll processing (we are using VitePress output as-is).
-touch /tmp/erli18n-gh-pages/.nojekyll
-
-cd /tmp/erli18n-gh-pages
-git add -A
-git commit -m "Deploy docs $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-git push origin gh-pages
-cd -
-git worktree remove /tmp/erli18n-gh-pages
-```
-
-### Step 6 — Enable GitHub Pages (classic, no Actions)
-
-```sh
-# Set Pages source to the gh-pages branch root.
-gh api -X POST repos/eagle-head/erli18n/pages -f source[branch]=gh-pages -f source[path]=/
-
-# Set the repo homepage URL so the "About" sidebar links to the docs.
-gh repo edit eagle-head/erli18n --homepage https://eagle-head.github.io/erli18n/
-```
-
-### Step 7 — Add badges and links to README
-
-In `README.md`, add a docs badge near the top (after the existing CI badge):
-
-```markdown
-[![Docs](https://img.shields.io/badge/docs-eagle--head.github.io%2Ferli18n-blue?logo=vitepress)](https://eagle-head.github.io/erli18n/)
-```
-
-And in the **Documentation** section, replace the planned-text with the real URL.
-
-### Update / re-deploy cycle
-
-```sh
-cd docs && npm run build && cd ..
-git worktree add /tmp/erli18n-gh-pages gh-pages
-rm -rf /tmp/erli18n-gh-pages/*
-cp -r docs/.vitepress/dist/* /tmp/erli18n-gh-pages/
-touch /tmp/erli18n-gh-pages/.nojekyll
-cd /tmp/erli18n-gh-pages && git add -A && git commit -m "Update docs" && git push && cd -
-git worktree remove /tmp/erli18n-gh-pages
-```
-
-(Once CI quota is back, this becomes a `.github/workflows/docs.yml` — see Phase 13.)
-
-### Add `.gitignore` entries
-
-Append to `.gitignore`:
-
-```
-# VitePress docs build artifacts
-docs/node_modules/
-docs/.vitepress/dist/
-docs/.vitepress/cache/
-```
 
 ---
 
@@ -580,7 +291,7 @@ Only `<type>` and `<subject>` are required. Scope, body, and footer are optional
 | ---------- | --------------------------------------------------- |
 | `feat`     | New feature (public API surface)                    |
 | `fix`      | Bug fix                                             |
-| `docs`     | Documentation only (README, CHANGELOG, EDoc, docs/) |
+| `docs`     | Documentation only (README, CHANGELOG, EDoc)        |
 | `style`    | Code style / formatting (no logic change)           |
 | `refactor` | Refactor (no feature, no fix)                       |
 | `perf`     | Performance improvement                             |
@@ -602,7 +313,7 @@ Use a scope when the change is localized to one subsystem:
 | `telemetry` | Changes to `erli18n_telemetry` or its events |
 | `parity`    | Changes to `erli18n_parity_SUITE` or oracle  |
 | `deps`      | Dependency updates                           |
-| `docs`      | Documentation site changes                   |
+| `docs`      | Documentation changes                        |
 
 Omit the scope when the change spans multiple subsystems or is project-wide.
 
@@ -691,15 +402,6 @@ updates:
     labels:
       - dependencies
       - docker
-
-  # Phase 11 docs/ — uncomment once VitePress is set up:
-  # - package-ecosystem: npm
-  #   directory: "/docs"
-  #   schedule:
-  #     interval: weekly
-  #   labels:
-  #     - dependencies
-  #     - docs
 ```
 
 ### File 7: `.github/CODEOWNERS` (optional)
@@ -729,11 +431,6 @@ updates:
 ```
 # Dependabot updates
 # (Dependabot manages branches itself; nothing to ignore locally.)
-
-# VitePress docs build artifacts (only if Phase 11 is done)
-docs/node_modules/
-docs/.vitepress/dist/
-docs/.vitepress/cache/
 ```
 
 ### Phase 12 execution
@@ -817,64 +514,6 @@ jobs:
         run: rebar3 hex publish docs --yes
 ```
 
-### File: `.github/workflows/docs.yml`
-
-VitePress build + auto-deploy to `gh-pages` branch (replaces the manual deploy from Phase 11).
-
-```yaml
-name: Docs
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
-      - ".github/workflows/docs.yml"
-  workflow_dispatch:
-
-concurrency:
-  group: docs-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: write # needs write to push gh-pages branch
-
-jobs:
-  build-and-deploy:
-    name: Build VitePress and deploy to gh-pages
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: docs
-
-      - name: Build site
-        run: npm run build
-        working-directory: docs
-
-      - name: Disable Jekyll
-        run: touch docs/.vitepress/dist/.nojekyll
-
-      - name: Deploy to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/.vitepress/dist
-          publish_branch: gh-pages
-          force_orphan: true
-```
-
 ### Required GitHub secrets / environments
 
 For `release.yml`:
@@ -891,8 +530,6 @@ gh secret set HEX_API_KEY --env hex-publish --body "<paste the key from step 1>"
 # gh api -X PUT repos/eagle-head/erli18n/environments/hex-publish \
 #   --input <(echo '{"reviewers":[{"type":"User","id":<your-user-id>}]}')
 ```
-
-For `docs.yml`: no extra secrets — uses the default `GITHUB_TOKEN`.
 
 ---
 
@@ -937,13 +574,12 @@ EOF
 
 ### A5. README badges — final set
 
-Once Phases 10 and 11 are done, the full badge stack at the top of README.md should be:
+Once Phase 10 is done, the full badge stack at the top of README.md should be:
 
 ```markdown
 [![Status: experimental](https://img.shields.io/badge/Status-experimental-orange.svg)](#status)
 [![Hex.pm](https://img.shields.io/hexpm/v/erli18n.svg)](https://hex.pm/packages/erli18n)
 [![HexDocs](https://img.shields.io/badge/hex-docs-blueviolet.svg)](https://hexdocs.pm/erli18n/)
-[![Docs](https://img.shields.io/badge/docs-eagle--head.github.io%2Ferli18n-blue?logo=vitepress)](https://eagle-head.github.io/erli18n/)
 [![CI](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml/badge.svg)](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OTP](https://img.shields.io/badge/OTP-25.3%2B-a90533)](https://www.erlang.org/downloads)
@@ -962,11 +598,9 @@ After all phases complete:
 
 - [ ] `https://hex.pm/packages/erli18n/0.1.0` shows v0.1.0
 - [ ] `https://hexdocs.pm/erli18n/0.1.0/` renders the EDoc
-- [ ] `https://eagle-head.github.io/erli18n/` shows the VitePress site
 - [ ] `https://github.com/eagle-head/erli18n` shows the latest README with all badges, homepage URL set, Issues tab uses the templates, Pull Request template renders on new PRs
 - [ ] `.github/workflows/ci.yml` runs green on push (Phase 13 unblocked)
 - [ ] `.github/workflows/release.yml` triggers Hex publish on `v*` tag push (Phase 13)
-- [ ] `.github/workflows/docs.yml` auto-deploys docs site on `docs/**` change (Phase 13)
 - [ ] Dependabot opens its first PR (typically within 24h of merging `.github/dependabot.yml`)
 
 Delete this `TODO.md` when the checklist is complete.
