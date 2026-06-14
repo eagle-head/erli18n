@@ -27,7 +27,10 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # contents: write is required to create the GitHub Release at the end. Hex
+  # publishing uses HEX_API_KEY (not GITHUB_TOKEN), so this scope only empowers
+  # the release-creation step — nothing else writes to the repo.
+  contents: write
 
 jobs:
   publish:
@@ -84,3 +87,32 @@ jobs:
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: rebar3 hex publish docs --doc-dir doc --yes
+
+      # Create the visible GitHub Release LAST — only after Hex publishing has
+      # succeeded, so a failed publish never leaves a release for a version that
+      # isn't on Hex. The body is the matching CHANGELOG.md section (the curated
+      # "what changed" summary); if that version has no section yet, fall back to
+      # GitHub's auto-generated notes so the release is never empty.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          APP_VSN="${TAG#v}"
+          NOTES_FILE="$(mktemp)"
+          awk -v ver="$APP_VSN" '
+            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
+            flag && /^## \[/        { flag = 0 }
+            flag                    { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          # Mark as prerelease when the tag carries a pre-release suffix (v1.2.0-rc1).
+          PRERELEASE=""
+          case "$TAG" in *-*) PRERELEASE="--prerelease" ;; esac
+          if grep -q '[^[:space:]]' "$NOTES_FILE"; then
+            echo "Using CHANGELOG section for $APP_VSN as release notes."
+            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE" --verify-tag $PRERELEASE
+          else
+            echo "No CHANGELOG section for $APP_VSN — using auto-generated notes."
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $PRERELEASE
+          fi
