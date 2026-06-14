@@ -25,7 +25,7 @@ jobs:
     # `ubuntu-(\d+\.\d+)` regex; `ubuntu-latest` does not match).
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Erlang/OTP
         uses: erlef/setup-beam@v1
@@ -34,7 +34,7 @@ jobs:
           rebar3-version: '3.24'
 
       - name: Cache rebar3 build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             _build
@@ -51,16 +51,14 @@ jobs:
     # Runner OS is pinned per-matrix-entry because the `erlef/setup-beam`
     # compatibility matrix (https://github.com/erlef/setup-beam#compatibility-between-operating-system-and-erlangotp)
     # ties OTP binary availability to the runner's libssl ABI:
-    #   * OTP 25.3 — Ubuntu 22.04 (libssl3), not available for 24.04.
     #   * OTP 27/28 — Ubuntu 24.04 (libssl3t64).
+    # OTP 25.3 / 26 are no longer supported: the native -doc/-moduledoc
+    # attributes (EEP-59) require OTP 27+ to compile.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - otp: '25.3'
-            rebar3: '3.22'
-            os: 'ubuntu-22.04'
           - otp: '27'
             rebar3: '3.24'
             os: 'ubuntu-24.04'
@@ -68,13 +66,20 @@ jobs:
             rebar3: '3.24'
             os: 'ubuntu-24.04'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install GNU gettext (msgfmt for parity oracle)
         run: |
           sudo apt-get update
           sudo apt-get install -y gettext
           msgfmt --version | head -1
+
+      - name: Generate UTF-8 locales (pt_BR, ru_RU) for plural/parity suites
+        run: |
+          sudo apt-get install -y locales
+          sudo sed -i 's/^# *\(pt_BR.UTF-8 UTF-8\)/\1/; s/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+          sudo locale-gen pt_BR.UTF-8 ru_RU.UTF-8
+          locale -a | grep -E 'pt_BR|ru_RU'
 
       - name: Set up Erlang/OTP
         uses: erlef/setup-beam@v1
@@ -83,7 +88,7 @@ jobs:
           rebar3-version: ${{ matrix.rebar3 }}
 
       - name: Cache rebar3 build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             _build
@@ -100,7 +105,7 @@ jobs:
 
       - name: Upload CT logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ct-logs-otp${{ matrix.otp }}
           path: _build/test/logs/
@@ -110,7 +115,7 @@ jobs:
     name: dialyzer
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Erlang/OTP
         uses: erlef/setup-beam@v1
@@ -119,7 +124,7 @@ jobs:
           rebar3-version: '3.24'
 
       - name: Cache Dialyzer PLT + rebar3 build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             _build/default/rebar3_*_plt

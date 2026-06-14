@@ -1,0 +1,78 @@
+# Local OTP test matrix for erli18n.
+#
+# This file is SEPARATE from compose.yml (which exists only to bootstrap the
+# `act` local-CI runner image/volumes — see that file's header). This one is
+# meant to be `up`d directly: it runs the Common Test suite against the two
+# supported OTP releases inside the official `erlang` images, with the C
+# locales the parity/plural suites need pre-generated.
+#
+# Usage:
+#   docker compose -f compose.matrix.yml up --abort-on-container-exit
+#   docker compose -f compose.matrix.yml up --abort-on-container-exit otp27
+#   docker compose -f compose.matrix.yml run --rm otp28
+#
+# Each service:
+#   * uses the official erlang:27 / erlang:28 image (rebar3 + OTP preinstalled);
+#   * apt-installs gettext (msgfmt, for erli18n_parity_SUITE's oracle path) and
+#     locales, then generates pt_BR.UTF-8 and ru_RU.UTF-8 (the locales exercised
+#     by the plural/parity suites);
+#   * keeps its rebar3 build artifacts in a NAMED VOLUME via REBAR_BASE_DIR, so
+#     the host's `_build` is never touched and the two OTP builds never collide;
+#   * bind-mounts the project read-write at /work;
+#   * compiles, then runs `rebar3 do ct --cover`.
+#
+# The project is mounted (not copied), so REBAR_BASE_DIR must point OUTSIDE the
+# mount — otherwise the two containers would clobber each other's _build under
+# the shared bind mount. Each service gets its own named volume mounted at a
+# private base dir.
+
+x-otp-test: &otp-test
+  working_dir: /work
+  volumes:
+    - .:/work
+  # `rebar3 compile` then the CT run with coverage. localedef/locale-gen and the
+  # apt installs happen first so the parity oracle and locale-dependent suites
+  # have everything they need. `set -e` makes any failing step abort the service
+  # (and, with --abort-on-container-exit, the whole compose run).
+  command:
+    - bash
+    - -euxc
+    - |
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends gettext locales
+      # Generate the UTF-8 locales the suites depend on. Edit /etc/locale.gen
+      # then run locale-gen (the canonical Debian path); localedef is the
+      # fallback if the locales package layout ever changes.
+      sed -i 's/^# *\(pt_BR.UTF-8 UTF-8\)/\1/; s/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+      locale-gen pt_BR.UTF-8 ru_RU.UTF-8
+      locale -a | grep -E 'pt_BR|ru_RU'
+      msgfmt --version | head -1
+      rebar3 compile
+      rebar3 do ct --cover
+
+services:
+  otp27:
+    <<: *otp-test
+    image: erlang:27
+    container_name: erli18n-otp27
+    environment:
+      # Isolated build dir per service, on a named volume — host _build untouched.
+      REBAR_BASE_DIR: /rebar/otp27
+    volumes:
+      - .:/work
+      - rebar-otp27:/rebar/otp27
+
+  otp28:
+    <<: *otp-test
+    image: erlang:28
+    container_name: erli18n-otp28
+    environment:
+      REBAR_BASE_DIR: /rebar/otp28
+    volumes:
+      - .:/work
+      - rebar-otp28:/rebar/otp28
+
+volumes:
+  rebar-otp27:
+  rebar-otp28:

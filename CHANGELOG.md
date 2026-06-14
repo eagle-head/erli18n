@@ -25,7 +25,9 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 ## [Unreleased]
 
-(No unreleased changes.)
+### Changed
+
+- **Minimum OTP bumped to 27** (was 25.3). The public modules now carry native `-doc` / `-moduledoc` documentation attributes (EEP-59), which only compile on OTP 27+; OTP 25.3 and 26 reject them at compile time with `attribute doc after function definitions`. The CI test matrix drops OTP 25.3 / `ubuntu-22.04` and now covers OTP 27 and 28 only.
 
 ## [0.1.0] — 2026-05-18
 

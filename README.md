@@ -4,7 +4,7 @@
 [![HexDocs](https://img.shields.io/badge/hex-docs-8e44ad.svg)](https://hexdocs.pm/erli18n/)
 [![CI](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml/badge.svg)](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![OTP 25.3+](https://img.shields.io/badge/OTP-25.3%2B-a90533)](https://www.erlang.org/downloads)
+[![OTP 27+](https://img.shields.io/badge/OTP-27%2B-a90533)](https://www.erlang.org/downloads)
 
 Modern, GNU `gettext`–compatible internationalization (i18n) for Erlang/OTP — in pure Erlang.
 
@@ -145,12 +145,11 @@ For [`telemetry`](https://github.com/beam-telemetry/telemetry) observability (op
 
 ## Compatibility
 
-|                       | OTP 25.3 (minimum) | OTP 26 | OTP 27 | OTP 28 |
-| --------------------- | :----------------: | :----: | :----: | :----: |
-| Tier-1 (CI)           |         ✅         |   —    |   ✅   |   ✅   |
-| Tier-2 (best effort)  |         —          |   ✅   |   —    |   —    |
+|                      | OTP 27 (minimum) | OTP 28 |
+| -------------------- | :--------------: | :----: |
+| Tier-1 (CI)          |        ✅        |   ✅   |
 
-OTP 25.3 is the floor because `optional_applications` and a few supervisor-init APIs require it. CI exercises OTP 25.3, 27, and 28 on every push; OTP 26 is expected to work but is not run each time.
+OTP 27 is the floor because the public modules use the native `-doc` / `-moduledoc` documentation attributes (EEP-59), which only compile on OTP 27+; on OTP 25.3 / 26 the compiler rejects them with `attribute doc after function definitions`. CI exercises OTP 27 and 28 on every push.
 
 ## Status
 

@@ -41,7 +41,7 @@ jobs:
     # rules, e.g. required reviewers, that you configure in repo settings).
     environment: hex-publish
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Tag push -> github.ref_name is the tag; dispatch -> the tag input.
           ref: ${{ inputs.tag || github.ref_name }}
