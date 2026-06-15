@@ -10,7 +10,7 @@
 A project documented entirely with **native OTP 27+ documentation attributes** (`-moduledoc` / `-doc`,
 EEP-59) cannot build HTML docs with `rebar3 ex_doc`. The command aborts with:
 
-```
+```text
 ===> Running edoc for erli18n
 edoc: error in doclet 'edoc_doclet_chunks': {'EXIT',error}.
 ===> An unknown error occurred generating doc chunks with edoc. Run with DIAGNOSTICS=1 for more details.
@@ -18,7 +18,7 @@ edoc: error in doclet 'edoc_doclet_chunks': {'EXIT',error}.
 
 The real, swallowed error is:
 
-```
+```text
 throw:{error, 176, {"`-quote ended unexpectedly at line ~w", "´"}}
   edoc_wiki:throw_error/2  (edoc_wiki.erl:482)
   edoc_wiki:expand_text/2  (edoc_wiki.erl:116)
@@ -148,7 +148,7 @@ Notes on the trigger condition (observed on OTP 28.4.3):
   a comment between two type declarations (second one exported) does.
 - Replacing the Markdown `` `msgid_plural` `` with EDoc-style `` `msgid_plural' `` (apostrophe close)
   makes it pass — confirming the parser is treating `` ` `` as an EDoc inline-code opener.
-- The plugin issue jelly-beam/rebar3_ex_doc #123 has a similar but _non-deterministic_ repro (the
+- The plugin issue jelly-beam/rebar3*ex_doc #123 has a similar but \_non-deterministic* repro (the
   maintainer could not reproduce it). The `d.erl` form above is deterministic.
 
 ## End-to-end reproduction (`rebar3 ex_doc`)
@@ -238,7 +238,3 @@ ESCRIPT=$(ls _build/default/plugins/rebar3_ex_doc/priv/ex_doc_otp_* | sort -V | 
 ```
 
 This is exactly what `rebar3 ex_doc` does _after_ `gen_chunks`, minus the crashing EDoc precondition.
-
-```
-
-```

@@ -69,7 +69,7 @@ The custom `erli18n/act-runner:24.04` image extends `ghcr.io/catthehacker/ubuntu
 
 ## Project layout
 
-```
+```text
 src/                 erli18n implementation (façade + server + po parser + plural + telemetry)
 include/             public header (erli18n.hrl — public macros/types)
 test/                Common Test suites + PropEr properties + fuzz harness + parity oracle
