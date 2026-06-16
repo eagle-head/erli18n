@@ -42,7 +42,10 @@
     lookup_singular_deterministic/1,
     lookup_plural_deterministic/1,
     lookup_contextual_deterministic/1,
-    lookup_miss_fallback_deterministic/1
+    lookup_miss_fallback_deterministic/1,
+    interp_format_is_total/1,
+    interp_double_percent_roundtrip/1,
+    interp_malformed_reference_is_total/1
 ]).
 
 %% Number of QuickCheck runs per property. 200 = release-blocking floor
@@ -64,7 +67,10 @@ all() ->
         lookup_singular_deterministic,
         lookup_plural_deterministic,
         lookup_contextual_deterministic,
-        lookup_miss_fallback_deterministic
+        lookup_miss_fallback_deterministic,
+        interp_format_is_total,
+        interp_double_percent_roundtrip,
+        interp_malformed_reference_is_total
     ].
 
 init_per_suite(Config) ->
@@ -132,6 +138,15 @@ lookup_miss_fallback_deterministic(_Config) ->
     run_property(
         erli18n_lookup_props:prop_miss_fallback_deterministic()
     ).
+
+interp_format_is_total(_Config) ->
+    run_property(erli18n_interp_props:prop_format_is_total()).
+
+interp_double_percent_roundtrip(_Config) ->
+    run_property(erli18n_interp_props:prop_double_percent_roundtrip()).
+
+interp_malformed_reference_is_total(_Config) ->
+    run_property(erli18n_interp_props:prop_malformed_reference_is_total()).
 
 %% =========================
 %% Helpers

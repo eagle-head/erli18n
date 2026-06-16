@@ -17,6 +17,15 @@ mirrors the C gettext macro family, mapping each macro to an eponymous function:
   `dcpgettext/4`.
 - Contextual plural: `npgettext/4,5,6` / `dnpgettext/5,6` / `dcnpgettext/6`.
 
+Each family also has an interpolating `f`-suffix sibling that takes a
+trailing `Bindings :: map()` and substitutes named `%{name}` placeholders
+in the resolved translation: `gettextf`, `ngettextf`, `pgettextf`,
+`npgettextf` (plus the `d`/`dc` aliases). The plural members auto-bind
+`count => N`. Substitution is total and fail-soft — see `erli18n_interp`
+for the grammar (`%{name}`, `%%`/`%%{name}` escaping), value coercion, the
+`lenient`/`strict` missing-binding policy, the anti-DoS caps, and the
+bidi/RTL caveat.
+
 You almost never need to touch `erli18n_server` directly: this façade is the
 documented door, and the load/observability functions here are thin
 passthroughs to the server.
@@ -89,12 +98,19 @@ ok
 <<"42 fichiers">>
 7> erli18n:pgettext(my_domain, <<"month">>, <<"May">>).
 <<"Mai">>
+8> erli18n:gettextf(my_domain, <<"Hello, %{name}">>, #{name => <<"Ada">>}).
+<<"Bonjour, Ada">>
+9> erli18n:ngettextf(my_domain, <<"%{count} file">>, <<"%{count} files">>, 3, #{}).
+<<"3 fichiers">>
 ```
 
 ## Key functions
 
 - Lookup: `gettext/3`, `ngettext/5`, `pgettext/4`, `npgettext/6` (the main
   forms; the other arities resolve domain/locale and delegate to these).
+- Interpolating lookup: `gettextf/2,3,4`, `ngettextf/4,5,6`,
+  `pgettextf/3,4,5`, `npgettextf/5,6,7` — resolve as above, then substitute
+  `%{name}` placeholders (`erli18n_interp`).
 - Locale state: `setlocale/1`, `which_locale/0`.
 - App defaults: `default_locale/0`, `textdomain/0`.
 - Catalog lifecycle: `ensure_loaded/3`, `reload/3`, `unload/2`,
@@ -171,6 +187,40 @@ who has never seen the project:
     dcnpgettext/6
 ]).
 
+%% Interpolating `f`-suffix family (Phase 1 — named `%{name}`
+%% interpolation). Each member delegates to its non-`f` sibling above to
+%% resolve the string, then runs `erli18n_interp:format/2` over it with a
+%% trailing `Bindings :: map()`. The plural members auto-bind `count => N`
+%% (caller override wins). The category is always LC_MESSAGES.
+
+%% Singular `f` — gettextf/dgettextf/dcgettextf.
+-export([
+    gettextf/2, gettextf/3, gettextf/4,
+    dgettextf/3, dgettextf/4,
+    dcgettextf/4
+]).
+
+%% Plural `f` — ngettextf/dngettextf/dcngettextf.
+-export([
+    ngettextf/4, ngettextf/5, ngettextf/6,
+    dngettextf/5, dngettextf/6,
+    dcngettextf/6
+]).
+
+%% Contextual singular `f` — pgettextf/dpgettextf/dcpgettextf.
+-export([
+    pgettextf/3, pgettextf/4, pgettextf/5,
+    dpgettextf/4, dpgettextf/5,
+    dcpgettextf/5
+]).
+
+%% Contextual plural `f` — npgettextf/dnpgettextf/dcnpgettextf.
+-export([
+    npgettextf/5, npgettextf/6, npgettextf/7,
+    dnpgettextf/6, dnpgettextf/7,
+    dcnpgettextf/7
+]).
+
 %% Per-process state: current locale via process dictionary (gettexter
 %% convention, BR-MIGRAR-003).
 -export([
@@ -239,6 +289,15 @@ Translated text returned to the caller (`binary()`). On a miss or an empty
 translation, it is the `msgid` itself (or `msgid_plural`), never `undefined`.
 """.
 -type translation() :: erli18n_server:translation().
+-doc """
+Map of `%{name}` interpolation bindings for the `f`-suffix family
+(`gettextf`, `ngettextf`, `pgettextf`, `npgettextf` and their `d`/`dc`
+aliases). Keys are atoms (the placeholder names) and values are coerced
+to UTF-8 text totally by `erli18n_interp:format/2`. The plural members
+auto-bind `count => N` (a caller-supplied `count` wins). See
+`erli18n_interp` for the full grammar, value coercion, and anti-DoS caps.
+""".
+-type bindings() :: erli18n_interp:bindings().
 
 -export_type([
     domain/0,
@@ -246,7 +305,8 @@ translation, it is the `msgid` itself (or `msgid_plural`), never `undefined`.
     context/0,
     msgid/0,
     msgid_plural/0,
-    translation/0
+    translation/0,
+    bindings/0
 ]).
 
 %% =========================
@@ -908,6 +968,481 @@ dcnpgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) ->
     npgettext(Domain, Context, Msgid, MsgidPlural, N, Locale).
 
 %% =========================
+%% Interpolating `f`-suffix family (Phase 1 — named `%{name}`)
+%% =========================
+%%
+%% Each `f` member is thin and additive: it DELEGATES to its non-`f`
+%% sibling above to resolve the translation (reusing the same
+%% domain/locale/context resolution, plural-form selection, miss/fallback,
+%% and telemetry), then runs `erli18n_interp:format/2` over the resolved
+%% binary with the trailing `Bindings` map. Nothing here reimplements
+%% lookup. The plural members auto-bind `count => N` via `bind_count/2`
+%% (a caller-supplied `count` overrides the auto-bound value). The
+%% interpolation is TOTAL and fail-soft on the default (lenient) policy —
+%% see `erli18n_interp`. The category is always LC_MESSAGES.
+
+%% Singular `f` — gettextf/dgettextf/dcgettextf.
+
+-doc """
+Like `gettext/1`, then interpolates `%{name}` placeholders in the resolved
+translation using `Bindings`.
+
+Resolves the translation in the default domain (`textdomain/0`) and the
+resolved locale (`which_locale/0` or `default_locale/0`) exactly as
+`gettext/1`, then applies `erli18n_interp:format/2` with `Bindings`. On a
+miss the resolution falls back to `Msgid`, and interpolation still runs
+over that fallback. Interpolation is total and fail-soft: an unbound
+placeholder is left literal and nothing crashes.
+
+```erlang
+1> erli18n:setlocale(<<"fr">>).
+ok
+2> erli18n:gettextf(<<"Hello, %{name}!">>, #{name => <<"Ada">>}).
+<<"Bonjour, Ada!">>
+```
+
+Crashes (`function_clause`) if `Msgid` is not a binary or `Bindings` is not
+a map. See `gettextf/3` (domain) and `gettextf/4` (locale).
+""".
+-spec gettextf(msgid(), bindings()) -> translation().
+gettextf(Msgid, Bindings) when is_binary(Msgid), is_map(Bindings) ->
+    erli18n_interp:format(gettext(Msgid), Bindings).
+
+-doc """
+Like `gettext/2` (explicit domain), then interpolates `%{name}`
+placeholders using `Bindings`. Maps the interpolating form of `dgettext`.
+
+```erlang
+1> erli18n:gettextf(my_domain, <<"Hello, %{name}!">>, #{name => <<"Ada">>}).
+<<"Bonjour, Ada!">>
+```
+
+Same resolution and fallback as `gettext/2`. See `gettextf/4` (explicit
+locale) and `dgettextf/3` (alias).
+""".
+-spec gettextf(domain(), msgid(), bindings()) -> translation().
+gettextf(Domain, Msgid, Bindings) when
+    is_atom(Domain), is_binary(Msgid), is_map(Bindings)
+->
+    erli18n_interp:format(gettext(Domain, Msgid), Bindings).
+
+-doc """
+Main interpolating singular form: like `gettext/3` (explicit domain and
+locale), then interpolates `%{name}` placeholders using `Bindings`.
+
+Resolves via `gettext/3` (ignoring the per-process locale) and applies
+`erli18n_interp:format/2`. On a miss the resolution falls back to `Msgid`,
+over which interpolation still runs.
+
+```erlang
+1> erli18n:gettextf(my_domain, <<"Hello, %{name}!">>, <<"fr">>,
+1>                  #{name => <<"Ada">>}).
+<<"Bonjour, Ada!">>
+```
+
+Crashes (`function_clause`) if any argument violates the type. See the
+aliases `dgettextf/4` / `dcgettextf/4`.
+""".
+-spec gettextf(domain(), msgid(), locale(), bindings()) -> translation().
+gettextf(Domain, Msgid, Locale, Bindings) when
+    is_atom(Domain), is_binary(Msgid), is_binary(Locale), is_map(Bindings)
+->
+    erli18n_interp:format(gettext(Domain, Msgid, Locale), Bindings).
+
+-doc """
+Alias of `gettextf/3` (C macro name `dgettext`, interpolating). Same
+semantics and fallback.
+""".
+-spec dgettextf(domain(), msgid(), bindings()) -> translation().
+dgettextf(Domain, Msgid, Bindings) ->
+    gettextf(Domain, Msgid, Bindings).
+
+-doc """
+Alias of `gettextf/4` (C macro name `dgettext`, interpolating). Same
+semantics and fallback.
+""".
+-spec dgettextf(domain(), msgid(), locale(), bindings()) -> translation().
+dgettextf(Domain, Msgid, Locale, Bindings) ->
+    gettextf(Domain, Msgid, Locale, Bindings).
+
+-doc """
+Alias of `gettextf/4` (C macro name `dcgettext`, interpolating). The
+category (LC_MESSAGES) is always implicit and is not a parameter. Same
+semantics and fallback as `gettextf/4`.
+""".
+-spec dcgettextf(domain(), msgid(), locale(), bindings()) -> translation().
+dcgettextf(Domain, Msgid, Locale, Bindings) ->
+    gettextf(Domain, Msgid, Locale, Bindings).
+
+%% Plural `f` — ngettextf/dngettextf/dcngettextf.
+
+-doc """
+Like `ngettext/3`, then interpolates `%{name}` placeholders using
+`Bindings` with `count => N` auto-bound.
+
+Resolves the correct plural form for `N` in the default domain and the
+resolved locale exactly as `ngettext/3`, then applies
+`erli18n_interp:format/2` over the resolved string. `count => N` is merged
+into `Bindings` automatically (a caller-supplied `count` wins). On a miss
+the resolution falls back to `Msgid` (when `N == 1`) or `MsgidPlural`,
+over which interpolation still runs.
+
+```erlang
+1> erli18n:setlocale(<<"en">>).
+ok
+2> erli18n:ngettextf(<<"%{count} file">>, <<"%{count} files">>, 3, #{}).
+<<"3 files">>
+```
+
+Crashes (`function_clause`) if `Msgid`/`MsgidPlural` are not binaries, `N`
+is not an integer, or `Bindings` is not a map. See `ngettextf/5` (domain)
+and `ngettextf/6` (locale).
+""".
+-spec ngettextf(msgid(), msgid_plural(), integer(), bindings()) ->
+    translation().
+ngettextf(Msgid, MsgidPlural, N, Bindings) when
+    is_binary(Msgid), is_binary(MsgidPlural), is_integer(N), is_map(Bindings)
+->
+    erli18n_interp:format(
+        ngettext(Msgid, MsgidPlural, N), bind_count(N, Bindings)
+    ).
+
+-doc """
+Like `ngettext/4` (explicit domain), then interpolates `%{name}`
+placeholders using `Bindings` with `count => N` auto-bound (caller
+override wins).
+
+```erlang
+1> erli18n:ngettextf(my_domain, <<"%{count} file">>, <<"%{count} files">>,
+1>                   42, #{}).
+<<"42 fichiers">>
+```
+
+Same plural-form selection and fallback as `ngettext/4`. See `ngettextf/6`
+(locale) and `dngettextf/5` (alias).
+""".
+-spec ngettextf(domain(), msgid(), msgid_plural(), integer(), bindings()) ->
+    translation().
+ngettextf(Domain, Msgid, MsgidPlural, N, Bindings) when
+    is_atom(Domain),
+    is_binary(Msgid),
+    is_binary(MsgidPlural),
+    is_integer(N),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        ngettext(Domain, Msgid, MsgidPlural, N), bind_count(N, Bindings)
+    ).
+
+-doc """
+Main interpolating plural form: like `ngettext/5` (explicit domain and
+locale), then interpolates `%{name}` placeholders using `Bindings` with
+`count => N` auto-bound (caller override wins).
+
+Resolves via `ngettext/5` (ignoring the per-process locale) and applies
+`erli18n_interp:format/2` over the resolved string. On a miss the
+resolution falls back to `Msgid` (when `N == 1`) or `MsgidPlural`, over
+which interpolation still runs.
+
+```erlang
+1> erli18n:ngettextf(my_domain, <<"%{count} file">>, <<"%{count} files">>,
+1>                   5, <<"en">>, #{}).
+<<"5 files">>
+```
+
+Crashes (`function_clause`) if any argument violates the type. See the
+aliases `dngettextf/6` / `dcngettextf/6`.
+""".
+-spec ngettextf(
+    domain(), msgid(), msgid_plural(), integer(), locale(), bindings()
+) -> translation().
+ngettextf(Domain, Msgid, MsgidPlural, N, Locale, Bindings) when
+    is_atom(Domain),
+    is_binary(Msgid),
+    is_binary(MsgidPlural),
+    is_integer(N),
+    is_binary(Locale),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        ngettext(Domain, Msgid, MsgidPlural, N, Locale),
+        bind_count(N, Bindings)
+    ).
+
+-doc """
+Alias of `ngettextf/5` (C macro name `dngettext`, interpolating). Same
+semantics, fallback, and `count => N` auto-binding.
+""".
+-spec dngettextf(domain(), msgid(), msgid_plural(), integer(), bindings()) ->
+    translation().
+dngettextf(Domain, Msgid, MsgidPlural, N, Bindings) ->
+    ngettextf(Domain, Msgid, MsgidPlural, N, Bindings).
+
+-doc """
+Alias of `ngettextf/6` (C macro name `dngettext`, interpolating). Same
+semantics, fallback, and `count => N` auto-binding.
+""".
+-spec dngettextf(
+    domain(), msgid(), msgid_plural(), integer(), locale(), bindings()
+) -> translation().
+dngettextf(Domain, Msgid, MsgidPlural, N, Locale, Bindings) ->
+    ngettextf(Domain, Msgid, MsgidPlural, N, Locale, Bindings).
+
+-doc """
+Alias of `ngettextf/6` (C macro name `dcngettext`, interpolating). The
+category (LC_MESSAGES) is always implicit and is not a parameter. Same
+semantics, fallback, and `count => N` auto-binding as `ngettextf/6`.
+""".
+-spec dcngettextf(
+    domain(), msgid(), msgid_plural(), integer(), locale(), bindings()
+) -> translation().
+dcngettextf(Domain, Msgid, MsgidPlural, N, Locale, Bindings) ->
+    ngettextf(Domain, Msgid, MsgidPlural, N, Locale, Bindings).
+
+%% Contextual singular `f` — pgettextf/dpgettextf/dcpgettextf.
+
+-doc """
+Like `pgettext/2`, then interpolates `%{name}` placeholders in the
+resolved translation using `Bindings`.
+
+Resolves the contextual singular in the default domain and the resolved
+locale exactly as `pgettext/2`, then applies `erli18n_interp:format/2`. On
+a miss the resolution falls back to `Msgid` (it never leaks a translation
+from a different context), over which interpolation still runs.
+
+```erlang
+1> erli18n:pgettextf(<<"menu">>, <<"Open %{file}">>, #{file => <<"a.txt">>}).
+<<"Abrir a.txt">>
+```
+
+Crashes (`function_clause`) if `Context`/`Msgid` are not binaries (or
+`Context` `undefined`) or `Bindings` is not a map. See `pgettextf/4`
+(domain) and `pgettextf/5` (locale).
+""".
+-spec pgettextf(context(), msgid(), bindings()) -> translation().
+pgettextf(Context, Msgid, Bindings) when
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_map(Bindings)
+->
+    erli18n_interp:format(pgettext(Context, Msgid), Bindings).
+
+-doc """
+Like `pgettext/3` (explicit domain), then interpolates `%{name}`
+placeholders using `Bindings`. Maps the interpolating form of `dpgettext`.
+
+Same contextual resolution and fallback as `pgettext/3`. See `pgettextf/5`
+(locale) and `dpgettextf/4` (alias).
+""".
+-spec pgettextf(domain(), context(), msgid(), bindings()) -> translation().
+pgettextf(Domain, Context, Msgid, Bindings) when
+    is_atom(Domain),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_map(Bindings)
+->
+    erli18n_interp:format(pgettext(Domain, Context, Msgid), Bindings).
+
+-doc """
+Main interpolating contextual singular form: like `pgettext/4` (explicit
+domain and locale), then interpolates `%{name}` placeholders using
+`Bindings`.
+
+Resolves via `pgettext/4` (ignoring the per-process locale) and applies
+`erli18n_interp:format/2`. On a miss the resolution falls back to `Msgid`,
+over which interpolation still runs.
+
+```erlang
+1> erli18n:pgettextf(my_domain, <<"menu">>, <<"Open %{file}">>, <<"pt_BR">>,
+1>                   #{file => <<"a.txt">>}).
+<<"Abrir a.txt">>
+```
+
+Crashes (`function_clause`) if any argument violates the type. See the
+aliases `dpgettextf/5` / `dcpgettextf/5`.
+""".
+-spec pgettextf(domain(), context(), msgid(), locale(), bindings()) ->
+    translation().
+pgettextf(Domain, Context, Msgid, Locale, Bindings) when
+    is_atom(Domain),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_binary(Locale),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        pgettext(Domain, Context, Msgid, Locale), Bindings
+    ).
+
+-doc """
+Alias of `pgettextf/4` (C macro name `dpgettext`, interpolating). Same
+semantics and fallback.
+""".
+-spec dpgettextf(domain(), context(), msgid(), bindings()) -> translation().
+dpgettextf(Domain, Context, Msgid, Bindings) ->
+    pgettextf(Domain, Context, Msgid, Bindings).
+
+-doc """
+Alias of `pgettextf/5` (C macro name `dpgettext`, interpolating). Same
+semantics and fallback.
+""".
+-spec dpgettextf(domain(), context(), msgid(), locale(), bindings()) ->
+    translation().
+dpgettextf(Domain, Context, Msgid, Locale, Bindings) ->
+    pgettextf(Domain, Context, Msgid, Locale, Bindings).
+
+-doc """
+Alias of `pgettextf/5` (C macro name `dcpgettext`, interpolating). The
+category (LC_MESSAGES) is always implicit and is not a parameter. Same
+semantics and fallback as `pgettextf/5`.
+""".
+-spec dcpgettextf(domain(), context(), msgid(), locale(), bindings()) ->
+    translation().
+dcpgettextf(Domain, Context, Msgid, Locale, Bindings) ->
+    pgettextf(Domain, Context, Msgid, Locale, Bindings).
+
+%% Contextual plural `f` — npgettextf/dnpgettextf/dcnpgettextf.
+
+-doc """
+Like `npgettext/4`, then interpolates `%{name}` placeholders using
+`Bindings` with `count => N` auto-bound (caller override wins).
+
+Resolves the contextual plural form for `N` in the default domain and the
+resolved locale exactly as `npgettext/4`, then applies
+`erli18n_interp:format/2`. On a miss the resolution falls back to `Msgid`
+(when `N == 1`) or `MsgidPlural`, over which interpolation still runs.
+
+```erlang
+1> erli18n:npgettextf(<<"inbox">>, <<"%{count} message">>,
+1>                    <<"%{count} messages">>, 3, #{}).
+<<"3 messages">>
+```
+
+Crashes (`function_clause`) if any argument violates the type. See
+`npgettextf/6` (domain) and `npgettextf/7` (locale).
+""".
+-spec npgettextf(context(), msgid(), msgid_plural(), integer(), bindings()) ->
+    translation().
+npgettextf(Context, Msgid, MsgidPlural, N, Bindings) when
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_binary(MsgidPlural),
+    is_integer(N),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        npgettext(Context, Msgid, MsgidPlural, N), bind_count(N, Bindings)
+    ).
+
+-doc """
+Like `npgettext/5` (explicit domain), then interpolates `%{name}`
+placeholders using `Bindings` with `count => N` auto-bound (caller
+override wins). Maps the interpolating form of `dnpgettext`.
+
+Same contextual plural-form selection and fallback as `npgettext/5`. See
+`npgettextf/7` (locale) and `dnpgettextf/6` (alias).
+""".
+-spec npgettextf(
+    domain(), context(), msgid(), msgid_plural(), integer(), bindings()
+) -> translation().
+npgettextf(Domain, Context, Msgid, MsgidPlural, N, Bindings) when
+    is_atom(Domain),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_binary(MsgidPlural),
+    is_integer(N),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        npgettext(Domain, Context, Msgid, MsgidPlural, N),
+        bind_count(N, Bindings)
+    ).
+
+-doc """
+Main interpolating contextual plural form: like `npgettext/6` (explicit
+domain and locale), then interpolates `%{name}` placeholders using
+`Bindings` with `count => N` auto-bound (caller override wins).
+
+Resolves via `npgettext/6` (ignoring the per-process locale) and applies
+`erli18n_interp:format/2`. On a miss the resolution falls back to `Msgid`
+(when `N == 1`) or `MsgidPlural`, over which interpolation still runs.
+
+```erlang
+1> erli18n:npgettextf(my_domain, <<"inbox">>, <<"%{count} message">>,
+1>                    <<"%{count} messages">>, 5, <<"de">>, #{}).
+<<"5 Nachrichten">>
+```
+
+Crashes (`function_clause`) if any argument violates the type. See the
+aliases `dnpgettextf/7` / `dcnpgettextf/7`.
+""".
+-spec npgettextf(
+    domain(),
+    context(),
+    msgid(),
+    msgid_plural(),
+    integer(),
+    locale(),
+    bindings()
+) -> translation().
+npgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings) when
+    is_atom(Domain),
+    (Context =:= undefined orelse is_binary(Context)),
+    is_binary(Msgid),
+    is_binary(MsgidPlural),
+    is_integer(N),
+    is_binary(Locale),
+    is_map(Bindings)
+->
+    erli18n_interp:format(
+        npgettext(Domain, Context, Msgid, MsgidPlural, N, Locale),
+        bind_count(N, Bindings)
+    ).
+
+-doc """
+Alias of `npgettextf/6` (C macro name `dnpgettext`, interpolating). Same
+semantics, fallback, and `count => N` auto-binding.
+""".
+-spec dnpgettextf(
+    domain(), context(), msgid(), msgid_plural(), integer(), bindings()
+) -> translation().
+dnpgettextf(Domain, Context, Msgid, MsgidPlural, N, Bindings) ->
+    npgettextf(Domain, Context, Msgid, MsgidPlural, N, Bindings).
+
+-doc """
+Alias of `npgettextf/7` (C macro name `dnpgettext`, interpolating). Same
+semantics, fallback, and `count => N` auto-binding.
+""".
+-spec dnpgettextf(
+    domain(),
+    context(),
+    msgid(),
+    msgid_plural(),
+    integer(),
+    locale(),
+    bindings()
+) -> translation().
+dnpgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings) ->
+    npgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings).
+
+-doc """
+Alias of `npgettextf/7` (C macro name `dcnpgettext`, interpolating). The
+category (LC_MESSAGES) is always implicit and is not a parameter. Same
+semantics, fallback, and `count => N` auto-binding as `npgettextf/7`.
+""".
+-spec dcnpgettextf(
+    domain(),
+    context(),
+    msgid(),
+    msgid_plural(),
+    integer(),
+    locale(),
+    bindings()
+) -> translation().
+dcnpgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings) ->
+    npgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings).
+
+%% =========================
 %% Per-process locale state (process dictionary)
 %% =========================
 %%
@@ -1384,6 +1919,21 @@ and side-effect-free.
 -spec plural_fallback(msgid(), msgid_plural(), integer()) -> translation().
 plural_fallback(Msgid, _MsgidPlural, 1) -> Msgid;
 plural_fallback(_Msgid, MsgidPlural, _) -> MsgidPlural.
+
+-doc """
+Internal helper: auto-bind `count => N` for the interpolating plural
+families (`ngettextf`, `npgettextf` and their `d`/`dc` aliases).
+
+Merges the count `N` into the caller's `Bindings` under the `count` key so
+a `%{count}` placeholder in the translation resolves without the caller
+having to repeat `N`. The merge order makes the CALLER's `Bindings` WIN:
+if the caller supplies an explicit `count`, that value is rendered instead
+of `N` (while `N` still drives the plural-form selection upstream). Total
+and side-effect-free.
+""".
+-spec bind_count(integer(), bindings()) -> bindings().
+bind_count(N, Bindings) ->
+    maps:merge(#{count => N}, Bindings).
 
 %% =========================
 %% Telemetry — lookup miss

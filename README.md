@@ -21,7 +21,7 @@ Modern, GNU `gettext`–compatible internationalization (i18n) for Erlang/OTP �
 Add the dependency to `rebar.config`:
 
 ```erlang
-{deps, [{erli18n, "0.1.0"}]}.
+{deps, [{erli18n, "0.2.0"}]}.
 ```
 
 Then load a catalog and translate:
@@ -38,17 +38,22 @@ application:ensure_all_started(erli18n).
 %% Singular.
 <<"Olá, mundo">> = erli18n:gettext(my_domain, <<"Hello, world">>, <<"pt_BR">>).
 
-%% Plural. ngettext returns the correct plural FORM for N — it does NOT
-%% interpolate the number (you format that yourself; see "Common patterns").
+%% Plural. ngettext returns the correct plural FORM for N (it selects the
+%% form; the `f` family below splices the number in — see "Interpolation").
 <<"arquivo">>  = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, 1,  <<"pt_BR">>).
 <<"arquivos">> = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, 42, <<"pt_BR">>).
 
 %% Contextual. The same source word, disambiguated by a msgctxt.
 <<"Maio">> = erli18n:pgettext(my_domain, <<"month">>, <<"May">>, <<"pt_BR">>).
 <<"pode">> = erli18n:pgettext(my_domain, <<"verb">>,  <<"May">>, <<"pt_BR">>).
+
+%% Interpolating. The `f`-suffix family resolves the translation, then
+%% splices named `%{var}` placeholders from a Bindings map (see below).
+<<"3 arquivos">> = erli18n:ngettextf(my_domain, <<"%{count} file">>,
+    <<"%{count} files">>, 3, <<"pt_BR">>, #{}).   %% count => 3 auto-bound
 ```
 
-That is the whole surface: `gettext` (singular), `ngettext` (plural), `pgettext` (contextual), and `npgettext` (contextual + plural), each with `d` / `dc` domain-explicit variants — the full GNU gettext C-macro family, as Erlang functions.
+That is the whole surface: `gettext` (singular), `ngettext` (plural), `pgettext` (contextual), and `npgettext` (contextual + plural), each with `d` / `dc` domain-explicit variants — the full GNU gettext C-macro family, as Erlang functions. Each also has an interpolating `f`-suffix sibling (`gettextf`, `ngettextf`, `pgettextf`, `npgettextf`) that splices named `%{var}` values into the resolved string.
 
 ## Common patterns
 
@@ -69,12 +74,13 @@ erli18n:textdomain(my_domain),
 <<"Olá, mundo">> = erli18n:gettext(<<"Hello, world">>).   %% default domain + resolved locale
 ```
 
-**Format a pluralized count** — `ngettext` gives you the form; you interpolate the number:
+**Format a pluralized count** — use the `f`-suffix `ngettextf`: it selects the plural form *and* splices the number in. The count is auto-bound as `%{count}`, so the translator controls where the number lands in each language:
 
 ```erlang
-N = 3,
-Form = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, N, <<"pt_BR">>),
-<<"3 arquivos">> = iolist_to_binary(io_lib:format("~b ~ts", [N, Form])).
+%% Source: msgid "%{count} file" / msgid_plural "%{count} files"
+%% pt_BR:  msgstr[0] "%{count} arquivo" / msgstr[1] "%{count} arquivos"
+<<"3 arquivos">> = erli18n:ngettextf(my_domain,
+    <<"%{count} file">>, <<"%{count} files">>, 3, <<"pt_BR">>, #{}).
 ```
 
 **Context + plural together** (`npgettext` — domain, context, singular, plural, N, locale):
@@ -104,6 +110,48 @@ telemetry:attach(<<"erli18n-misses">>, [erli18n, lookup, miss],
     end, undefined).
 ```
 
+## Interpolation
+
+Every lookup family has an interpolating `f`-suffix sibling — `gettextf`, `ngettextf`, `pgettextf`, `npgettextf` (plus the `d` / `dc` aliases) — that takes a trailing `Bindings :: map()`. Each `f` function resolves the translation exactly like its non-`f` sibling, then substitutes **named `%{var}` placeholders** in the result:
+
+```erlang
+erli18n:setlocale(<<"pt_BR">>),
+
+%% Source msgid "Hello, %{name}!" with pt_BR msgstr "Olá, %{name}!"
+<<"Olá, Ada!">> = erli18n:gettextf(my_domain, <<"Hello, %{name}!">>,
+    #{name => <<"Ada">>}).
+```
+
+Named placeholders (rather than positional `~s`) decouple the wording from argument order: a translator can move `%{name}` anywhere in the sentence — or repeat it — and the binding still resolves by name. Binding keys are atoms; values may be a binary, an iolist/string, an integer, a float, or an atom, and are coerced to UTF-8 text. **Plural members auto-bind `count => N`**, so `%{count}` is always available without passing it yourself (a caller-supplied `count` wins):
+
+```erlang
+%% pt_BR msgstr[1] "%{count} arquivos" — count auto-bound to 42
+<<"42 arquivos">> = erli18n:ngettextf(my_domain,
+    <<"%{count} file">>, <<"%{count} files">>, 42, <<"pt_BR">>, #{}).
+```
+
+**Escaping.** A literal percent is `%%`; to emit a literal `%{name}` un-substituted, write `%%{name}` (the `%%` collapses to `%`, leaving `{name}` untouched):
+
+```erlang
+<<"100% sure">>   = erli18n:gettextf(<<"100%% sure">>, #{}).
+<<"use %{name}">> = erli18n:gettextf(<<"use %%{name}">>, #{name => <<"X">>}).
+```
+
+**Missing bindings — `lenient` vs `strict`.** The `f` functions on `erli18n` are **lenient**: an unbound `%{name}` is left in place literally and nothing crashes. Interpolation is total and fail-soft — for any input and any bindings it returns a binary and never raises. When you want an unbound placeholder to be a hard error instead, call `erli18n_interp:format/3` directly with the `strict` policy:
+
+```erlang
+%% Lenient (the f-family default): unknown placeholder stays literal.
+<<"Hi %{who}">> = erli18n:gettextf(<<"Hi %{who}">>, #{}).
+
+%% Strict: opt in via erli18n_interp:format/3 — raises on a missing binding.
+erli18n_interp:format(<<"Hi %{who}">>, #{}, #{on_missing => strict}).
+%% ** exception error: {erli18n_interp, {missing_binding, who}}
+```
+
+> ### Bidi / RTL caveat
+>
+> Interpolation does **not** auto-insert Unicode bidi isolation marks (U+2066–U+2069) around spliced values. Placing an RTL value (Arabic, Hebrew) into an LTR sentence — or the reverse — can reorder neighbouring punctuation under the Unicode Bidirectional Algorithm. If you mix directions, isolate the values yourself until a future version offers opt-in isolation.
+
 ## Core concepts
 
 A few things worth knowing before you reach for the API:
@@ -119,7 +167,7 @@ Most Erlang projects today either reach for the venerable but [largely-stalled `
 
 - **Drop-in `.po` / `.pot` compatibility** — a hand-written parser that handles real-world catalogs: contexts, plurals, fuzzy entries, charsets, BOMs, and obsolete entries. Works with Poedit, Crowdin, Transifex, Weblate, and `msgfmt` out of the box. (The exact `.po`-semantics decisions are documented in [`CHANGELOG.md`](CHANGELOG.md).)
 - **CLDR-backed pluralization** — a real evaluator for the `Plural-Forms` C-expression, with CLDR plural rules inlined for **49 locales**.
-- **The full gettext API** — `gettext` / `ngettext` / `pgettext` / `npgettext`, plus the `d` / `dc` domain-explicit variants.
+- **The full gettext API** — `gettext` / `ngettext` / `pgettext` / `npgettext`, plus the `d` / `dc` domain-explicit variants, and an interpolating `f`-suffix family (`gettextf`, …) for named `%{var}` substitution.
 - **Optional, first-class observability** — **7** [`telemetry`](https://github.com/beam-telemetry/telemetry) events (catalog load/reload/unload spans, lookup misses, plural divergence, rate-limited memory warnings). `telemetry` is an *optional* dependency: events fire only when your app ships it.
 - **A lock-free hot path** — `lookup_*` reads run directly from ETS in the *calling* process; only writes (loading and reloading catalogs) go through the owning `gen_server`. No process bottleneck on the read side.
 - **Heavily tested** — Common Test suites, PropEr property-based tests, fuzzing, and a parity suite that checks output byte-for-byte against GNU `msgfmt` as a ground-truth oracle. 100% behavioral coverage.
@@ -130,7 +178,7 @@ String **extraction** uses the standard GNU `xgettext` CLI — the same model as
 
 ```erlang
 {deps, [
-    {erli18n, "0.1.0"}
+    {erli18n, "0.2.0"}
 ]}.
 ```
 
@@ -138,7 +186,7 @@ For [`telemetry`](https://github.com/beam-telemetry/telemetry) observability (op
 
 ```erlang
 {deps, [
-    {erli18n, "0.1.0"},
+    {erli18n, "0.2.0"},
     {telemetry, "~> 1.3"}
 ]}.
 ```
@@ -153,7 +201,7 @@ OTP 27 is the floor because the public modules use the native `-doc` / `-moduled
 
 ## Status
 
-**Initial development (`0.1.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.1.0` → `0.2.0`); patch bumps (`0.1.0` → `0.1.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
+**Initial development (`0.2.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.2.0` → `0.3.0`); patch bumps (`0.2.0` → `0.2.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Documentation
 

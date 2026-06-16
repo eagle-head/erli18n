@@ -1,0 +1,32 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# Singular entries carrying named %{...} placeholders. The translation
+# REORDERS the placeholders relative to the source, proving that
+# resolution is by name (not by position).
+msgid "Hello, %{name}!"
+msgstr "Olá, %{name}!"
+
+msgid "%{user} sent %{item}"
+msgstr "%{item} enviado por %{user}"
+
+# Plural entries with the auto-bound %{count} placeholder.
+msgid "%{count} tree"
+msgid_plural "%{count} trees"
+msgstr[0] "%{count} árvore"
+msgstr[1] "%{count} árvores"
+
+# Contextual singular sharing a msgid across contexts.
+msgctxt "greeting"
+msgid "Hi %{name}"
+msgstr "Oi %{name}"
+
+# Contextual plural with the auto-bound %{count}.
+msgctxt "inbox"
+msgid "%{count} message"
+msgid_plural "%{count} messages"
+msgstr[0] "%{count} mensagem"
+msgstr[1] "%{count} mensagens"
