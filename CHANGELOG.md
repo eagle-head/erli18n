@@ -27,6 +27,57 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 _No unreleased changes._
 
+## [0.2.0] — 2026-06-16
+
+Phase 1: **named `%{var}` interpolation**. This release is additive — every
+change is a new function, type, or module; the existing `gettext` / `ngettext` /
+`pgettext` / `npgettext` families (and their `d` / `dc` variants) are
+behaviorally unchanged. The minor bump follows the `0.x` SemVer policy above.
+
+### Added
+
+- **`erli18n_interp`** — a pure, dependency-free substituter for named
+  `%{name}` placeholders. `format/2` (lenient) is **total and fail-soft**: for
+  any input and any bindings it returns a binary and never raises. `format/3`
+  takes an `opts()` map whose single key, `on_missing`, selects the
+  missing-binding policy (`lenient` | `strict`).
+  - **Named placeholders.** `%{name}` decouples wording from argument order — a
+    translator can move or repeat `%{name}` and the binding still resolves by
+    name (atom keys). Values may be a binary, an iolist/string, an integer, a
+    float, or an atom, and are coerced to UTF-8 text.
+  - **Escaping.** A literal percent is `%%`; to emit a literal, un-substituted
+    `%{name}`, write `%%{name}` (the `%%` collapses to `%`, leaving `{name}`
+    untouched).
+  - **`lenient` vs `strict`.** Lenient leaves an unbound `%{name}` in place
+    literally; strict raises `{erli18n_interp, {missing_binding, Name}}`.
+  - **Anti-DoS caps.** Output is bounded by `?MAX_OUTPUT_BYTES` (65536): every
+    append (literal chunk, coerced bound value, literal placeholder) is
+    size-checked in O(1) and the result is truncated to fit before scanning
+    stops. Placeholder expansion is bounded by `?MAX_EXPANSIONS` (1024); past
+    that, placeholders are emitted literally. Truncation/clamp paths use
+    `binary:copy/1` so the returned binary does not pin a large parent binary.
+- **`bindings/0` type** — `#{atom() => term()}`, exported from `erli18n_interp`
+  (alongside `on_missing/0` and `opts/0`).
+- **Interpolating `f`-suffix façade family** — **24** new functions on
+  `erli18n`: `gettextf`, `ngettextf`, `pgettextf`, `npgettextf` and their
+  `d` / `dc` domain-explicit variants, each with a process-locale and an
+  explicit-locale arity. Every `f` function resolves the translation exactly
+  like its non-`f` sibling, then splices `%{var}` values from a trailing
+  `Bindings :: map()`. The façade `f` family is **lenient** (unbound
+  placeholders stay literal; never raises); opt into `strict` by calling
+  `erli18n_interp:format/3` directly.
+- **Plural count auto-bind.** The `ngettextf` / `npgettextf` families auto-bind
+  `count => N`, so `%{count}` is always available without passing it; a
+  caller-supplied `count` wins.
+
+### Caveats
+
+- **Bidi / RTL.** Interpolation does **not** auto-insert Unicode bidi isolation
+  marks (U+2066–U+2069) around spliced values. Placing an RTL value into an LTR
+  sentence (or the reverse) can reorder neighbouring punctuation under the
+  Unicode Bidirectional Algorithm. Isolate mixed-direction values yourself until
+  a future version offers opt-in isolation.
+
 ## [0.1.0] — 2026-06-14
 
 Initial development release. The public API is functional but subject to backward-incompatible

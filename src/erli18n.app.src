@@ -1,6 +1,6 @@
 {application, erli18n, [
     {description, "Modern internationalization (i18n) library for Erlang, GNU gettext compatible"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [erli18n_sup, erli18n_server]},
     {mod, {erli18n_app, []}},
     {applications, [
