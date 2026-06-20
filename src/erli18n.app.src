@@ -1,6 +1,6 @@
 {application, erli18n, [
     {description, "Modern internationalization (i18n) library for Erlang, GNU gettext compatible"},
-    {vsn, "0.2.0"},
+    {vsn, "0.3.0"},
     {registered, [erli18n_sup, erli18n_server]},
     {mod, {erli18n_app, []}},
     {applications, [
@@ -25,11 +25,25 @@
     %%   * `memory_warning_rate_limit_seconds` (default 60):
     %%     minimum interval between memory_warning emits (RISK-011
     %%     mitigation 2: "one per crossing, not per tick").
+    %%
+    %% Application env consumed by the `erli18n` facade (Phase 2):
+    %%   * `locale_fallback` (default `off`): opt-in canonicalization-aware
+    %%     BCP-47 fallback chain applied on a lookup MISS only. Accepted
+    %%     values:
+    %%       - `off`            exact-match only (0.2.0 behavior; the exact-hit
+    %%                          hot path reads nothing extra).
+    %%       - `base_language`  RFC 4647 'Lookup' chain
+    %%                          (`pt_BR` -> `pt` -> `default_locale`).
+    %%       - `{explicit, Map}` Map :: #{locale() => [locale()]} override
+    %%                          layer; unlisted locales fall through to
+    %%                          `base_language`.
+    %%     See the `erli18n` and `erli18n_negotiate` module docs.
     {env, [
         {emit_lookup_telemetry, false},
         %% 100 MiB
         {memory_warning_threshold, 104857600},
-        {memory_warning_rate_limit_seconds, 60}
+        {memory_warning_rate_limit_seconds, 60},
+        {locale_fallback, off}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

@@ -6,8 +6,8 @@ Only the **latest minor release** of `erli18n` receives security updates. While 
 
 | Version | Supported |
 |---|---|
-| `0.1.x` (latest) | ✅ |
-| `< 0.1.0` (pre-release) | ❌ |
+| `0.3.x` (latest) | ✅ |
+| `< 0.3.0` | ❌ |
 
 Once the project reaches `1.0.0`, the support window will be re-evaluated and documented here.
 

@@ -27,6 +27,83 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 _No unreleased changes._
 
+## [0.3.0] — 2026-06-19
+
+Phase 2: **canonicalization-aware BCP-47 fallback chain + `Accept-Language`
+negotiation (opt-in)**. This release is additive — a new module, four new
+facade functions, one new application-env key defaulting to `off`, and one new
+telemetry event under the existing opt-in flag. With the default configuration
+every public function behaves exactly as in 0.2.0; the exact-match lookup hot
+path is byte-for-byte unchanged and reads nothing extra. The minor bump follows
+the `0.x` SemVer policy above.
+
+### Added
+
+- **`erli18n_negotiate`** — a pure, total, dependency-free engine for locale
+  canonicalization, fallback-chain construction, and `Accept-Language`
+  negotiation. Holds no state (no `gen_server`, ETS, or process dictionary) and
+  is property-tested in isolation.
+  - **`canonicalize/1`** — folds a BCP-47 / POSIX tag to the erli18n
+    catalog-key shape (`<<"pt-BR">>` → `<<"pt_BR">>`): hyphen/underscore
+    equivalence, RFC 5646 §2.1.1 positional casing (language lowercase, script
+    Titlecase, region UPPERCASE), POSIX charset/modifier suffix stripping
+    (`pt_BR.UTF-8`, `ca_ES@valencia`), and a **closed** legacy-language alias
+    table (`in`→`id`, `iw`→`he`, `ji`→`yi`, `jw`→`jv`, `mo`→`ro`). Total and
+    idempotent. **Out of scope (documented non-goals):** macrolanguage/script
+    inference such as `zh_Hans` ⇄ `zh_CN` (needs the CLDR *Add Likely Subtags*
+    algorithm) and grandfathered/irregular tags.
+  - **`fallback_chain/2`** — the ordered RFC 4647 *Lookup* candidate list
+    (`pt-BR` + default `en` → `[<<"pt_BR">>, <<"pt">>, <<"en">>]`), canonicalized,
+    order-preserving-deduplicated, and bounded.
+  - **`parse_accept_language/1`** — parses an HTTP `Accept-Language` header
+    (RFC 9110 §12.5.4) into `[{Range, Q}]` with `Q` as an integer in milli-units
+    (`0..1000`); absent `q` = `1000`, well-formed `q=0` dropped, sorted by
+    descending quality with a stable header-order tiebreak. Total and fail-soft;
+    output shape matches cowlib's `cow_http_hd:parse_accept_language/1`.
+  - **`negotiate/2,3`** and **`best_match/3`** — RFC 4647 *Lookup* of a
+    preference list against an available-locale set, returning the first
+    supported match (preserving the available entry's original casing), a
+    default, or `error`.
+- **Facade additions on `erli18n`** — `negotiate/2` (always returns a usable
+  locale, defaulting to `default_locale/0` on no match), `parse_accept_language/1`,
+  `canonicalize_locale/1`, and `set_locale_fallback/1`. None changes an existing
+  arity.
+- **Opt-in lookup fallback chain** — the four lookup families
+  (`gettext` / `ngettext` / `pgettext` / `npgettext`, and so the interpolating
+  `f`-family that delegates to them) consult the fallback chain **only on an
+  exact-match miss** and **only** when enabled, so a `pt_BR` request resolves a
+  loaded `pt` catalog instead of returning the raw `msgid`.
+- **Config `erli18n.locale_fallback`** (env, default `off`):
+  - `off` — exact match only (0.2.0 behavior; the hit path reads nothing extra).
+  - `base_language` — RFC 4647 *Lookup* chain (`pt_BR` → `pt` → `default_locale`).
+  - `{explicit, Map}` — `Map :: #{locale() => [locale()]}` override layer; an
+    unlisted locale falls through to `base_language`.
+- **Telemetry `[erli18n, locale, fallback]`** — emitted when a non-exact locale
+  resolves a translation through the chain, with a `chain_depth` measurement and
+  `requested_locale` / `resolved_locale` metadata. **Opt-in** under the existing
+  `emit_lookup_telemetry` flag and kept entirely off the exact-hit path.
+- **`event_locale_fallback/0`** on `erli18n_telemetry`.
+
+### Performance & safety
+
+- **Zero-overhead exact hit.** All fallback work runs strictly in the post-miss
+  branch and only when enabled; an exact hit remains a single `ets:lookup` with
+  no extra allocation or config read (verified by a dedicated CT case). On a
+  miss with fallback on, cost is O(chain length) extra reads, short-circuiting
+  on the first hit.
+- **Total / fail-soft & anti-DoS.** Parsing untrusted tags and headers never
+  raises and never interns atoms (no `binary_to_atom`); bounded by per-tag
+  (35 B), subtag (8), chain (8), header (4096 B), element (64), and range (32)
+  caps. An invalid `locale_fallback` value degrades to `off` rather than
+  breaking a lookup.
+
+### Caveats
+
+- **Likely-subtags inference is not performed.** `zh-CN` canonicalizes to
+  `zh_CN`, not `zh_Hans`; a script-only catalog (`zh_Hans`) is not matched by a
+  region-only request (`zh_CN`) or vice versa. Load catalogs under the keys your
+  clients send, or supply an `{explicit, Map}` mapping.
+
 ## [0.2.0] — 2026-06-16
 
 Phase 1: **named `%{var}` interpolation**. This release is additive — every
