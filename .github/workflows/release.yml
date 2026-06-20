@@ -111,8 +111,8 @@ jobs:
           case "$TAG" in *-*) PRERELEASE="--prerelease" ;; esac
           if grep -q '[^[:space:]]' "$NOTES_FILE"; then
             echo "Using CHANGELOG section for $APP_VSN as release notes."
-            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE" --verify-tag $PRERELEASE
+            gh release create "$TAG" --title "Release $TAG" --notes-file "$NOTES_FILE" --verify-tag $PRERELEASE
           else
             echo "No CHANGELOG section for $APP_VSN — using auto-generated notes."
-            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $PRERELEASE
+            gh release create "$TAG" --title "Release $TAG" --generate-notes --verify-tag $PRERELEASE
           fi
