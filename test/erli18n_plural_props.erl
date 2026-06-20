@@ -329,16 +329,16 @@ patho_body() ->
 -spec build_patho(flat_add | nested_paren | bang_chain, non_neg_integer()) ->
     binary().
 build_patho(flat_add, Count) ->
-    Tail = binary:copy(<<"+n">>, max(Count - 1, 0)),
+    Tail = binary:copy(~"+n", max(Count - 1, 0)),
     <<"n", Tail/binary>>;
 %% `(((...n...)))` — unbounded recursion depth.
 build_patho(nested_paren, Count) ->
-    Opens = binary:copy(<<"(">>, Count),
-    Closes = binary:copy(<<")">>, Count),
+    Opens = binary:copy(~"(", Count),
+    Closes = binary:copy(~")", Count),
     <<Opens/binary, "n", Closes/binary>>;
 %% `!!!...n` — unbounded unary recursion depth.
 build_patho(bang_chain, Count) ->
-    Bangs = binary:copy(<<"!">>, Count),
+    Bangs = binary:copy(~"!", Count),
     <<Bangs/binary, "n">>.
 
 %% `n*n*...*n` with `Factors` factors. Left-associative, so it stays at a
@@ -347,7 +347,7 @@ build_patho(bang_chain, Count) ->
 %% `evaluate/2` cost in finding #9.
 -spec multiply_chain(pos_integer()) -> binary().
 multiply_chain(Factors) when Factors >= 1 ->
-    Tail = binary:copy(<<"*n">>, max(Factors - 1, 0)),
+    Tail = binary:copy(~"*n", max(Factors - 1, 0)),
     <<"n", Tail/binary>>.
 
 %% Count the nodes of a compiled plural AST (the internal representation
@@ -438,7 +438,7 @@ c_op() ->
 %% the property covers parse + evaluate end-to-end.
 
 ast_to_text({var, n}) ->
-    <<"n">>;
+    ~"n";
 ast_to_text({lit, N}) when is_integer(N) ->
     integer_to_binary(N);
 ast_to_text({unop, '!', E}) ->

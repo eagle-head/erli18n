@@ -226,14 +226,9 @@ on_missing(_) -> lenient.
     [binary()].
 %% `%%` -> literal `%`.
 scan(<<$%, $%, Rest/binary>>, B, OM, Count, OutSize, Acc) ->
-    case append_and_check(<<$%>>, OutSize) of
+    case append_percent(OutSize) of
         {ok, NewOutSize} ->
             scan(Rest, B, OM, Count, NewOutSize, [<<$%>> | Acc]);
-        {truncate, TruncBin} ->
-            case TruncBin of
-                <<>> -> Acc;
-                _ -> [TruncBin | Acc]
-            end;
         stop ->
             Acc
     end;
@@ -242,27 +237,17 @@ scan(<<$%, ${, Rest/binary>>, B, OM, Count, OutSize, Acc) ->
     handle_placeholder(Rest, B, OM, Count, OutSize, Acc);
 %% Lone `%` at end of input -> literal.
 scan(<<$%>>, _B, _OM, _Count, OutSize, Acc) ->
-    case append_and_check(<<$%>>, OutSize) of
+    case append_percent(OutSize) of
         {ok, _NewOutSize} ->
             [<<$%>> | Acc];
-        {truncate, TruncBin} ->
-            case TruncBin of
-                <<>> -> Acc;
-                _ -> [TruncBin | Acc]
-            end;
         stop ->
             Acc
     end;
 %% Any other `%X` (X not `%` or `{`) -> emit `%` literally, continue at X.
 scan(<<$%, Rest/binary>>, B, OM, Count, OutSize, Acc) ->
-    case append_and_check(<<$%>>, OutSize) of
+    case append_percent(OutSize) of
         {ok, NewOutSize} ->
             scan(Rest, B, OM, Count, NewOutSize, [<<$%>> | Acc]);
-        {truncate, TruncBin} ->
-            case TruncBin of
-                <<>> -> Acc;
-                _ -> [TruncBin | Acc]
-            end;
         stop ->
             Acc
     end;
@@ -273,10 +258,9 @@ scan(Bin, B, OM, Count, OutSize, Acc) when is_binary(Bin), Bin =/= <<>> ->
         {ok, NewOutSize} ->
             scan(Rest, B, OM, Count, NewOutSize, [Chunk | Acc]);
         {truncate, TruncBin} ->
-            case TruncBin of
-                <<>> -> Acc;
-                _ -> [TruncBin | Acc]
-            end;
+            %% TruncBin is never empty (append_and_check/2 only truncates with
+            %% RoomLeft > 0), so the clamped final chunk is always appended.
+            [TruncBin | Acc];
         stop ->
             Acc
     end;
@@ -313,10 +297,7 @@ handle_placeholder(Rest, B, OM, Count, OutSize, Acc) ->
                 {ok, NewOutSize} ->
                     scan(Rest, B, OM, Count, NewOutSize, [<<$%, ${>> | Acc]);
                 {truncate, TruncBin} ->
-                    case TruncBin of
-                        <<>> -> Acc;
-                        _ -> [TruncBin | Acc]
-                    end;
+                    [TruncBin | Acc];
                 stop ->
                     Acc
             end
@@ -367,10 +348,7 @@ resolve(NameBin, AfterRest, B, OM, Count, OutSize, Acc) ->
                         {ok, NewOutSize} ->
                             scan(AfterRest, B, OM, Count, NewOutSize, [PlaceholderBin | Acc]);
                         {truncate, TruncBin} ->
-                            case TruncBin of
-                                <<>> -> Acc;
-                                _ -> [TruncBin | Acc]
-                            end;
+                            [TruncBin | Acc];
                         stop ->
                             Acc
                     end;
@@ -380,10 +358,7 @@ resolve(NameBin, AfterRest, B, OM, Count, OutSize, Acc) ->
                         {ok, NewOutSize} ->
                             scan(AfterRest, B, OM, Count + 1, NewOutSize, [Text | Acc]);
                         {truncate, TruncBin} ->
-                            case TruncBin of
-                                <<>> -> Acc;
-                                _ -> [TruncBin | Acc]
-                            end;
+                            [TruncBin | Acc];
                         stop ->
                             Acc
                     end
@@ -405,10 +380,7 @@ handle_missing(NameBin, AfterRest, B, lenient, Count, OutSize, Acc) ->
         {ok, NewOutSize} ->
             scan(AfterRest, B, lenient, Count, NewOutSize, [PlaceholderBin | Acc]);
         {truncate, TruncBin} ->
-            case TruncBin of
-                <<>> -> Acc;
-                _ -> [TruncBin | Acc]
-            end;
+            [TruncBin | Acc];
         stop ->
             Acc
     end.
@@ -478,6 +450,16 @@ append_and_check(Bin, OutSize) ->
             end
     end.
 
+%% Append a single literal `%` byte. A 1-byte append can never truncate: a
+%% `{truncate, _}` from `append_and_check/2` needs `NewSize > MAX` (here
+%% `OutSize >= MAX`) AND `RoomLeft > 0` (`OutSize < MAX`) simultaneously, which
+%% is impossible. So this returns the narrower `{ok, _} | stop` (no `truncate`
+%% arm to leave dead at the three single-`%` call sites), and is behaviorally
+%% identical to `append_and_check(<<$%>>, OutSize)`.
+-spec append_percent(non_neg_integer()) -> {ok, non_neg_integer()} | stop.
+append_percent(OutSize) when OutSize < ?MAX_OUTPUT_BYTES -> {ok, OutSize + 1};
+append_percent(_OutSize) -> stop.
+
 %% ===================================================================
 %% Value coercion — TOTAL. Never raises; unknown terms render via a
 %% bounded safe fallback. Output clamped to `?MAX_VALUE_BYTES`.
@@ -507,9 +489,12 @@ ensure_utf8(Bin) ->
         Out when is_binary(Out) ->
             Out;
         _ ->
+            %% Invalid UTF-8: re-encode treating the bytes as latin1. Every
+            %% byte (0..255) is a valid latin1 codepoint, so this is total for
+            %% ANY binary and always yields a binary (a non-binary return is
+            %% impossible, hence no fallback clause).
             case unicode:characters_to_binary(Bin, latin1, utf8) of
-                Out2 when is_binary(Out2) -> Out2;
-                _ -> safe_inspect(Bin)
+                Out2 when is_binary(Out2) -> Out2
             end
     end.
 
@@ -521,25 +506,22 @@ safe_iolist(L) ->
         _ -> safe_inspect(L)
     end.
 
+%% `float_to_binary/2` is total for any `float()` (the only caller is
+%% `coerce/1`'s `is_float` clause), so no error handling is needed.
 -spec safe_float(float()) -> binary().
 safe_float(F) ->
-    try float_to_binary(F, [short]) of
-        Out -> Out
-    catch
-        _:_ -> safe_inspect(F)
-    end.
+    float_to_binary(F, [short]).
 
-%% Bounded `io_lib` rendering for any non-text term. Truncated and total.
+%% Bounded `io_lib` rendering for any non-text term. Total: `io_lib:format/2`
+%% with `~tp` never raises for any term, and its (latin1-printable / integer-
+%% list) output is always valid chardata that `unicode:characters_to_binary/3`
+%% converts to a binary — so an impossible non-binary return crashes explicitly
+%% (`case_clause`) rather than being silently masked.
 -spec safe_inspect(term()) -> binary().
 safe_inspect(Term) ->
-    try
-        Chars = io_lib:format("~tp", [Term]),
-        case unicode:characters_to_binary(Chars, unicode, utf8) of
-            B when is_binary(B) -> B;
-            _ -> <<"?">>
-        end
-    catch
-        _:_ -> <<"?">>
+    Chars = io_lib:format("~tp", [Term]),
+    case unicode:characters_to_binary(Chars, unicode, utf8) of
+        B when is_binary(B) -> B
     end.
 
 -spec clamp_value(binary()) -> binary().

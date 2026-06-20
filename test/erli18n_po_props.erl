@@ -342,7 +342,7 @@ valid_po() ->
                 header => #{
                     plural_forms => plural_header_bin(NPlurals),
                     content_type =>
-                        <<"text/plain; charset=UTF-8">>,
+                        ~"text/plain; charset=UTF-8",
                     charset => utf8,
                     raw => raw_header_bin(NPlurals)
                 },
@@ -507,9 +507,9 @@ valid_translation_with_eot() ->
 %% consistent. We keep the synthesis local so the generator stays
 %% deterministic and reviewable.
 plural_header_bin(1) ->
-    <<"nplurals=1; plural=0;">>;
+    ~"nplurals=1; plural=0;";
 plural_header_bin(2) ->
-    <<"nplurals=2; plural=(n != 1);">>;
+    ~"nplurals=2; plural=(n != 1);";
 plural_header_bin(3) ->
     <<
         "nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : "
@@ -557,7 +557,7 @@ plural_source_spec() ->
             Catalog = #{
                 header => #{
                     plural_forms => plural_header_bin(NPlurals),
-                    content_type => <<"text/plain; charset=UTF-8">>,
+                    content_type => ~"text/plain; charset=UTF-8",
                     charset => utf8,
                     raw => raw_header_bin(NPlurals)
                 },
@@ -625,7 +625,7 @@ make_singular_catalog(Ctx, Msgid, Translation) ->
     #{
         header => #{
             plural_forms => plural_header_bin(2),
-            content_type => <<"text/plain; charset=UTF-8">>,
+            content_type => ~"text/plain; charset=UTF-8",
             charset => utf8,
             raw => raw_header_bin(2)
         },
@@ -668,7 +668,7 @@ canonicalize_parsed(#{header := Header, entries := Entries}) ->
 po_source_with_escapes() ->
     ?LET(
         {CharsetGen, EscapeGen},
-        {oneof([<<"UTF-8">>, <<"ISO-8859-1">>, <<"US-ASCII">>]), escape_fragment()},
+        {oneof([~"UTF-8", ~"ISO-8859-1", ~"US-ASCII"]), escape_fragment()},
         begin
             Charset = eqwalizer:dynamic_cast(CharsetGen),
             Escape = eqwalizer:dynamic_cast(EscapeGen),
@@ -696,10 +696,10 @@ po_source_with_escapes() ->
 %% DECODED byte can be high.
 escape_fragment() ->
     oneof([
-        <<"\\n">>,
-        <<"\\t">>,
-        <<"\\x41">>,
-        <<"\\101">>,
+        ~"\\n",
+        ~"\\t",
+        ~"\\x41",
+        ~"\\101",
         ?LET(
             BGen,
             choose(16#80, 16#FF),

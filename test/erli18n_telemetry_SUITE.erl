@@ -50,7 +50,11 @@
     telemetry_event_names_are_canonical/1,
     telemetry_emit_is_noop_when_telemetry_unloaded/1,
     telemetry_span_runs_fun_when_telemetry_unloaded/1,
-    telemetry_memory_warning_sample_empty_without_server/1
+    telemetry_memory_warning_sample_empty_without_server/1,
+    config_emit_lookup_telemetry_invalid/1,
+    config_memory_warning_threshold_invalid/1,
+    config_memory_warning_rate_limit_invalid/1,
+    config_memory_warning_last_emit_invalid/1
 ]).
 
 all() ->
@@ -74,7 +78,11 @@ all() ->
         telemetry_event_names_are_canonical,
         telemetry_emit_is_noop_when_telemetry_unloaded,
         telemetry_span_runs_fun_when_telemetry_unloaded,
-        telemetry_memory_warning_sample_empty_without_server
+        telemetry_memory_warning_sample_empty_without_server,
+        config_emit_lookup_telemetry_invalid,
+        config_memory_warning_threshold_invalid,
+        config_memory_warning_rate_limit_invalid,
+        config_memory_warning_last_emit_invalid
     ].
 
 %% =========================
@@ -194,7 +202,7 @@ telemetry_catalog_load_emits_span_start_stop(Config) ->
         [erli18n, catalog, load, exception]
     ]),
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
     Events = captured(Config),
     %% Exactly one start and one stop, no exception.
     Starts = [E || {[erli18n, catalog, load, start], _, _} = E <- Events],
@@ -208,7 +216,7 @@ telemetry_catalog_load_emits_span_start_stop(Config) ->
     ?assertEqual(ok, maps:get(result, StopMeta)),
     ?assertEqual(1, maps:get(keys_loaded, StopMeta)),
     ?assertEqual(default, maps:get(domain, StopMeta)),
-    ?assertEqual(<<"en">>, maps:get(locale, StopMeta)),
+    ?assertEqual(~"en", maps:get(locale, StopMeta)),
     %% Stop measurements include duration (telemetry:span/3 contract).
     {[erli18n, catalog, load, stop], StopM, _} = hd(Stops),
     ?assert(maps:is_key(duration, StopM)),
@@ -220,8 +228,8 @@ telemetry_catalog_load_emits_span_start_stop(Config) ->
 telemetry_catalog_load_already_reports_result_in_metadata(Config) ->
     ok = attach(Config, [[erli18n, catalog, load, stop]]),
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
-    {ok, already} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
+    {ok, already} = erli18n_server:ensure_loaded(default, ~"en", Path),
     Stops = captured_for(Config, [erli18n, catalog, load, stop]),
     ?assertEqual(2, length(Stops)),
     [{_M1, Meta1}, {_M2, Meta2}] = Stops,
@@ -241,7 +249,7 @@ telemetry_catalog_load_error_path_uses_stop_not_exception(Config) ->
         [erli18n, catalog, load, exception]
     ]),
     Path = fixture(Config, "invalid_syntax.po"),
-    Result = erli18n_server:ensure_loaded(default, <<"x">>, Path),
+    Result = erli18n_server:ensure_loaded(default, ~"x", Path),
     ?assertMatch({error, {syntax_error, _, _}}, Result),
     Events = captured(Config),
     Stops = [E || {[erli18n, catalog, load, stop], _, _} = E <- Events],
@@ -257,12 +265,12 @@ telemetry_catalog_load_error_path_uses_stop_not_exception(Config) ->
 %% specifically to overwrites.
 telemetry_catalog_reload_emits_span(Config) ->
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
     ok = attach(Config, [
         [erli18n, catalog, reload, start],
         [erli18n, catalog, reload, stop]
     ]),
-    {ok, 1} = erli18n_server:reload(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:reload(default, ~"en", Path),
     Events = captured(Config),
     Starts = [E || {[erli18n, catalog, reload, start], _, _} = E <- Events],
     Stops = [E || {[erli18n, catalog, reload, stop], _, _} = E <- Events],
@@ -276,12 +284,12 @@ telemetry_catalog_reload_emits_span(Config) ->
 %% metadata reports `result => ok` and `keys_removed` count.
 telemetry_catalog_unload_emits_span(Config) ->
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
     ok = attach(Config, [
         [erli18n, catalog, unload, start],
         [erli18n, catalog, unload, stop]
     ]),
-    ok = erli18n_server:unload(default, <<"en">>),
+    ok = erli18n_server:unload(default, ~"en"),
     Stops = captured_for(Config, [erli18n, catalog, unload, stop]),
     ?assertEqual(1, length(Stops)),
     {_M, StopMeta} = hd(Stops),
@@ -290,13 +298,13 @@ telemetry_catalog_unload_emits_span(Config) ->
     %% deleted from ETS.
     ?assert(maps:get(keys_removed, StopMeta) >= 1),
     ?assertEqual(default, maps:get(domain, StopMeta)),
-    ?assertEqual(<<"en">>, maps:get(locale, StopMeta)).
+    ?assertEqual(~"en", maps:get(locale, StopMeta)).
 
 %% Unload of a catalog that was never
 %% loaded -> result => not_loaded, keys_removed => 0.
 telemetry_catalog_unload_not_loaded_reports_zero(Config) ->
     ok = attach(Config, [[erli18n, catalog, unload, stop]]),
-    ok = erli18n_server:unload(default, <<"never_loaded">>),
+    ok = erli18n_server:unload(default, ~"never_loaded"),
     Stops = captured_for(Config, [erli18n, catalog, unload, stop]),
     ?assertEqual(1, length(Stops)),
     {_, StopMeta} = hd(Stops),
@@ -315,10 +323,10 @@ telemetry_lookup_miss_opt_in_default_off(Config) ->
     ok = attach(Config, [[erli18n, lookup, miss]]),
     %% Trigger a miss: domain/locale not loaded, gettext falls back to
     %% msgid.
-    <<"nonexistent">> = erli18n:gettext(
+    ~"nonexistent" = erli18n:gettext(
         default,
-        <<"nonexistent">>,
-        <<"en">>
+        ~"nonexistent",
+        ~"en"
     ),
     Events = captured_for(Config, [erli18n, lookup, miss]),
     ?assertEqual(0, length(Events)).
@@ -329,18 +337,18 @@ telemetry_lookup_miss_opt_in_default_off(Config) ->
 telemetry_lookup_miss_opt_in_enabled(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
     ok = attach(Config, [[erli18n, lookup, miss]]),
-    <<"nonexistent">> = erli18n:gettext(
+    ~"nonexistent" = erli18n:gettext(
         default,
-        <<"nonexistent">>,
-        <<"pt_BR">>
+        ~"nonexistent",
+        ~"pt_BR"
     ),
     Events = captured_for(Config, [erli18n, lookup, miss]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)),
-    ?assertEqual(<<"nonexistent">>, maps:get(msgid, Meta)),
+    ?assertEqual(~"pt_BR", maps:get(locale, Meta)),
+    ?assertEqual(~"nonexistent", maps:get(msgid, Meta)),
     ?assertEqual(gettext, maps:get(function, Meta)),
     ?assertEqual(undefined, maps:get(context, Meta)).
 
@@ -350,16 +358,16 @@ telemetry_lookup_miss_function_metadata(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
     ok = attach(Config, [[erli18n, lookup, miss]]),
     %% Force one miss per call shape; no catalog loaded.
-    <<"a">> = erli18n:gettext(default, <<"a">>, <<"en">>),
-    <<"bs">> = erli18n:ngettext(default, <<"b">>, <<"bs">>, 2, <<"en">>),
-    <<"c">> = erli18n:pgettext(default, <<"menu">>, <<"c">>, <<"en">>),
-    <<"ds">> = erli18n:npgettext(
+    ~"a" = erli18n:gettext(default, ~"a", ~"en"),
+    ~"bs" = erli18n:ngettext(default, ~"b", ~"bs", 2, ~"en"),
+    ~"c" = erli18n:pgettext(default, ~"menu", ~"c", ~"en"),
+    ~"ds" = erli18n:npgettext(
         default,
-        <<"menu">>,
-        <<"d">>,
-        <<"ds">>,
+        ~"menu",
+        ~"d",
+        ~"ds",
         2,
-        <<"en">>
+        ~"en"
     ),
     Events = captured_for(Config, [erli18n, lookup, miss]),
     ?assertEqual(4, length(Events)),
@@ -373,7 +381,7 @@ telemetry_lookup_miss_function_metadata(Config) ->
     ],
     ?assertEqual(1, length(PgettextEvent)),
     {_, PgMeta} = hd(PgettextEvent),
-    ?assertEqual(<<"menu">>, maps:get(context, PgMeta)).
+    ?assertEqual(~"menu", maps:get(context, PgMeta)).
 
 %% =========================
 %% Fuzzy skip — loader-level emit
@@ -387,13 +395,13 @@ telemetry_lookup_fuzzy_skip_emits_on_load(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, true),
     ok = attach(Config, [[erli18n, lookup, fuzzy_skip]]),
     Path = fixture(Config, "fuzzy_entry.po"),
-    {ok, _N} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    {ok, _N} = erli18n_server:ensure_loaded(default, ~"pt_BR", Path),
     Events = captured_for(Config, [erli18n, lookup, fuzzy_skip]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)).
+    ?assertEqual(~"pt_BR", maps:get(locale, Meta)).
 
 %% `include_fuzzy => true` means no
 %% entries are dropped, so the event is not emitted.
@@ -403,7 +411,7 @@ telemetry_lookup_fuzzy_skip_not_emitted_when_include_fuzzy(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
     {ok, _N} = erli18n_server:ensure_loaded(
         default,
-        <<"pt_BR">>,
+        ~"pt_BR",
         Path,
         #{include_fuzzy => true}
     ),
@@ -423,13 +431,13 @@ telemetry_plural_divergence_always_on(Config) ->
     application:set_env(erli18n, emit_lookup_telemetry, false),
     ok = attach(Config, [[erli18n, plural, divergence_warning]]),
     Path = fixture(Config, "divergent_pt_br.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"pt_BR", Path),
     Events = captured_for(Config, [erli18n, plural, divergence_warning]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
     ?assertEqual(1, maps:get(count, M)),
     ?assertEqual(default, maps:get(domain, Meta)),
-    ?assertEqual(<<"pt_BR">>, maps:get(locale, Meta)),
+    ?assertEqual(~"pt_BR", maps:get(locale, Meta)),
     %% Both rules carried so the consumer can render the diff.
     ?assert(is_binary(maps:get(po_rule, Meta))),
     ?assert(is_binary(maps:get(cldr_rule, Meta))).
@@ -439,7 +447,7 @@ telemetry_plural_divergence_always_on(Config) ->
 telemetry_plural_divergence_not_emitted_when_aligned(Config) ->
     ok = attach(Config, [[erli18n, plural, divergence_warning]]),
     Path = fixture(Config, "plural_pt_br.po"),
-    {ok, _} = erli18n_server:ensure_loaded(default, <<"pt_BR">>, Path),
+    {ok, _} = erli18n_server:ensure_loaded(default, ~"pt_BR", Path),
     Events = captured_for(Config, [erli18n, plural, divergence_warning]),
     ?assertEqual(0, length(Events)).
 
@@ -457,7 +465,7 @@ telemetry_memory_warning_when_threshold_crossed(Config) ->
     erli18n_telemetry:reset_caches(),
     ok = attach(Config, [[erli18n, catalog, memory_warning]]),
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
     Events = captured_for(Config, [erli18n, catalog, memory_warning]),
     ?assertEqual(1, length(Events)),
     {M, Meta} = hd(Events),
@@ -468,7 +476,7 @@ telemetry_memory_warning_when_threshold_crossed(Config) ->
     Sample = maps:get(domain_locales_sample, Meta),
     ?assert(is_list(Sample)),
     ?assert(length(Sample) =< 10),
-    ?assert(lists:member({default, <<"en">>}, Sample)).
+    ?assert(lists:member({default, ~"en"}, Sample)).
 
 %% Rate-limit window suppresses repeated
 %% emits even when threshold remains crossed.
@@ -480,11 +488,11 @@ telemetry_memory_warning_rate_limited(Config) ->
     Path1 = fixture(Config, "minimal_en.po"),
     Path2 = fixture(Config, "plural_pt_br.po"),
     %% Five distinct loads, all crossing the 1-byte threshold.
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"l1">>, Path1),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"l2">>, Path1),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"l3">>, Path2),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"l4">>, Path2),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"l5">>, Path1),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"l1", Path1),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"l2", Path1),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"l3", Path2),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"l4", Path2),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"l5", Path1),
     Events = captured_for(Config, [erli18n, catalog, memory_warning]),
     %% Exactly one event within the 60s window.
     ?assertEqual(1, length(Events)).
@@ -498,13 +506,13 @@ telemetry_metadata_includes_po_path(Config) ->
         [erli18n, catalog, load, stop]
     ]),
     Path = fixture(Config, "minimal_en.po"),
-    {ok, 1} = erli18n_server:ensure_loaded(default, <<"en">>, Path),
+    {ok, 1} = erli18n_server:ensure_loaded(default, ~"en", Path),
     Starts = captured_for(Config, [erli18n, catalog, load, start]),
     ?assertEqual(1, length(Starts)),
     {_M, Meta} = hd(Starts),
     PoPath = maps:get(po_path, Meta),
     ?assert(is_binary(PoPath)),
-    ?assert(binary:match(PoPath, <<"minimal_en.po">>) =/= nomatch),
+    ?assert(binary:match(PoPath, ~"minimal_en.po") =/= nomatch),
     %% fuzzy_included default is false (no opt passed).
     ?assertEqual(false, maps:get(fuzzy_included, Meta)),
     %% language is lc_messages in the base metadata.
@@ -610,6 +618,12 @@ telemetry_memory_warning_sample_empty_without_server(Config) ->
     %% (soft-purged-out) code, but no API calls are made against it
     %% during this test — we drive `memory_warning_check/1` directly
     %% with a synthetic MemInfo map.
+    %% Under `rebar3 ct --cover`, deleting + reloading erli18n_server (below)
+    %% reloads the on-disk, NON-cover beam, de-instrumenting the module and
+    %% dropping it from the coverage aggregate. Snapshot its cover data first so
+    %% the `after` clause can re-instrument and re-import it — the purge this
+    %% test genuinely needs then costs nothing in coverage. No-op outside cover.
+    CoverSnapshot = cover_snapshot(erli18n_server),
     try
         true = code:delete(erli18n_server),
         %% soft_purge is best-effort; if a process is using the old
@@ -639,8 +653,85 @@ telemetry_memory_warning_sample_empty_without_server(Config) ->
         {_M, Meta} = hd(Events),
         ?assertEqual([], maps:get(domain_locales_sample, Meta))
     after
-        {module, erli18n_server} = code:ensure_loaded(erli18n_server)
+        {module, erli18n_server} = code:ensure_loaded(erli18n_server),
+        cover_restore(CoverSnapshot, erli18n_server)
     end.
+
+%% Cover-resilience helpers. When this run is under cover, `cover:modules/0`
+%% lists the cover-compiled modules; export the target's accumulated data to a
+%% temp file so we can restore it after the unavoidable delete/reload. When NOT
+%% under cover (`cover:modules/0` errors or is empty), these are no-ops.
+cover_snapshot(Mod) ->
+    case is_under_cover(Mod) of
+        false ->
+            not_under_cover;
+        true ->
+            File = lists:flatten(io_lib:format("/tmp/erli18n_covsnap_~s.coverdata", [Mod])),
+            ok = cover:export(File, Mod),
+            {snapshot, File}
+    end.
+
+cover_restore(not_under_cover, _Mod) ->
+    ok;
+cover_restore({snapshot, File}, Mod) ->
+    %% Re-instrument the freshly-reloaded (non-cover) beam, then re-import the
+    %% pre-purge counters so no coverage is lost to this test.
+    {ok, Mod} = cover:compile_beam(Mod),
+    ok = cover:import(File),
+    _ = file:delete(File),
+    ok.
+
+is_under_cover(Mod) ->
+    %% `cover_server` is registered only while a cover run is active (rebar3
+    %% ct --cover); outside it there is nothing to preserve.
+    case whereis(cover_server) of
+        undefined ->
+            false;
+        _Pid ->
+            %% cover:modules/0 is `[atom()] | {error, not_main_node}`.
+            case cover:modules() of
+                Mods when is_list(Mods) -> lists:member(Mod, Mods);
+                _ -> false
+            end
+    end.
+
+%% =========================
+%% Config-validation contracts: a malformed env / persistent_term surfaces a
+%% structured error, not a silent wrong value (input -> output).
+%% =========================
+
+config_emit_lookup_telemetry_invalid(_Config) ->
+    application:set_env(erli18n, emit_lookup_telemetry, "yes"),
+    ?assertError(
+        {invalid_config, {erli18n, emit_lookup_telemetry, "yes", expected, boolean}},
+        erli18n_telemetry:lookup_telemetry_enabled()
+    ).
+
+config_memory_warning_threshold_invalid(_Config) ->
+    application:set_env(erli18n, memory_warning_threshold, -1),
+    ?assertError(
+        {invalid_config, {erli18n, memory_warning_threshold, -1, expected, non_neg_integer}},
+        erli18n_telemetry:memory_warning_threshold()
+    ).
+
+config_memory_warning_rate_limit_invalid(_Config) ->
+    application:set_env(erli18n, memory_warning_rate_limit_seconds, -5),
+    ?assertError(
+        {invalid_config,
+            {erli18n, memory_warning_rate_limit_seconds, -5, expected, non_neg_integer}},
+        erli18n_telemetry:memory_warning_rate_limit_seconds()
+    ).
+
+config_memory_warning_last_emit_invalid(_Config) ->
+    persistent_term:put({erli18n_telemetry, memory_warning_last_emit}, not_an_int),
+    application:set_env(erli18n, memory_warning_threshold, 1),
+    ?assertError(
+        {invalid_persistent_term, {
+            {erli18n_telemetry, memory_warning_last_emit}, not_an_int, expected, integer
+        }},
+        erli18n_telemetry:memory_warning_check(#{ets_bytes => 100, num_catalogs => 0, num_keys => 0})
+    ),
+    erli18n_telemetry:reset_caches().
 
 %% Run Fun with telemetry deliberately unloaded from the VM, then
 %% restore. Mirrors the production no-op story: persistent_term cache

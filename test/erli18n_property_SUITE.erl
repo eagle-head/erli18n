@@ -45,7 +45,12 @@
     lookup_miss_fallback_deterministic/1,
     interp_format_is_total/1,
     interp_double_percent_roundtrip/1,
-    interp_malformed_reference_is_total/1
+    interp_malformed_reference_is_total/1,
+    negotiate_canonicalize_is_total/1,
+    negotiate_canonicalize_idempotent/1,
+    negotiate_separator_equivalence/1,
+    negotiate_parse_accept_language_is_total/1,
+    negotiate_best_match_is_member/1
 ]).
 
 %% Number of QuickCheck runs per property. 200 = release-blocking floor
@@ -70,7 +75,12 @@ all() ->
         lookup_miss_fallback_deterministic,
         interp_format_is_total,
         interp_double_percent_roundtrip,
-        interp_malformed_reference_is_total
+        interp_malformed_reference_is_total,
+        negotiate_canonicalize_is_total,
+        negotiate_canonicalize_idempotent,
+        negotiate_separator_equivalence,
+        negotiate_parse_accept_language_is_total,
+        negotiate_best_match_is_member
     ].
 
 init_per_suite(Config) ->
@@ -147,6 +157,21 @@ interp_double_percent_roundtrip(_Config) ->
 
 interp_malformed_reference_is_total(_Config) ->
     run_property(erli18n_interp_props:prop_malformed_reference_is_total()).
+
+negotiate_canonicalize_is_total(_Config) ->
+    run_property(erli18n_negotiate_props:prop_canonicalize_is_total()).
+
+negotiate_canonicalize_idempotent(_Config) ->
+    run_property(erli18n_negotiate_props:prop_canonicalize_idempotent()).
+
+negotiate_separator_equivalence(_Config) ->
+    run_property(erli18n_negotiate_props:prop_separator_equivalence()).
+
+negotiate_parse_accept_language_is_total(_Config) ->
+    run_property(erli18n_negotiate_props:prop_parse_accept_language_is_total()).
+
+negotiate_best_match_is_member(_Config) ->
+    run_property(erli18n_negotiate_props:prop_best_match_is_member()).
 
 %% =========================
 %% Helpers

@@ -116,6 +116,9 @@ ok
 - Catalog lifecycle: `ensure_loaded/3`, `reload/3`, `unload/2`,
   `default_po_path/3`.
 - Observability: `loaded_catalogs/0`, `memory_info/0`, `which_keys/2`.
+- Locale negotiation & fallback (Phase 2, opt-in): `negotiate/2`,
+  `parse_accept_language/1`, `canonicalize_locale/1`, `set_locale_fallback/1`
+  (and the `locale_fallback` app env). See `erli18n_negotiate`.
 
 ## Lookup rules (R1-R6)
 
@@ -251,6 +254,17 @@ who has never seen the project:
     memory_info/0,
     loaded_catalogs/0,
     which_keys/2
+]).
+
+%% Locale negotiation & fallback (Phase 2). Opt-in BCP-47 canonicalization,
+%% fallback chain, and Accept-Language negotiation; thin facade over
+%% `erli18n_negotiate`. The fallback chain itself is wired into the four
+%% lookup families' miss arms and gated by the `locale_fallback` app env.
+-export([
+    negotiate/2,
+    parse_accept_language/1,
+    canonicalize_locale/1,
+    set_locale_fallback/1
 ]).
 
 %% =========================
@@ -427,8 +441,15 @@ gettext(Domain, Msgid, Locale) when
     case erli18n_server:lookup_singular(Domain, Locale, undefined, Msgid) of
         {ok, T} when T =/= <<>> -> T;
         _Other ->
-            emit_lookup_miss(gettext, Domain, Locale, undefined, Msgid),
-            Msgid
+            %% Exact miss. Try the opt-in fallback chain (no-op when
+            %% `locale_fallback = off`); only then record the miss + msgid.
+            case fallback_lookup_singular(gettext, Domain, undefined, Msgid, Locale) of
+                {ok, T2} ->
+                    T2;
+                miss ->
+                    emit_lookup_miss(gettext, Domain, Locale, undefined, Msgid),
+                    Msgid
+            end
     end.
 
 %% dgettext/2,3 — GNU C-macro names. Aliases for gettext/2,3.
@@ -585,8 +606,13 @@ ngettext(Domain, Msgid, MsgidPlural, N, Locale) when
     of
         {ok, T} when T =/= <<>> -> T;
         _Other ->
-            emit_lookup_miss(ngettext, Domain, Locale, undefined, Msgid),
-            plural_fallback(Msgid, MsgidPlural, N)
+            case fallback_lookup_plural(ngettext, Domain, undefined, Msgid, N, Locale) of
+                {ok, T2} ->
+                    T2;
+                miss ->
+                    emit_lookup_miss(ngettext, Domain, Locale, undefined, Msgid),
+                    plural_fallback(Msgid, MsgidPlural, N)
+            end
     end.
 
 %% dngettext/4,5 — GNU C-macro names, aliases for ngettext/4,5.
@@ -726,8 +752,13 @@ pgettext(Domain, Context, Msgid, Locale) when
     case erli18n_server:lookup_singular(Domain, Locale, Context, Msgid) of
         {ok, T} when T =/= <<>> -> T;
         _Other ->
-            emit_lookup_miss(pgettext, Domain, Locale, Context, Msgid),
-            Msgid
+            case fallback_lookup_singular(pgettext, Domain, Context, Msgid, Locale) of
+                {ok, T2} ->
+                    T2;
+                miss ->
+                    emit_lookup_miss(pgettext, Domain, Locale, Context, Msgid),
+                    Msgid
+            end
     end.
 
 %% dpgettext/3,4 — GNU C-macro names, aliases for pgettext/3,4.
@@ -901,8 +932,13 @@ npgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) when
     of
         {ok, T} when T =/= <<>> -> T;
         _Other ->
-            emit_lookup_miss(npgettext, Domain, Locale, Context, Msgid),
-            plural_fallback(Msgid, MsgidPlural, N)
+            case fallback_lookup_plural(npgettext, Domain, Context, Msgid, N, Locale) of
+                {ok, T2} ->
+                    T2;
+                miss ->
+                    emit_lookup_miss(npgettext, Domain, Locale, Context, Msgid),
+                    plural_fallback(Msgid, MsgidPlural, N)
+            end
     end.
 
 %% dnpgettext/5,6 — GNU C-macro names, aliases for npgettext/5,6.
@@ -1886,6 +1922,118 @@ which_keys(Domain, Locale) ->
     erli18n_server:which_keys(Domain, Locale).
 
 %% =========================
+%% Locale negotiation & fallback (Phase 2) — public facade
+%% =========================
+
+-doc """
+Chooses the best supported locale for a client preference list, always
+returning a usable locale.
+
+`Preferred` is an ordered preference list — either `[locale()]` or the
+`[{locale(), 0..1000}]` output of `parse_accept_language/1` — where position
+encodes priority. `Available` is the list of locales the caller supports
+(typically the `Locale` field of `loaded_catalogs/0`). Each preference is
+canonicalized and resolved through its BCP-47 fallback chain against
+`Available`; the first hit wins and is returned in its original `Available`
+casing. When nothing matches, returns `{ok, default_locale()}` so the result
+is always safe to feed to `setlocale/1`.
+
+This helper is **pure** and independent of the `locale_fallback` env: it is
+the negotiation primitive for request middleware, distinct from the catalog
+lookup-time fallback chain (which the four lookup families apply on a miss).
+
+```erlang
+1> erli18n:negotiate([<<"pt-BR">>], [<<"pt">>, <<"en">>]).
+{ok,<<"pt">>}
+2> erli18n:negotiate(
+..    erli18n:parse_accept_language(<<"fr-CH, fr;q=0.9, en;q=0.5">>),
+..    [<<"en">>, <<"de">>]).
+{ok,<<"en">>}
+```
+
+See `parse_accept_language/1`, `canonicalize_locale/1`, and the lower-level
+`erli18n_negotiate:negotiate/2` (which returns `error` instead of the
+default on no match).
+""".
+-spec negotiate(
+    [locale()] | [{locale(), erli18n_negotiate:qvalue()}], [locale()]
+) -> {ok, locale()}.
+negotiate(Preferred, Available) ->
+    erli18n_negotiate:negotiate(Preferred, Available, default_locale()).
+
+-doc """
+Parses an HTTP `Accept-Language` header into a priority-ordered
+`[{LanguageRange, Q}]` list (`Q` an integer in milli-units, `0..1000`).
+
+Total and fail-soft: malformed elements are skipped and a hostile or empty
+header yields `[]` — it never raises. Bounded against header/element DoS. The
+output is sorted by descending quality (stable on ties) and is drop-in
+compatible with `cowboy_req:parse_header(<<"accept-language">>, Req)`. Feed it
+straight into `negotiate/2`.
+
+```erlang
+1> erli18n:parse_accept_language(<<"da, en-gb;q=0.8, en;q=0.7">>).
+[{<<"da">>,1000},{<<"en-gb">>,800},{<<"en">>,700}]
+```
+
+Delegates to `erli18n_negotiate:parse_accept_language/1`.
+""".
+-spec parse_accept_language(binary()) ->
+    [{erli18n_negotiate:language_range(), erli18n_negotiate:qvalue()}].
+parse_accept_language(Header) ->
+    erli18n_negotiate:parse_accept_language(Header).
+
+-doc """
+Canonicalizes one BCP-47 / POSIX locale tag to erli18n catalog-key shape
+(`<<"pt-BR">>` → `<<"pt_BR">>`, `<<"iw">>` → `<<"he">>`).
+
+Total and idempotent over binary content; see `erli18n_negotiate:canonicalize/1`
+for the full algorithm, the legacy-alias table, and the documented non-goals
+(the script⇄region inference `zh_Hans` ⇄ `zh_CN` is out of scope).
+
+```erlang
+1> erli18n:canonicalize_locale(<<"PT_br.UTF-8">>).
+<<"pt_BR">>
+```
+""".
+-spec canonicalize_locale(binary()) -> binary().
+canonicalize_locale(Tag) ->
+    erli18n_negotiate:canonicalize(Tag).
+
+-doc """
+Sets the application's locale-fallback mode (env `erli18n.locale_fallback`)
+and returns `ok`.
+
+Modes:
+- `off` (default) — exact-match only; behavior is identical to 0.2.0 and the
+  lookup hot path reads nothing extra.
+- `base_language` — on an exact miss, try the canonicalization-aware BCP-47
+  fallback chain (`pt_BR` → `pt` → `default_locale/0`) before falling back to
+  the msgid.
+- `{explicit, Map}` — `Map :: #{locale() => [locale()]}`; for a listed locale
+  the chain is the (canonicalized) override list, else it falls through to
+  `base_language`. An override layer, not an allowlist.
+
+The fallback chain runs only on a lookup MISS and only when this mode is not
+`off`, so enabling it never slows an exact hit. An invalid stored value is
+treated as `off` (fail-soft) at lookup time rather than crashing a translation.
+
+```erlang
+1> erli18n:set_locale_fallback(base_language).
+ok
+```
+
+See `negotiate/2` (request-time negotiation) and `erli18n_negotiate`.
+""".
+-spec set_locale_fallback(off | base_language | {explicit, #{locale() => [locale()]}}) -> ok.
+set_locale_fallback(off) ->
+    application:set_env(erli18n, locale_fallback, off);
+set_locale_fallback(base_language) ->
+    application:set_env(erli18n, locale_fallback, base_language);
+set_locale_fallback({explicit, Map}) when is_map(Map) ->
+    application:set_env(erli18n, locale_fallback, {explicit, Map}).
+
+%% =========================
 %% Internal helpers
 %% =========================
 
@@ -1980,6 +2128,184 @@ emit_lookup_miss(Function, Domain, Locale, Context, Msgid) ->
                     domain => Domain,
                     locale => Locale,
                     msgid => Msgid,
+                    function => Function,
+                    context => Context
+                }
+            ),
+            ok
+    end.
+
+%% =========================
+%% Locale fallback chain (Phase 2) — internal, MISS-path only
+%% =========================
+%%
+%% These helpers are reached ONLY from the `_Other ->` (miss) arm of the four
+%% lookup families, so they add ZERO cost to an exact hit: on a hit, control
+%% returns from the first `case` clause and none of this runs — no config
+%% read, no canonicalization, no allocation. The first act on the miss path is
+%% the `off` short-circuit (`locale_fallback_mode/0`), so the feature is also
+%% free when disabled (the default).
+
+-doc """
+Internal helper: resolve a singular lookup MISS through the opt-in fallback
+chain. Returns `{ok, Translation}` on a fallback hit (and emits the
+`[erli18n, locale, fallback]` event), or `miss` when fallback is disabled
+(`locale_fallback = off`) or the whole chain misses.
+
+`Function` is the originating family (for telemetry); `Locale` is the locale
+already tried verbatim by the exact lookup (its canonical form is dropped from
+the chain head to avoid a redundant `ets:lookup`).
+""".
+-spec fallback_lookup_singular(atom(), domain(), context(), msgid(), locale()) ->
+    {ok, translation()} | miss.
+fallback_lookup_singular(Function, Domain, Context, Msgid, Locale) ->
+    case locale_fallback_mode() of
+        off ->
+            miss;
+        Mode ->
+            {Chain, Depth0} = chain_after_exact(fallback_chain_for(Mode, Locale), Locale),
+            case resolve_singular(Chain, Domain, Context, Msgid, Depth0) of
+                {ok, T, Resolved, Depth} ->
+                    emit_locale_fallback(Function, Domain, Locale, Resolved, Context, Depth),
+                    {ok, T};
+                miss ->
+                    miss
+            end
+    end.
+
+-doc """
+Internal helper: the plural-form counterpart of `fallback_lookup_singular/5`.
+Walks the same fallback chain but resolves each candidate via
+`erli18n_server:lookup_plural_form/5` (each candidate catalog selects the form
+by its own compiled `Plural-Forms` rule against `N`).
+""".
+-spec fallback_lookup_plural(atom(), domain(), context(), msgid(), integer(), locale()) ->
+    {ok, translation()} | miss.
+fallback_lookup_plural(Function, Domain, Context, Msgid, N, Locale) ->
+    case locale_fallback_mode() of
+        off ->
+            miss;
+        Mode ->
+            {Chain, Depth0} = chain_after_exact(fallback_chain_for(Mode, Locale), Locale),
+            case resolve_plural(Chain, Domain, Context, Msgid, N, Depth0) of
+                {ok, T, Resolved, Depth} ->
+                    emit_locale_fallback(Function, Domain, Locale, Resolved, Context, Depth),
+                    {ok, T};
+                miss ->
+                    miss
+            end
+    end.
+
+%% Walk the candidate chain, one `ets:lookup` per entry, first non-empty hit
+%% wins; `Depth` is the 0-based index of the candidate that hit (telemetry).
+-spec resolve_singular([locale()], domain(), context(), msgid(), non_neg_integer()) ->
+    {ok, translation(), locale(), non_neg_integer()} | miss.
+resolve_singular([], _Domain, _Context, _Msgid, _Depth) ->
+    miss;
+resolve_singular([Cand | Rest], Domain, Context, Msgid, Depth) ->
+    case erli18n_server:lookup_singular(Domain, Cand, Context, Msgid) of
+        {ok, T} when T =/= <<>> -> {ok, T, Cand, Depth};
+        _ -> resolve_singular(Rest, Domain, Context, Msgid, Depth + 1)
+    end.
+
+-spec resolve_plural([locale()], domain(), context(), msgid(), integer(), non_neg_integer()) ->
+    {ok, translation(), locale(), non_neg_integer()} | miss.
+resolve_plural([], _Domain, _Context, _Msgid, _N, _Depth) ->
+    miss;
+resolve_plural([Cand | Rest], Domain, Context, Msgid, N, Depth) ->
+    case erli18n_server:lookup_plural_form(Domain, Cand, Context, Msgid, N) of
+        {ok, T} when T =/= <<>> -> {ok, T, Cand, Depth};
+        _ -> resolve_plural(Rest, Domain, Context, Msgid, N, Depth + 1)
+    end.
+
+%% Build the candidate chain for the active mode. `fallback_default_locale/0`
+%% is the chain floor for both modes; both delegate the bounding/dedup (and the
+%% shared `?MAX_CHAIN` cap) to `erli18n_negotiate`.
+-spec fallback_chain_for(base_language | {explicit, map()}, locale()) -> [locale(), ...].
+fallback_chain_for(base_language, Locale) ->
+    erli18n_negotiate:fallback_chain(Locale, fallback_default_locale());
+fallback_chain_for({explicit, Map}, Locale) ->
+    explicit_chain(Map, Locale, fallback_default_locale()).
+
+%% `{explicit, Map}` mode: for a listed (canonical) locale the chain is the
+%% canonicalized override list (built and bounded by `erli18n_negotiate:override_chain/3`,
+%% which applies the same `?MAX_CHAIN` cap as every other chain); an unlisted
+%% locale falls through to the `base_language` chain (override layer, not
+%% allowlist).
+-spec explicit_chain(map(), locale(), locale() | undefined) -> [locale(), ...].
+explicit_chain(Map, Locale, Default) ->
+    Canon = erli18n_negotiate:canonicalize(Locale),
+    case maps:get(Canon, Map, undefined) of
+        List when is_list(List) ->
+            erli18n_negotiate:override_chain(Locale, List, Default);
+        _ ->
+            erli18n_negotiate:fallback_chain(Locale, Default)
+    end.
+
+%% The chain floor for the fallback path. Reads the configured default locale
+%% but — unlike `default_locale/0` — does NOT crash on a misconfigured value:
+%% enabling the opt-in fallback feature must never turn a lookup MISS (which
+%% returned the `msgid` in 0.2.0) into a crash. An invalid default simply
+%% yields no floor (`undefined`), and the chain is built without it.
+-spec fallback_default_locale() -> locale() | undefined.
+fallback_default_locale() ->
+    case application:get_env(erli18n, default_locale, ?DEFAULT_LOCALE) of
+        Locale when is_binary(Locale) -> Locale;
+        _Other -> undefined
+    end.
+
+%% The exact lookup already tried `Locale` verbatim and missed. If the chain
+%% head equals it (the common already-canonical case), skip that one redundant
+%% `ets:lookup` by dropping the head — but report the starting telemetry
+%% `chain_depth` as 1 (the dropped head was depth 0), so an identical fallback
+%% reports the SAME depth whether the request arrived canonical (`pt_BR`) or
+%% not (`pt-BR`). Returns `{ChainToWalk, StartDepth}`.
+-spec chain_after_exact([locale()], locale()) -> {[locale()], non_neg_integer()}.
+chain_after_exact([Locale | Rest], Locale) -> {Rest, 1};
+chain_after_exact(Chain, _Locale) -> {Chain, 0}.
+
+-doc """
+Internal helper: read the resolved `locale_fallback` mode from app env.
+
+`off` (the default) is the cheapest branch. An invalid stored value is
+normalized to `off` (fail-soft) rather than crashing: this read happens on the
+lookup miss path of user-facing code, so a misconfiguration must only disable
+the new feature, never break translation. (Contrast with `default_locale/0`,
+which crashes loudly — there a wrong value cannot be silently substituted.)
+""".
+-spec locale_fallback_mode() -> off | base_language | {explicit, map()}.
+locale_fallback_mode() ->
+    case application:get_env(erli18n, locale_fallback, off) of
+        off -> off;
+        base_language -> base_language;
+        {explicit, Map} when is_map(Map) -> {explicit, Map};
+        _Other -> off
+    end.
+
+-doc """
+Internal helper: emits the locale-fallback telemetry event
+(`[erli18n, locale, fallback]`) when a non-exact locale resolved a translation
+through the fallback chain.
+
+Opt-in under the SAME flag as the lookup-miss event
+(`erli18n_telemetry:lookup_telemetry_enabled/0`), checked FIRST so a disabled
+flag builds no event. `Depth` is the 0-based position in the chain of the
+candidate that hit. Always returns `ok`.
+""".
+-spec emit_locale_fallback(atom(), domain(), locale(), locale(), context(), non_neg_integer()) ->
+    ok.
+emit_locale_fallback(Function, Domain, Requested, Resolved, Context, Depth) ->
+    case erli18n_telemetry:lookup_telemetry_enabled() of
+        false ->
+            ok;
+        true ->
+            erli18n_telemetry:emit(
+                erli18n_telemetry:event_locale_fallback(),
+                #{count => 1, chain_depth => Depth},
+                #{
+                    domain => Domain,
+                    requested_locale => Requested,
+                    resolved_locale => Resolved,
                     function => Function,
                     context => Context
                 }

@@ -88,7 +88,7 @@ init_per_suite(Config) ->
         {ok, MsgfmtVersion} ->
             case check_gettext_cli() of
                 ok ->
-                    case check_locales([<<"pt_BR">>, <<"ru_RU">>]) of
+                    case check_locales([~"pt_BR", ~"ru_RU"]) of
                         ok ->
                             {ok, _} = application:ensure_all_started(erli18n),
                             Base = make_locale_root(),
@@ -144,7 +144,7 @@ end_per_testcase(_TC, Config) ->
     %% Best-effort cleanup so iterations don't leak ETS state in either
     %% oracle or subject.
     Base = ?config(locale_base, Config),
-    Locales = [<<"pt_BR">>, <<"ru_RU">>, <<"xx">>, <<"en">>],
+    Locales = [~"pt_BR", ~"ru_RU", ~"xx", ~"en"],
     lists:foreach(
         fun(L) ->
             %% Best-effort: server may be down between tests, or the
@@ -182,11 +182,11 @@ parity_singular_lookup(Config) ->
         "msgid \"Hello\"\n"
         "msgstr \"Olá\"\n"/utf8
     >>,
-    install_fixture(Base, <<"pt_BR">>, Po),
-    load_both(Base, <<"pt_BR">>),
-    OracleOut = oracle_gettext(Base, ?DOMAIN, <<"Hello">>, <<"pt_BR">>),
-    SubjectOut = erli18n:gettext(?DOMAIN, <<"Hello">>, <<"pt_BR">>),
-    ?assertEqual(<<"Olá"/utf8>>, OracleOut),
+    install_fixture(Base, ~"pt_BR", Po),
+    load_both(Base, ~"pt_BR"),
+    OracleOut = oracle_gettext(Base, ?DOMAIN, ~"Hello", ~"pt_BR"),
+    SubjectOut = erli18n:gettext(?DOMAIN, ~"Hello", ~"pt_BR"),
+    ?assertEqual(~"Olá", OracleOut),
     ?assertEqual(OracleOut, SubjectOut),
     ok.
 
@@ -202,13 +202,13 @@ parity_singular_miss_fallback(Config) ->
         "msgid \"Hello\"\n"
         "msgstr \"Olá\"\n"/utf8
     >>,
-    install_fixture(Base, <<"pt_BR">>, Po),
-    load_both(Base, <<"pt_BR">>),
+    install_fixture(Base, ~"pt_BR", Po),
+    load_both(Base, ~"pt_BR"),
     OracleOut =
-        oracle_gettext(Base, ?DOMAIN, <<"NoTranslation">>, <<"pt_BR">>),
-    SubjectOut = erli18n:gettext(?DOMAIN, <<"NoTranslation">>, <<"pt_BR">>),
+        oracle_gettext(Base, ?DOMAIN, ~"NoTranslation", ~"pt_BR"),
+    SubjectOut = erli18n:gettext(?DOMAIN, ~"NoTranslation", ~"pt_BR"),
     %% Per R1 (BR-MIGRAR-001): miss returns msgid unchanged.
-    ?assertEqual(<<"NoTranslation">>, OracleOut),
+    ?assertEqual(~"NoTranslation", OracleOut),
     ?assertEqual(OracleOut, SubjectOut),
     ok.
 
@@ -230,12 +230,12 @@ parity_plural_pt_br(Config) ->
         "msgstr[0] \"Peixe\"\n"
         "msgstr[1] \"Peixes\"\n"
     >>,
-    install_fixture(Base, <<"pt_BR">>, Po),
-    load_both(Base, <<"pt_BR">>),
+    install_fixture(Base, ~"pt_BR", Po),
+    load_both(Base, ~"pt_BR"),
     %% pt_BR (n > 1): 0 -> singular(0); 1 -> singular(0); 2+ -> plural(1).
     lists:foreach(
         fun(N) ->
-            check_plural(Base, <<"Fish">>, <<"Fishes">>, N, <<"pt_BR">>)
+            check_plural(Base, ~"Fish", ~"Fishes", N, ~"pt_BR")
         end,
         [0, 1, 2, 5, 100]
     ),
@@ -257,11 +257,11 @@ parity_plural_ru(Config) ->
         "msgstr[1] \"Kamnia\"\n"
         "msgstr[2] \"Kamney\"\n"
     >>,
-    install_fixture(Base, <<"ru_RU">>, Po),
-    load_both(Base, <<"ru_RU">>),
+    install_fixture(Base, ~"ru_RU", Po),
+    load_both(Base, ~"ru_RU"),
     lists:foreach(
         fun(N) ->
-            check_plural(Base, <<"Stone">>, <<"Stones">>, N, <<"ru_RU">>)
+            check_plural(Base, ~"Stone", ~"Stones", N, ~"ru_RU")
         end,
         [1, 2, 5, 11, 21, 100]
     ),
@@ -287,15 +287,15 @@ parity_contextual_lookup(Config) ->
         "msgid \"Save\"\n"
         "msgstr \"Gravar\"\n"
     >>,
-    install_fixture(Base, <<"pt_BR">>, Po),
-    load_both(Base, <<"pt_BR">>),
-    O1 = oracle_pgettext(Base, ?DOMAIN, <<"button">>, <<"Save">>, <<"pt_BR">>),
-    S1 = erli18n:pgettext(?DOMAIN, <<"button">>, <<"Save">>, <<"pt_BR">>),
-    O2 = oracle_pgettext(Base, ?DOMAIN, <<"menu">>, <<"Save">>, <<"pt_BR">>),
-    S2 = erli18n:pgettext(?DOMAIN, <<"menu">>, <<"Save">>, <<"pt_BR">>),
-    ?assertEqual(<<"Salvar">>, O1),
+    install_fixture(Base, ~"pt_BR", Po),
+    load_both(Base, ~"pt_BR"),
+    O1 = oracle_pgettext(Base, ?DOMAIN, ~"button", ~"Save", ~"pt_BR"),
+    S1 = erli18n:pgettext(?DOMAIN, ~"button", ~"Save", ~"pt_BR"),
+    O2 = oracle_pgettext(Base, ?DOMAIN, ~"menu", ~"Save", ~"pt_BR"),
+    S2 = erli18n:pgettext(?DOMAIN, ~"menu", ~"Save", ~"pt_BR"),
+    ?assertEqual(~"Salvar", O1),
     ?assertEqual(O1, S1),
-    ?assertEqual(<<"Gravar">>, O2),
+    ?assertEqual(~"Gravar", O2),
     ?assertEqual(O2, S2),
     ok.
 
@@ -315,11 +315,11 @@ parity_empty_msgstr_fallback(Config) ->
         "msgid \"Empty\"\n"
         "msgstr \"\"\n"/utf8
     >>,
-    install_fixture(Base, <<"pt_BR">>, Po),
-    load_both(Base, <<"pt_BR">>),
-    OracleEmpty = oracle_gettext(Base, ?DOMAIN, <<"Empty">>, <<"pt_BR">>),
-    SubjectEmpty = erli18n:gettext(?DOMAIN, <<"Empty">>, <<"pt_BR">>),
-    ?assertEqual(<<"Empty">>, OracleEmpty),
+    install_fixture(Base, ~"pt_BR", Po),
+    load_both(Base, ~"pt_BR"),
+    OracleEmpty = oracle_gettext(Base, ?DOMAIN, ~"Empty", ~"pt_BR"),
+    SubjectEmpty = erli18n:gettext(?DOMAIN, ~"Empty", ~"pt_BR"),
+    ?assertEqual(~"Empty", OracleEmpty),
     ?assertEqual(OracleEmpty, SubjectEmpty),
     ok.
 
@@ -556,9 +556,9 @@ check_locales([Loc | Rest]) ->
                 io_lib:format("msgfmt -o ~ts ~ts 2>&1", [MoP, PoP])
             )
         ),
-        Got = oracle_gettext(Probe, probe, <<"__probe__">>, Loc),
+        Got = oracle_gettext(Probe, probe, ~"__probe__", Loc),
         case Got of
-            <<"__ok__">> -> check_locales(Rest);
+            ~"__ok__" -> check_locales(Rest);
             _ -> {error, {locale_missing, Loc}}
         end
     after

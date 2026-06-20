@@ -250,7 +250,7 @@ percent_free_text() ->
 %% (Plain functions, not generators — operate on already-generated data.)
 
 seg_input({text, Chars}) -> list_to_binary(Chars);
-seg_input(percent_pair) -> <<"%%">>.
+seg_input(percent_pair) -> ~"%%".
 
 seg_expected({text, Chars}) -> list_to_binary(Chars);
-seg_expected(percent_pair) -> <<"%">>.
+seg_expected(percent_pair) -> ~"%".

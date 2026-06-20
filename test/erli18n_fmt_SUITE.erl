@@ -147,8 +147,8 @@ fixture(Config, Name) ->
 
 load_fmt(Config) ->
     Path = fixture(Config, "fmt_pt_br.po"),
-    {ok, _} = erli18n:ensure_loaded(default, <<"pt_BR">>, Path),
-    {ok, _} = erli18n:ensure_loaded(my_domain, <<"pt_BR">>, Path),
+    {ok, _} = erli18n:ensure_loaded(default, ~"pt_BR", Path),
+    {ok, _} = erli18n:ensure_loaded(my_domain, ~"pt_BR", Path),
     ok.
 
 %% =========================
@@ -159,36 +159,36 @@ load_fmt(Config) ->
 %% then interpolates the trailing bindings.
 gettextf_2_uses_defaults(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     %% Same resolution as the non-f sibling, then interpolation.
-    Resolved = erli18n:gettext(<<"Hello, %{name}!">>),
-    ?assertEqual(<<"Olá, %{name}!"/utf8>>, Resolved),
+    Resolved = erli18n:gettext(~"Hello, %{name}!"),
+    ?assertEqual(~"Olá, %{name}!", Resolved),
     ?assertEqual(
-        <<"Olá, Ada!"/utf8>>,
-        erli18n:gettextf(<<"Hello, %{name}!">>, #{name => <<"Ada">>})
+        ~"Olá, Ada!",
+        erli18n:gettextf(~"Hello, %{name}!", #{name => ~"Ada"})
     ).
 
 %% gettextf/3 takes the domain explicitly; locale from the PD.
 gettextf_3_explicit_domain(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"Olá, Ada!"/utf8>>,
-        erli18n:gettextf(my_domain, <<"Hello, %{name}!">>, #{name => <<"Ada">>})
+        ~"Olá, Ada!",
+        erli18n:gettextf(my_domain, ~"Hello, %{name}!", #{name => ~"Ada"})
     ).
 
 %% gettextf/4 takes domain AND locale explicitly, ignoring the PD.
 gettextf_4_explicit_locale(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
+    ok = erli18n:setlocale(~"en"),
     ?assertEqual(
-        <<"Olá, Ada!"/utf8>>,
+        ~"Olá, Ada!",
         erli18n:gettextf(
-            default, <<"Hello, %{name}!">>, <<"pt_BR">>, #{name => <<"Ada">>}
+            default, ~"Hello, %{name}!", ~"pt_BR", #{name => ~"Ada"}
         )
     ),
     %% PD locale untouched.
-    ?assertEqual(<<"en">>, erli18n:which_locale()).
+    ?assertEqual(~"en", erli18n:which_locale()).
 
 %% Resolution then interpolation must honour the translator's reorder of
 %% the placeholders (resolution by name, not position).
@@ -197,12 +197,12 @@ gettextf_reorders_by_name(Config) ->
     %% Source order is %{user} then %{item}; the pt_BR translation
     %% reverses them. The binding still resolves by name.
     ?assertEqual(
-        <<"livro enviado por Ada">>,
+        ~"livro enviado por Ada",
         erli18n:gettextf(
             default,
-            <<"%{user} sent %{item}">>,
-            <<"pt_BR">>,
-            #{user => <<"Ada">>, item => <<"livro">>}
+            ~"%{user} sent %{item}",
+            ~"pt_BR",
+            #{user => ~"Ada", item => ~"livro"}
         )
     ).
 
@@ -213,32 +213,32 @@ gettextf_miss_falls_back_then_interpolates(Config) ->
     %% "Bye %{name}" is not in the catalog: gettext returns the msgid,
     %% then interpolation fills %{name}.
     ?assertEqual(
-        <<"Bye Ada">>,
+        ~"Bye Ada",
         erli18n:gettextf(
-            default, <<"Bye %{name}">>, <<"pt_BR">>, #{name => <<"Ada">>}
+            default, ~"Bye %{name}", ~"pt_BR", #{name => ~"Ada"}
         )
     ).
 
 %% dgettextf/3,4 are exact aliases of gettextf/3,4 (GNU naming parity).
 dgettextf_alias(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
-    B = #{name => <<"Ada">>},
+    ok = erli18n:setlocale(~"pt_BR"),
+    B = #{name => ~"Ada"},
     ?assertEqual(
-        erli18n:gettextf(default, <<"Hello, %{name}!">>, B),
-        erli18n:dgettextf(default, <<"Hello, %{name}!">>, B)
+        erli18n:gettextf(default, ~"Hello, %{name}!", B),
+        erli18n:dgettextf(default, ~"Hello, %{name}!", B)
     ),
     ?assertEqual(
-        erli18n:gettextf(default, <<"Hello, %{name}!">>, <<"pt_BR">>, B),
-        erli18n:dgettextf(default, <<"Hello, %{name}!">>, <<"pt_BR">>, B)
+        erli18n:gettextf(default, ~"Hello, %{name}!", ~"pt_BR", B),
+        erli18n:dgettextf(default, ~"Hello, %{name}!", ~"pt_BR", B)
     ).
 
 dcgettextf_alias(Config) ->
     ok = load_fmt(Config),
-    B = #{name => <<"Ada">>},
+    B = #{name => ~"Ada"},
     ?assertEqual(
-        erli18n:gettextf(default, <<"Hello, %{name}!">>, <<"pt_BR">>, B),
-        erli18n:dcgettextf(default, <<"Hello, %{name}!">>, <<"pt_BR">>, B)
+        erli18n:gettextf(default, ~"Hello, %{name}!", ~"pt_BR", B),
+        erli18n:dcgettextf(default, ~"Hello, %{name}!", ~"pt_BR", B)
     ).
 
 %% =========================
@@ -249,35 +249,35 @@ dcgettextf_alias(Config) ->
 %% then interpolates, auto-binding count => N.
 ngettextf_4_uses_defaults(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"1 árvore"/utf8>>,
-        erli18n:ngettextf(<<"%{count} tree">>, <<"%{count} trees">>, 1, #{})
+        ~"1 árvore",
+        erli18n:ngettextf(~"%{count} tree", ~"%{count} trees", 1, #{})
     ),
     ?assertEqual(
-        <<"3 árvores"/utf8>>,
-        erli18n:ngettextf(<<"%{count} tree">>, <<"%{count} trees">>, 3, #{})
+        ~"3 árvores",
+        erli18n:ngettextf(~"%{count} tree", ~"%{count} trees", 3, #{})
     ).
 
 %% ngettextf/5 takes the domain explicitly.
 ngettextf_5_explicit_domain(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"2 árvores"/utf8>>,
+        ~"2 árvores",
         erli18n:ngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, #{}
         )
     ).
 
 %% ngettextf/6 takes domain AND locale explicitly.
 ngettextf_6_explicit_locale(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
+    ok = erli18n:setlocale(~"en"),
     ?assertEqual(
-        <<"5 árvores"/utf8>>,
+        ~"5 árvores",
         erli18n:ngettextf(
-            default, <<"%{count} tree">>, <<"%{count} trees">>, 5, <<"pt_BR">>, #{}
+            default, ~"%{count} tree", ~"%{count} trees", 5, ~"pt_BR", #{}
         )
     ).
 
@@ -285,9 +285,9 @@ ngettextf_6_explicit_locale(Config) ->
 ngettextf_auto_binds_count(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
-        <<"7 árvores"/utf8>>,
+        ~"7 árvores",
         erli18n:ngettextf(
-            default, <<"%{count} tree">>, <<"%{count} trees">>, 7, <<"pt_BR">>, #{}
+            default, ~"%{count} tree", ~"%{count} trees", 7, ~"pt_BR", #{}
         )
     ).
 
@@ -297,13 +297,13 @@ ngettextf_caller_count_overrides(Config) ->
     %% N=3 selects the plural form, but the rendered count is the
     %% caller's override (99).
     ?assertEqual(
-        <<"99 árvores"/utf8>>,
+        ~"99 árvores",
         erli18n:ngettextf(
             default,
-            <<"%{count} tree">>,
-            <<"%{count} trees">>,
+            ~"%{count} tree",
+            ~"%{count} trees",
             3,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{count => 99}
         )
     ).
@@ -315,13 +315,13 @@ ngettextf_caller_count_overrides(Config) ->
 ngettextf_plural_form_with_count_override(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
-        <<"1 árvores"/utf8>>,
+        ~"1 árvores",
         erli18n:ngettextf(
             default,
-            <<"%{count} tree">>,
-            <<"%{count} trees">>,
+            ~"%{count} tree",
+            ~"%{count} trees",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{count => 1}
         )
     ).
@@ -332,35 +332,35 @@ ngettextf_miss_falls_back_then_interpolates(Config) ->
     ok = load_fmt(Config),
     %% Not in the catalog: N==1 -> msgid; N==2 -> msgid_plural.
     ?assertEqual(
-        <<"1 cat">>,
+        ~"1 cat",
         erli18n:ngettextf(
-            default, <<"%{count} cat">>, <<"%{count} cats">>, 1, <<"pt_BR">>, #{}
+            default, ~"%{count} cat", ~"%{count} cats", 1, ~"pt_BR", #{}
         )
     ),
     ?assertEqual(
-        <<"4 cats">>,
+        ~"4 cats",
         erli18n:ngettextf(
-            default, <<"%{count} cat">>, <<"%{count} cats">>, 4, <<"pt_BR">>, #{}
+            default, ~"%{count} cat", ~"%{count} cats", 4, ~"pt_BR", #{}
         )
     ).
 
 dngettextf_alias(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
         erli18n:ngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, #{}
         ),
         erli18n:dngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, #{}
         )
     ),
     ?assertEqual(
         erli18n:ngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, <<"pt_BR">>, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, ~"pt_BR", #{}
         ),
         erli18n:dngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, <<"pt_BR">>, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, ~"pt_BR", #{}
         )
     ).
 
@@ -368,10 +368,10 @@ dcngettextf_alias(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
         erli18n:ngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, <<"pt_BR">>, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, ~"pt_BR", #{}
         ),
         erli18n:dcngettextf(
-            my_domain, <<"%{count} tree">>, <<"%{count} trees">>, 2, <<"pt_BR">>, #{}
+            my_domain, ~"%{count} tree", ~"%{count} trees", 2, ~"pt_BR", #{}
         )
     ).
 
@@ -383,71 +383,71 @@ dcngettextf_alias(Config) ->
 %% then interpolates.
 pgettextf_3_uses_defaults(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"Oi Ada">>,
-        erli18n:pgettextf(<<"greeting">>, <<"Hi %{name}">>, #{name => <<"Ada">>})
+        ~"Oi Ada",
+        erli18n:pgettextf(~"greeting", ~"Hi %{name}", #{name => ~"Ada"})
     ).
 
 %% pgettextf/4 takes the domain explicitly.
 pgettextf_4_explicit_domain(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"Oi Ada">>,
+        ~"Oi Ada",
         erli18n:pgettextf(
-            my_domain, <<"greeting">>, <<"Hi %{name}">>, #{name => <<"Ada">>}
+            my_domain, ~"greeting", ~"Hi %{name}", #{name => ~"Ada"}
         )
     ).
 
 %% pgettextf/5 takes domain AND locale explicitly.
 pgettextf_5_explicit_locale(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
+    ok = erli18n:setlocale(~"en"),
     ?assertEqual(
-        <<"Oi Ada">>,
+        ~"Oi Ada",
         erli18n:pgettextf(
-            default, <<"greeting">>, <<"Hi %{name}">>, <<"pt_BR">>, #{name => <<"Ada">>}
+            default, ~"greeting", ~"Hi %{name}", ~"pt_BR", #{name => ~"Ada"}
         )
     ),
-    ?assertEqual(<<"en">>, erli18n:which_locale()).
+    ?assertEqual(~"en", erli18n:which_locale()).
 
 %% An `undefined` context makes the contextual lookup behave exactly like
 %% the non-contextual one: pgettextf/5 with `undefined` resolves the bare
 %% msgid (no `msgctxt`) just as gettext would, then interpolates.
 pgettextf_undefined_context_like_gettext(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
-    B = #{name => <<"Ada">>},
+    ok = erli18n:setlocale(~"en"),
+    B = #{name => ~"Ada"},
     %% The msgid "Hello, %{name}!" exists with NO context in the fixture.
-    Expected = erli18n:gettextf(default, <<"Hello, %{name}!">>, <<"pt_BR">>, B),
-    ?assertEqual(<<"Olá, Ada!"/utf8>>, Expected),
+    Expected = erli18n:gettextf(default, ~"Hello, %{name}!", ~"pt_BR", B),
+    ?assertEqual(~"Olá, Ada!", Expected),
     ?assertEqual(
         Expected,
         erli18n:pgettextf(
-            default, undefined, <<"Hello, %{name}!">>, <<"pt_BR">>, B
+            default, undefined, ~"Hello, %{name}!", ~"pt_BR", B
         )
     ).
 
 dpgettextf_alias(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
-    B = #{name => <<"Ada">>},
+    ok = erli18n:setlocale(~"pt_BR"),
+    B = #{name => ~"Ada"},
     ?assertEqual(
-        erli18n:pgettextf(default, <<"greeting">>, <<"Hi %{name}">>, B),
-        erli18n:dpgettextf(default, <<"greeting">>, <<"Hi %{name}">>, B)
+        erli18n:pgettextf(default, ~"greeting", ~"Hi %{name}", B),
+        erli18n:dpgettextf(default, ~"greeting", ~"Hi %{name}", B)
     ),
     ?assertEqual(
-        erli18n:pgettextf(default, <<"greeting">>, <<"Hi %{name}">>, <<"pt_BR">>, B),
-        erli18n:dpgettextf(default, <<"greeting">>, <<"Hi %{name}">>, <<"pt_BR">>, B)
+        erli18n:pgettextf(default, ~"greeting", ~"Hi %{name}", ~"pt_BR", B),
+        erli18n:dpgettextf(default, ~"greeting", ~"Hi %{name}", ~"pt_BR", B)
     ).
 
 dcpgettextf_alias(Config) ->
     ok = load_fmt(Config),
-    B = #{name => <<"Ada">>},
+    B = #{name => ~"Ada"},
     ?assertEqual(
-        erli18n:pgettextf(default, <<"greeting">>, <<"Hi %{name}">>, <<"pt_BR">>, B),
-        erli18n:dcpgettextf(default, <<"greeting">>, <<"Hi %{name}">>, <<"pt_BR">>, B)
+        erli18n:pgettextf(default, ~"greeting", ~"Hi %{name}", ~"pt_BR", B),
+        erli18n:dcpgettextf(default, ~"greeting", ~"Hi %{name}", ~"pt_BR", B)
     ).
 
 %% =========================
@@ -458,44 +458,44 @@ dcpgettextf_alias(Config) ->
 %% locale) then interpolates, auto-binding count => N.
 npgettextf_5_uses_defaults(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"1 mensagem">>,
+        ~"1 mensagem",
         erli18n:npgettextf(
-            <<"inbox">>, <<"%{count} message">>, <<"%{count} messages">>, 1, #{}
+            ~"inbox", ~"%{count} message", ~"%{count} messages", 1, #{}
         )
     ),
     ?assertEqual(
-        <<"3 mensagens">>,
+        ~"3 mensagens",
         erli18n:npgettextf(
-            <<"inbox">>, <<"%{count} message">>, <<"%{count} messages">>, 3, #{}
+            ~"inbox", ~"%{count} message", ~"%{count} messages", 3, #{}
         )
     ).
 
 %% npgettextf/6 takes the domain explicitly.
 npgettextf_6_explicit_domain(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
-        <<"2 mensagens">>,
+        ~"2 mensagens",
         erli18n:npgettextf(
-            my_domain, <<"inbox">>, <<"%{count} message">>, <<"%{count} messages">>, 2, #{}
+            my_domain, ~"inbox", ~"%{count} message", ~"%{count} messages", 2, #{}
         )
     ).
 
 %% npgettextf/7 takes domain AND locale explicitly.
 npgettextf_7_explicit_locale(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
+    ok = erli18n:setlocale(~"en"),
     ?assertEqual(
-        <<"5 mensagens">>,
+        ~"5 mensagens",
         erli18n:npgettextf(
             default,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             5,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         )
     ).
@@ -504,14 +504,14 @@ npgettextf_7_explicit_locale(Config) ->
 npgettextf_auto_binds_count(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
-        <<"8 mensagens">>,
+        ~"8 mensagens",
         erli18n:npgettextf(
             default,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             8,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         )
     ).
@@ -520,14 +520,14 @@ npgettextf_auto_binds_count(Config) ->
 npgettextf_caller_count_overrides(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
-        <<"42 mensagens">>,
+        ~"42 mensagens",
         erli18n:npgettextf(
             default,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             3,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{count => 42}
         )
     ).
@@ -538,14 +538,14 @@ npgettextf_caller_count_overrides(Config) ->
 npgettextf_plural_form_with_count_override(Config) ->
     ok = load_fmt(Config),
     ?assertEqual(
-        <<"1 mensagens">>,
+        ~"1 mensagens",
         erli18n:npgettextf(
             default,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{count => 1}
         )
     ).
@@ -555,53 +555,53 @@ npgettextf_plural_form_with_count_override(Config) ->
 %% interpolate the auto-bound count.
 npgettextf_undefined_context_like_ngettext(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"en">>),
+    ok = erli18n:setlocale(~"en"),
     %% The "%{count} tree"/"%{count} trees" plural exists with NO context.
     Expected = erli18n:ngettextf(
-        default, <<"%{count} tree">>, <<"%{count} trees">>, 3, <<"pt_BR">>, #{}
+        default, ~"%{count} tree", ~"%{count} trees", 3, ~"pt_BR", #{}
     ),
-    ?assertEqual(<<"3 árvores"/utf8>>, Expected),
+    ?assertEqual(~"3 árvores", Expected),
     ?assertEqual(
         Expected,
         erli18n:npgettextf(
             default,
             undefined,
-            <<"%{count} tree">>,
-            <<"%{count} trees">>,
+            ~"%{count} tree",
+            ~"%{count} trees",
             3,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         )
     ).
 
 dnpgettextf_alias(Config) ->
     ok = load_fmt(Config),
-    ok = erli18n:setlocale(<<"pt_BR">>),
+    ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(
         erli18n:npgettextf(
-            my_domain, <<"inbox">>, <<"%{count} message">>, <<"%{count} messages">>, 2, #{}
+            my_domain, ~"inbox", ~"%{count} message", ~"%{count} messages", 2, #{}
         ),
         erli18n:dnpgettextf(
-            my_domain, <<"inbox">>, <<"%{count} message">>, <<"%{count} messages">>, 2, #{}
+            my_domain, ~"inbox", ~"%{count} message", ~"%{count} messages", 2, #{}
         )
     ),
     ?assertEqual(
         erli18n:npgettextf(
             my_domain,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         ),
         erli18n:dnpgettextf(
             my_domain,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         )
     ).
@@ -611,20 +611,20 @@ dcnpgettextf_alias(Config) ->
     ?assertEqual(
         erli18n:npgettextf(
             my_domain,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         ),
         erli18n:dcnpgettextf(
             my_domain,
-            <<"inbox">>,
-            <<"%{count} message">>,
-            <<"%{count} messages">>,
+            ~"inbox",
+            ~"%{count} message",
+            ~"%{count} messages",
             2,
-            <<"pt_BR">>,
+            ~"pt_BR",
             #{}
         )
     ).

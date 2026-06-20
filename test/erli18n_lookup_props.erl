@@ -245,8 +245,8 @@ synthesize_po(Entries) ->
         #{
             header => #{
                 plural_forms =>
-                    <<"nplurals=2; plural=(n != 1);">>,
-                content_type => <<"text/plain; charset=UTF-8">>,
+                    ~"nplurals=2; plural=(n != 1);",
+                content_type => ~"text/plain; charset=UTF-8",
                 charset => utf8,
                 raw =>
                     <<

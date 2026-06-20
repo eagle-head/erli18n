@@ -31,7 +31,7 @@ Optional but useful:
 git clone git@github.com:eagle-head/erli18n.git
 cd erli18n
 rebar3 compile
-rebar3 do ct, cover    # 289 tests, ~30s on a recent laptop
+rebar3 do ct, cover    # full suite, ~30s on a recent laptop
 ```
 
 ### Quality gate

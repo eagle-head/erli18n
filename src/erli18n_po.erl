@@ -562,7 +562,7 @@ find_header([Line | Rest], Ln, Acc) ->
 
 %% Returns {true, RestLines} when the current msgid is the empty string
 %% (after consuming any continuation lines). Otherwise {false, _}.
-is_empty_string_line(<<"\"\"">>, Rest) ->
+is_empty_string_line(~"\"\"", Rest) ->
     %% No continuation expected; but if the next non-blank line starts
     %% with ", it's part of this string. For the header, the empty string
     %% has no continuation.
@@ -664,7 +664,7 @@ charset_from_header(HeaderText) ->
     {ok, utf8 | latin1 | us_ascii} | {error, parse_error()}.
 field_charset(Fields) ->
     classify_charset_from_content_type(
-        proplists:get_value(<<"content-type">>, Fields, <<>>)
+        proplists:get_value(~"content-type", Fields, <<>>)
     ).
 
 %% Narrow `unicode:chardata()` (potentially a deep iolist) into a flat
@@ -674,13 +674,11 @@ field_charset(Fields) ->
 %% payload if `unicode:characters_to_binary/1` returns the error tuple
 %% — that would mean the input was malformed Unicode, which the
 %% charset prepass should have caught.
--spec to_binary(unicode:chardata()) -> binary().
-to_binary(B) when is_binary(B) -> B;
-to_binary(CD) ->
-    case unicode:characters_to_binary(CD) of
-        B when is_binary(B) -> B;
-        Other -> error({chardata_to_binary_failed, Other})
-    end.
+%% Both callers pass `string:lowercase/1` of a binary, which always returns a
+%% binary, so there is no chardata clause (a non-binary would be a contract
+%% violation and crashes explicitly via `function_clause`).
+-spec to_binary(binary()) -> binary().
+to_binary(B) when is_binary(B) -> B.
 
 extract_charset_token(Bin) ->
     extract_charset_token(Bin, <<>>).
@@ -699,14 +697,14 @@ finalize_token(Bin) -> Bin.
 
 classify_charset(Bin) ->
     case string:lowercase(Bin) of
-        <<"utf-8">> -> {ok, utf8};
-        <<"utf8">> -> {ok, utf8};
-        <<"iso-8859-1">> -> {ok, latin1};
-        <<"iso8859-1">> -> {ok, latin1};
-        <<"latin-1">> -> {ok, latin1};
-        <<"latin1">> -> {ok, latin1};
-        <<"us-ascii">> -> {ok, us_ascii};
-        <<"ascii">> -> {ok, us_ascii};
+        ~"utf-8" -> {ok, utf8};
+        ~"utf8" -> {ok, utf8};
+        ~"iso-8859-1" -> {ok, latin1};
+        ~"iso8859-1" -> {ok, latin1};
+        ~"latin-1" -> {ok, latin1};
+        ~"latin1" -> {ok, latin1};
+        ~"us-ascii" -> {ok, us_ascii};
+        ~"ascii" -> {ok, us_ascii};
         _ -> {error, {unsupported_charset, Bin}}
     end.
 
@@ -715,8 +713,8 @@ normalize_input(Bin, utf8) ->
     %% loud on malformed bytes.
     case unicode:characters_to_binary(Bin, utf8, utf8) of
         Bin2 when is_binary(Bin2) -> {ok, Bin2};
-        {error, _, _} = E -> {error, {charset_conversion, <<"UTF-8">>, E}};
-        {incomplete, _, _} = E -> {error, {charset_conversion, <<"UTF-8">>, E}}
+        {error, _, _} = E -> {error, {charset_conversion, ~"UTF-8", E}};
+        {incomplete, _, _} = E -> {error, {charset_conversion, ~"UTF-8", E}}
     end;
 normalize_input(Bin, us_ascii) ->
     %% US-ASCII is a strict subset of UTF-8 — passthrough is correct, but
@@ -738,7 +736,7 @@ normalize_input(Bin, latin1) ->
 validate_ascii(<<>>) ->
     ok;
 validate_ascii(<<C, _/binary>>) when C > 127 ->
-    {error, {charset_conversion, <<"US-ASCII">>, non_ascii_byte}};
+    {error, {charset_conversion, ~"US-ASCII", non_ascii_byte}};
 validate_ascii(<<_, Rest/binary>>) ->
     validate_ascii(Rest).
 
@@ -796,9 +794,9 @@ fresh_entry(Ln) ->
 %% all three newline conventions (Finding #15). Folding CRLF first ensures
 %% a CRLF is never turned into two separate line breaks.
 split_lines(Bin) ->
-    Norm0 = binary:replace(Bin, <<"\r\n">>, <<"\n">>, [global]),
-    Norm = binary:replace(Norm0, <<"\r">>, <<"\n">>, [global]),
-    binary:split(Norm, <<"\n">>, [global]).
+    Norm0 = binary:replace(Bin, ~"\r\n", ~"\n", [global]),
+    Norm = binary:replace(Norm0, ~"\r", ~"\n", [global]),
+    binary:split(Norm, ~"\n", [global]).
 
 parse_lines([], _Ln, Cur, St) ->
     %% EOF — flush any pending entry.
@@ -948,21 +946,13 @@ finalize_entry(#po_st{msgid = undefined}, St) ->
     %% comment-only blocks, etc.).
     {ok, St};
 finalize_entry(#po_st{msgid = <<>>} = Cur, #pst{header = undefined} = St) ->
-    %% Header entry: msgid == "". `build_header/1` is total (finding #5):
-    %% it reconciles the charset through the same `field_charset/1` the
-    %% prepass uses, so an unsupported charset surfaces as a structured
-    %% `{error, parse_error()}` rather than a badmatch crash. In the
-    %% normal flow the prepass already short-circuited that case, so the
-    %% `{ok, _}` arm is taken; the `{error, _}` arm is belt-and-suspenders
-    %% that keeps the failure structured if the paths ever diverge.
+    %% Header entry: msgid == "". `build_header/1` is total — the prepass
+    %% (parse/2) already reconciled the charset and short-circuited an
+    %% unsupported one before do_parse, so it returns `{ok, _}` here.
     HeaderText = best_header_text(Cur),
-    case build_header(HeaderText) of
-        {ok, Header} ->
-            Nplurals = nplurals_from_header(Header),
-            {ok, St#pst{header = Header, nplurals = Nplurals}};
-        {error, _} = Err ->
-            Err
-    end;
+    {ok, Header} = build_header(HeaderText),
+    Nplurals = nplurals_from_header(Header),
+    {ok, St#pst{header = Header, nplurals = Nplurals}};
 finalize_entry(#po_st{msgid = <<>>}, St) ->
     %% Duplicate header entry — preserve the first one (parity with
     %% msgfmt which uses the first one). Drop silently.
@@ -1056,35 +1046,36 @@ validate_plural_indices(Msgid, Nplurals, Indices) ->
 %% badmatch class for good: any future divergence degrades to a clean
 %% `{error, _}` propagated by `finalize_entry/2`, never an uncaught
 %% exception that terminates the loader gen_server.
--spec build_header(binary()) -> {ok, header_map()} | {error, parse_error()}.
+-spec build_header(binary()) -> {ok, header_map()}.
 build_header(<<>>) ->
     {ok, empty_header()};
 build_header(HeaderText) when is_binary(HeaderText) ->
     Fields = parse_header_fields(HeaderText),
-    PluralForms = proplists:get_value(<<"plural-forms">>, Fields, <<>>),
-    ContentType = proplists:get_value(<<"content-type">>, Fields, <<>>),
-    case field_charset(Fields) of
-        {ok, Charset} ->
-            {ok, #{
-                plural_forms => PluralForms,
-                content_type => ContentType,
-                charset => Charset,
-                raw => HeaderText
-            }};
-        {error, _} = Err ->
-            Err
-    end.
+    PluralForms = proplists:get_value(~"plural-forms", Fields, <<>>),
+    ContentType = proplists:get_value(~"content-type", Fields, <<>>),
+    %% The prepass (parse/2) already reconciled the charset via the identical
+    %% `field_charset/1` and short-circuited an unsupported charset BEFORE
+    %% do_parse ran, so it is `{ok, _}` here. Asserting the match (rather than
+    %% re-handling `{error, _}` on an unreachable path) keeps the single charset
+    %% gate in the prepass; a future divergence crashes explicitly (badmatch).
+    {ok, Charset} = field_charset(Fields),
+    {ok, #{
+        plural_forms => PluralForms,
+        content_type => ContentType,
+        charset => Charset,
+        raw => HeaderText
+    }}.
 
 %% Header lines have the shape "Key: Value\n". Keys are stored lowercased
 %% for case-insensitive lookup.
 parse_header_fields(Bin) ->
-    Lines = binary:split(Bin, <<"\n">>, [global]),
+    Lines = binary:split(Bin, ~"\n", [global]),
     lists:flatmap(fun parse_header_line/1, Lines).
 
 parse_header_line(<<>>) ->
     [];
 parse_header_line(Line) ->
-    case binary:split(Line, <<":">>) of
+    case binary:split(Line, ~":") of
         [Key, Value] ->
             K = string:lowercase(string:trim(Key)),
             V = string:trim(Value),
@@ -1101,7 +1092,7 @@ classify_charset_from_content_type(ContentType) ->
     %% Narrow `chardata() -> binary()` at the boundary so `binary:match/2`
     %% is type-checked.
     Lower = to_binary(string:lowercase(ContentType)),
-    case binary:match(Lower, <<"charset=">>) of
+    case binary:match(Lower, ~"charset=") of
         nomatch ->
             {ok, utf8};
         {Start, _Len} ->
@@ -1123,7 +1114,7 @@ classify_charset_from_content_type(ContentType) ->
 nplurals_from_header(#{plural_forms := <<>>}) ->
     undefined;
 nplurals_from_header(#{plural_forms := PF}) ->
-    case binary:match(PF, <<"nplurals">>) of
+    case binary:match(PF, ~"nplurals") of
         nomatch ->
             undefined;
         {Start, _} ->
@@ -1132,7 +1123,7 @@ nplurals_from_header(#{plural_forms := PF}) ->
     end.
 
 extract_nplurals_value(Bin) ->
-    case binary:match(Bin, <<"=">>) of
+    case binary:match(Bin, ~"=") of
         nomatch ->
             undefined;
         {EqStart, _} ->
@@ -1226,7 +1217,7 @@ classify_line(<<"#,", Rest/binary>>, _Cur) ->
     %% on the catalog content.
     %% Narrow chardata() -> binary() so binary:match/2 is type-checked.
     Lower = to_binary(string:lowercase(Rest)),
-    case binary:match(Lower, <<"fuzzy">>) of
+    case binary:match(Lower, ~"fuzzy") of
         nomatch -> skip;
         _ -> fuzzy_flag
     end;
@@ -1576,16 +1567,16 @@ is_only_trailing_ws(_) ->
 
 dump_header(#{raw := <<>>} = _Header) ->
     %% No raw header text known — emit a minimal one.
-    Body = <<"Content-Type: text/plain; charset=UTF-8\n">>,
+    Body = ~"Content-Type: text/plain; charset=UTF-8\n",
     dump_header_text(Body);
 dump_header(#{raw := RawHeader}) ->
     dump_header_text(RawHeader);
 dump_header(_) ->
     %% Tolerate missing keys by emitting a minimal header.
-    dump_header_text(<<"Content-Type: text/plain; charset=UTF-8\n">>).
+    dump_header_text(~"Content-Type: text/plain; charset=UTF-8\n").
 
 dump_header_text(Body) ->
-    Lines = binary:split(Body, <<"\n">>, [global]),
+    Lines = binary:split(Body, ~"\n", [global]),
     BodyOut = iolist_to_binary([encode_header_line(L) || L <- Lines]),
     <<"msgid \"\"\nmsgstr \"\"\n", BodyOut/binary, "\n">>.
 
@@ -1597,12 +1588,12 @@ encode_header_line(Line) ->
 
 dump_entry({singular, Ctx, Msgid, Translation}) ->
     CtxBin = dump_msgctxt(Ctx),
-    MsgidBin = dump_field(<<"msgid">>, Msgid),
-    MsgstrBin = dump_field(<<"msgstr">>, Translation),
+    MsgidBin = dump_field(~"msgid", Msgid),
+    MsgstrBin = dump_field(~"msgstr", Translation),
     <<CtxBin/binary, MsgidBin/binary, MsgstrBin/binary, "\n">>;
 dump_entry({plural, Ctx, Msgid, MsgidPlural, Plurals}) ->
     CtxBin = dump_msgctxt(Ctx),
-    MsgidBin = dump_field(<<"msgid">>, Msgid),
+    MsgidBin = dump_field(~"msgid", Msgid),
     %% Finding #14 (dump-drops-msgid-plural-silently): emit the RETAINED
     %% `msgid_plural` form text. The parsed `entry/0` now carries it
     %% verbatim, so `parse∘dump` preserves the plural source. When the
@@ -1614,7 +1605,7 @@ dump_entry({plural, Ctx, Msgid, MsgidPlural, Plurals}) ->
             undefined -> Msgid;
             _ -> MsgidPlural
         end,
-    PluralIdBin = dump_field(<<"msgid_plural">>, PluralIdSrc),
+    PluralIdBin = dump_field(~"msgid_plural", PluralIdSrc),
     PluralsBin = iolist_to_binary([
         dump_plural_form(I, T)
      || {I, T} <- Plurals
@@ -1624,7 +1615,7 @@ dump_entry({plural, Ctx, Msgid, MsgidPlural, Plurals}) ->
 dump_msgctxt(undefined) ->
     <<>>;
 dump_msgctxt(Ctx) when is_binary(Ctx) ->
-    dump_field(<<"msgctxt">>, Ctx).
+    dump_field(~"msgctxt", Ctx).
 
 dump_field(Key, Value) ->
     Escaped = escape_string(Value),
@@ -1642,15 +1633,20 @@ escape_string(Bin) ->
 -spec escape_string(binary(), [binary()]) -> binary().
 escape_string(<<>>, Acc) ->
     bins_to_binary(Acc);
+%% Each escaped form is emitted as an explicit two-byte character segment
+%% (`<<$\\, $X>>` = a literal backslash followed by `X`) rather than a `"..."`
+%% string or a `~"..."` sigil. This is unambiguous for an escape sequence and
+%% sidesteps a tooling wart: the equivalent escape-heavy sigils (`~"\\\\"`,
+%% `~"\\\""`) are valid Erlang but desync ELP's parser.
 escape_string(<<$\\, Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<"\\\\">> | Acc]);
+    escape_string(Rest, [<<$\\, $\\>> | Acc]);
 escape_string(<<$", Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<"\\\"">> | Acc]);
+    escape_string(Rest, [<<$\\, $">> | Acc]);
 escape_string(<<$\n, Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<"\\n">> | Acc]);
+    escape_string(Rest, [<<$\\, $n>> | Acc]);
 escape_string(<<$\t, Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<"\\t">> | Acc]);
+    escape_string(Rest, [<<$\\, $t>> | Acc]);
 escape_string(<<$\r, Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<"\\r">> | Acc]);
+    escape_string(Rest, [<<$\\, $r>> | Acc]);
 escape_string(<<C/utf8, Rest/binary>>, Acc) ->
     escape_string(Rest, [<<C/utf8>> | Acc]).

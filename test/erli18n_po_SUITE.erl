@@ -84,7 +84,8 @@
     msgctxt_bare_keyword_before_header_prepass/1,
     msgid_plural_bare_keyword_before_header_prepass/1,
     tab_indented_line_in_main_parser/1,
-    line_endings_lf_crlf_lone_cr_parse_identically/1
+    line_endings_lf_crlf_lone_cr_parse_identically/1,
+    parse_rejects_malformed_escapes_and_index/1
 ]).
 
 all() ->
@@ -163,7 +164,8 @@ all() ->
         msgctxt_bare_keyword_before_header_prepass,
         msgid_plural_bare_keyword_before_header_prepass,
         tab_indented_line_in_main_parser,
-        line_endings_lf_crlf_lone_cr_parse_identically
+        line_endings_lf_crlf_lone_cr_parse_identically,
+        parse_rejects_malformed_escapes_and_index
     ].
 
 init_per_suite(Config) ->
@@ -195,7 +197,7 @@ header_minimal_utf8(_Config) ->
     Header = maps:get(header, Catalog),
     ?assertEqual(utf8, maps:get(charset, Header)),
     ?assertEqual(
-        <<"nplurals=2; plural=(n != 1);">>,
+        ~"nplurals=2; plural=(n != 1);",
         maps:get(plural_forms, Header)
     ),
     ?assertEqual([], maps:get(entries, Catalog)).
@@ -209,7 +211,7 @@ header_unsupported_charset(_Config) ->
         "\"Content-Type: text/plain; charset=SHIFT_JIS\\n\"\n"
     >>,
     ?assertEqual(
-        {error, {unsupported_charset, <<"SHIFT_JIS">>}},
+        {error, {unsupported_charset, ~"SHIFT_JIS"}},
         erli18n_po:parse(Bin)
     ).
 
@@ -230,7 +232,7 @@ header_unsupported_charset_space_before_colon(_Config) ->
         "\"Content-Type : text/plain; charset=Shift_JIS\\n\"\n"
     >>,
     ?assertEqual(
-        {error, {unsupported_charset, <<"Shift_JIS">>}},
+        {error, {unsupported_charset, ~"Shift_JIS"}},
         erli18n_po:parse(Bin)
     ).
 
@@ -258,7 +260,7 @@ header_unsupported_charset_tab_before_colon(_Config) ->
         "\"Content-Type\t: text/plain; charset=Shift_JIS\\n\"\n"
     >>,
     ?assertEqual(
-        {error, {unsupported_charset, <<"Shift_JIS">>}},
+        {error, {unsupported_charset, ~"Shift_JIS"}},
         erli18n_po:parse(Bin)
     ).
 
@@ -304,7 +306,7 @@ bom_utf8_stripped(_Config) ->
             "msgid \"Hello\"\n"
             "msgstr \"Oi\"\n">>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{singular, undefined, <<"Hello">>, <<"Oi">>}] =
+    [{singular, undefined, ~"Hello", ~"Oi"}] =
         maps:get(entries, Catalog).
 
 %% =========================
@@ -319,7 +321,7 @@ single_entry_singular(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
+        [{singular, undefined, ~"Hello", ~"Oi"}],
         maps:get(entries, Catalog)
     ).
 
@@ -333,7 +335,7 @@ single_entry_with_context(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, <<"menu">>, <<"File">>, <<"Fichier">>}],
+        [{singular, ~"menu", ~"File", ~"Fichier"}],
         maps:get(entries, Catalog)
     ).
 
@@ -348,8 +350,8 @@ plural_entry(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
         [
-            {plural, undefined, <<"tree">>, <<"trees">>, [
-                {0, <<"arbre">>}, {1, <<"arbres">>}
+            {plural, undefined, ~"tree", ~"trees", [
+                {0, ~"arbre"}, {1, ~"arbres"}
             ]}
         ],
         maps:get(entries, Catalog)
@@ -371,7 +373,7 @@ plural_count_mismatch_missing(_Config) ->
         "msgstr[3] \"d\"\n"
     >>,
     ?assertEqual(
-        {error, {plural_count_mismatch, <<"Tree">>, 3, [0, 1, 3]}},
+        {error, {plural_count_mismatch, ~"Tree", 3, [0, 1, 3]}},
         erli18n_po:parse(Bin)
     ).
 
@@ -390,7 +392,7 @@ plural_count_mismatch_extra(_Config) ->
         "msgstr[2] \"c\"\n"
     >>,
     ?assertEqual(
-        {error, {plural_count_mismatch, <<"Tree">>, 2, [0, 1, 2]}},
+        {error, {plural_count_mismatch, ~"Tree", 2, [0, 1, 2]}},
         erli18n_po:parse(Bin)
     ).
 
@@ -407,7 +409,7 @@ fuzzy_dropped_by_default(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"a">>, <<"b">>}],
+        [{singular, undefined, ~"a", ~"b"}],
         maps:get(entries, Catalog)
     ).
 
@@ -421,7 +423,7 @@ fuzzy_included_with_opt(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin, #{include_fuzzy => true}),
     ?assertEqual(
-        [{singular, undefined, <<"x">>, <<"y">>}],
+        [{singular, undefined, ~"x", ~"y"}],
         maps:get(entries, Catalog)
     ).
 
@@ -437,7 +439,7 @@ obsolete_skipped(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"alive">>, <<"vivant">>}],
+        [{singular, undefined, ~"alive", ~"vivant"}],
         maps:get(entries, Catalog)
     ).
 
@@ -450,8 +452,8 @@ escape_sequences(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, undefined, Msgid, Translation}] =
         maps:get(entries, Catalog),
-    ?assertEqual(<<"a\nb\tc\"d\\e">>, Msgid),
-    ?assertEqual(<<"x\nx\tx\"x\\x">>, Translation).
+    ?assertEqual(~"a\nb\tc\"d\\e", Msgid),
+    ?assertEqual(~"x\nx\tx\"x\\x", Translation).
 
 multiline_string(_Config) ->
     Bin = <<
@@ -466,8 +468,8 @@ multiline_string(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, undefined, Msgid, Translation}] =
         maps:get(entries, Catalog),
-    ?assertEqual(<<"first second">>, Msgid),
-    ?assertEqual(<<"trad end">>, Translation).
+    ?assertEqual(~"first second", Msgid),
+    ?assertEqual(~"trad end", Translation).
 
 %% PSD-003: parser preserves empty msgstr verbatim; fallback is the
 %% lookup's job.
@@ -479,7 +481,7 @@ empty_msgstr_preserved(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<>>}],
+        [{singular, undefined, ~"Hello", <<>>}],
         maps:get(entries, Catalog)
     ).
 
@@ -493,7 +495,7 @@ empty_msgstr_plural_preserved(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{plural, undefined, <<"tree">>, <<"trees">>, [{0, <<>>}, {1, <<>>}]}],
+        [{plural, undefined, ~"tree", ~"trees", [{0, <<>>}, {1, <<>>}]}],
         maps:get(entries, Catalog)
     ).
 
@@ -531,12 +533,12 @@ dump_roundtrip_plural(_Config) ->
     %% form (`trees`), not the singular `msgid` (`tree`) it used to
     %% substitute silently.
     ?assertNotEqual(
-        nomatch, binary:match(Dumped, <<"msgid_plural \"trees\"">>)
+        nomatch, binary:match(Dumped, ~"msgid_plural \"trees\"")
     ),
     {ok, C2} = erli18n_po:parse(Dumped),
     ?assertEqual(maps:get(entries, C1), maps:get(entries, C2)),
     %% And the retained `msgid_plural` survives the full cycle.
-    [{plural, undefined, <<"tree">>, <<"trees">>, _}] =
+    [{plural, undefined, ~"tree", ~"trees", _}] =
         maps:get(entries, C2).
 
 %% Finding #14: when a parsed plural entry carries `undefined` as its
@@ -546,7 +548,7 @@ dump_roundtrip_plural(_Config) ->
 dump_plural_msgid_plural_undefined_fallback(_Config) ->
     Catalog = #{
         header => #{
-            plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+            plural_forms => ~"nplurals=2; plural=(n != 1);",
             charset => utf8,
             raw => <<
                 "Content-Type: text/plain; charset=UTF-8\n"
@@ -554,18 +556,18 @@ dump_plural_msgid_plural_undefined_fallback(_Config) ->
             >>
         },
         entries => [
-            {plural, undefined, <<"tree">>, undefined, [
-                {0, <<"arbre">>}, {1, <<"arbres">>}
+            {plural, undefined, ~"tree", undefined, [
+                {0, ~"arbre"}, {1, ~"arbres"}
             ]}
         ]
     },
     Dumped = erli18n_po:dump(Catalog),
     %% Fallback: singular `msgid` reused as the `msgid_plural` source.
     ?assertNotEqual(
-        nomatch, binary:match(Dumped, <<"msgid_plural \"tree\"">>)
+        nomatch, binary:match(Dumped, ~"msgid_plural \"tree\"")
     ),
     {ok, C2} = erli18n_po:parse(Dumped),
-    [{plural, undefined, <<"tree">>, <<"tree">>, _}] =
+    [{plural, undefined, ~"tree", ~"tree", _}] =
         maps:get(entries, C2).
 
 dump_roundtrip_with_context(_Config) ->
@@ -596,7 +598,7 @@ comments_skipped(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
+        [{singular, undefined, ~"Hello", ~"Oi"}],
         maps:get(entries, Catalog)
     ).
 
@@ -609,7 +611,7 @@ flags_other_than_fuzzy_ignored(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"x %s">>, <<"y %s">>}],
+        [{singular, undefined, ~"x %s", ~"y %s"}],
         maps:get(entries, Catalog)
     ).
 
@@ -624,7 +626,7 @@ parse_file_ok(Config) ->
     ok = file:write_file(Path, Bin),
     {ok, Catalog} = erli18n_po:parse_file(Path),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
+        [{singular, undefined, ~"Hello", ~"Oi"}],
         maps:get(entries, Catalog)
     ).
 
@@ -646,7 +648,7 @@ hex_and_octal_escapes(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, undefined, Msgid, _}] = maps:get(entries, Catalog),
-    ?assertEqual(<<"AA">>, Msgid).
+    ?assertEqual(~"AA", Msgid).
 
 %% Finding #11 (po-hex-octal-escape-emits-invalid-utf8): a UTF-8 catalog
 %% with a lone high-byte hex escape (`\xFF`) used to return `{ok, _}` with
@@ -686,7 +688,7 @@ hex_escape_latin1_transcodes(_Config) ->
         "\\xFFz\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{singular, undefined, <<"k">>, Translation}] =
+    [{singular, undefined, ~"k", Translation}] =
         maps:get(entries, Catalog),
     %% é = <<195,169>> (natural byte transcoded) | \xFF = U+00FF =
     %% <<195,191>> (escape transcoded) | z = <<122>>.
@@ -706,7 +708,7 @@ hex_escape_utf8_multibyte_ok(_Config) ->
         "msgstr \"x\\xC3\\xBFy\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{singular, undefined, <<"k">>, Translation}] =
+    [{singular, undefined, ~"k", Translation}] =
         maps:get(entries, Catalog),
     ?assertEqual(<<$x, 16#C3, 16#BF, $y>>, Translation),
     ?assert(is_binary(unicode:characters_to_binary(Translation, utf8, utf8))).
@@ -733,7 +735,7 @@ octal_escape_high_byte(_Config) ->
         "msgstr \"\\377z\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Latin1Bin),
-    [{singular, undefined, <<"k">>, Translation}] =
+    [{singular, undefined, ~"k", Translation}] =
         maps:get(entries, Catalog),
     ?assertEqual(<<16#C3, 16#BF, $z>>, Translation).
 
@@ -770,7 +772,7 @@ degenerate_plural_nplurals_1(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{plural, undefined, <<"Fish">>, <<"Fishes">>, [{0, <<"sakana">>}]}],
+        [{plural, undefined, ~"Fish", ~"Fishes", [{0, ~"sakana"}]}],
         maps:get(entries, Catalog)
     ).
 
@@ -796,7 +798,7 @@ duplicate_header_dropped(_Config) ->
     %% header entry is dropped from entries.
     ?assertEqual(utf8, maps:get(charset, Header)),
     ?assertEqual(
-        [{singular, undefined, <<"Hello">>, <<"Oi">>}],
+        [{singular, undefined, ~"Hello", ~"Oi"}],
         maps:get(entries, Catalog)
     ).
 
@@ -826,11 +828,11 @@ po_with_entry(Msgid, Msgstr) ->
     iolist_to_binary(
         [
             minimal_header(),
-            <<"msgid \"">>,
+            ~"msgid \"",
             Msgid,
             <<"\"\n", "msgstr \"">>,
             Msgstr,
-            <<"\"\n">>
+            ~"\"\n"
         ]
     ).
 
@@ -840,28 +842,28 @@ po_with_entry(Msgid, Msgstr) ->
 
 %% Cover L279: charset alias "utf8" (no hyphen) normalizes to utf8.
 charset_alias_utf8_no_hyphen(_Config) ->
-    {ok, Catalog} = erli18n_po:parse(po_with_charset(<<"utf8">>)),
+    {ok, Catalog} = erli18n_po:parse(po_with_charset(~"utf8")),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
 %% Cover L281: charset alias "iso8859-1" (no dash between iso and 8859)
 %% normalizes to latin1.
 charset_alias_iso8859_1_no_dashes(_Config) ->
-    {ok, Catalog} = erli18n_po:parse(po_with_charset(<<"iso8859-1">>)),
+    {ok, Catalog} = erli18n_po:parse(po_with_charset(~"iso8859-1")),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
 %% Cover L282: charset alias "latin-1" normalizes to latin1.
 charset_alias_latin_hyphen_1(_Config) ->
-    {ok, Catalog} = erli18n_po:parse(po_with_charset(<<"latin-1">>)),
+    {ok, Catalog} = erli18n_po:parse(po_with_charset(~"latin-1")),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
 %% Cover L284: charset alias "us-ascii" normalizes to us_ascii.
 charset_alias_us_ascii(_Config) ->
-    {ok, Catalog} = erli18n_po:parse(po_with_charset(<<"us-ascii">>)),
+    {ok, Catalog} = erli18n_po:parse(po_with_charset(~"us-ascii")),
     ?assertEqual(us_ascii, maps:get(charset, maps:get(header, Catalog))).
 
 %% Cover L285: charset alias "ascii" (short form) normalizes to us_ascii.
 charset_alias_ascii_short(_Config) ->
-    {ok, Catalog} = erli18n_po:parse(po_with_charset(<<"ascii">>)),
+    {ok, Catalog} = erli18n_po:parse(po_with_charset(~"ascii")),
     ?assertEqual(us_ascii, maps:get(charset, maps:get(header, Catalog))).
 
 %% Cover L269: extract_charset_token hits separator branch when the
@@ -902,7 +904,7 @@ us_ascii_pure_ascii_body(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(us_ascii, maps:get(charset, maps:get(header, Catalog))),
     ?assertEqual(
-        [{singular, undefined, <<"hello">>, <<"world">>}],
+        [{singular, undefined, ~"hello", ~"world"}],
         maps:get(entries, Catalog)
     ).
 
@@ -921,7 +923,7 @@ us_ascii_non_ascii_byte_rejected(_Config) ->
         "msgstr \"y\"\n"
     >>,
     ?assertMatch(
-        {error, {charset_conversion, <<"US-ASCII">>, _}},
+        {error, {charset_conversion, ~"US-ASCII", _}},
         erli18n_po:parse(Bin)
     ).
 
@@ -962,7 +964,7 @@ msgctxt_multiline_continuation(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, <<"line1 line2">>, <<"x">>, <<"y">>}],
+        [{singular, ~"line1 line2", ~"x", ~"y"}],
         maps:get(entries, Catalog)
     ).
 
@@ -978,10 +980,10 @@ msgid_plural_multiline_continuation(_Config) ->
         "msgstr[1] \"b\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{plural, undefined, <<"tree">>, MsgidPlural, Plurals}] =
+    [{plural, undefined, ~"tree", MsgidPlural, Plurals}] =
         maps:get(entries, Catalog),
-    ?assertEqual(<<"long trees">>, MsgidPlural),
-    ?assertEqual([{0, <<"a">>}, {1, <<"b">>}], Plurals).
+    ?assertEqual(~"long trees", MsgidPlural),
+    ?assertEqual([{0, ~"a"}, {1, ~"b"}], Plurals).
 
 %% Cover L440-441: msgstr[N] spread across continuation lines. The
 %% append branch for {msgstr, Idx} pops the head and reconcatenates.
@@ -995,9 +997,9 @@ msgstr_index_multiline_continuation(_Config) ->
         "msgstr[1] \"b\"\n"
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
-    [{plural, undefined, <<"tree">>, <<"trees">>, Plurals}] =
+    [{plural, undefined, ~"tree", ~"trees", Plurals}] =
         maps:get(entries, Catalog),
-    ?assertEqual([{0, <<"first continued">>}, {1, <<"b">>}], Plurals).
+    ?assertEqual([{0, ~"first continued"}, {1, ~"b"}], Plurals).
 
 %% Cover L683: msgctxt keyword with no following quoted string returns
 %% a syntax error in the main parser pass.
@@ -1024,7 +1026,7 @@ msgctxt_keyword_with_tab(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, <<"ctx">>, <<"x">>, <<"y">>}],
+        [{singular, ~"ctx", ~"x", ~"y"}],
         maps:get(entries, Catalog)
     ).
 
@@ -1108,62 +1110,62 @@ trailing_whitespace_after_close_quote(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"hello">>, <<"world">>}],
+        [{singular, undefined, ~"hello", ~"world"}],
         maps:get(entries, Catalog)
     ).
 
 %% Cover L778: \b backspace escape decodes to byte 8.
 escape_backspace(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\bb">>),
+    Bin = po_with_entry(~"k", ~"a\\bb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 8, "b">>, T).
 
 %% Cover L779: \f formfeed escape decodes to byte 12.
 escape_formfeed(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\fb">>),
+    Bin = po_with_entry(~"k", ~"a\\fb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 12, "b">>, T).
 
 %% Cover L780: \v vertical tab escape decodes to byte 11.
 escape_vertical_tab(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\vb">>),
+    Bin = po_with_entry(~"k", ~"a\\vb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 11, "b">>, T).
 
 %% Cover L781: \a alert (BEL) escape decodes to byte 7.
 escape_alert_bell(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\ab">>),
+    Bin = po_with_entry(~"k", ~"a\\ab"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 7, "b">>, T).
 
 %% Cover L782: \/ forward slash escape decodes to '/'.
 escape_forward_slash(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\/b">>),
+    Bin = po_with_entry(~"k", ~"a\\/b"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
-    ?assertEqual(<<"a/b">>, T).
+    ?assertEqual(~"a/b", T).
 
 %% Cover L783: \? question mark escape decodes to '?'.
 escape_question_mark(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\?b">>),
+    Bin = po_with_entry(~"k", ~"a\\?b"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
-    ?assertEqual(<<"a?b">>, T).
+    ?assertEqual(~"a?b", T).
 
 %% Cover L784: \' single quote escape decodes to '.
 escape_single_quote(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\'b">>),
+    Bin = po_with_entry(~"k", ~"a\\'b"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
-    ?assertEqual(<<"a'b">>, T).
+    ?assertEqual(~"a'b", T).
 
 %% Cover L802: \x followed by a non-hex digit produces invalid_hex_escape.
 invalid_hex_escape_non_hex_digit(_Config) ->
-    Bin = po_with_entry(<<"k">>, <<"a\\xZZb">>),
+    Bin = po_with_entry(~"k", ~"a\\xZZb"),
     ?assertMatch(
         {error, {syntax_error, _, invalid_hex_escape}},
         erli18n_po:parse(Bin)
@@ -1226,7 +1228,7 @@ header_line_without_colon_skipped(_Config) ->
     ?assertEqual(utf8, maps:get(charset, Header)),
     %% Plural-Forms still parsed correctly.
     ?assertEqual(
-        <<"nplurals=2; plural=(n != 1);">>,
+        ~"nplurals=2; plural=(n != 1);",
         maps:get(plural_forms, Header)
     ).
 
@@ -1248,7 +1250,7 @@ plural_forms_nplurals_without_equals(_Config) ->
     %% nplurals undefined -> validate_plural_indices accepts any set,
     %% so singular entry still emits.
     ?assertEqual(
-        [{singular, undefined, <<"x">>, <<"y">>}],
+        [{singular, undefined, ~"x", ~"y"}],
         maps:get(entries, Catalog)
     ).
 
@@ -1271,7 +1273,7 @@ dump_synthetic_catalog_empty_raw(_Config) ->
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog2))),
     %% The original singular entry roundtrips.
     ?assertEqual(
-        [{singular, undefined, <<"only">>, <<"trans">>}],
+        [{singular, undefined, ~"only", ~"trans"}],
         maps:get(entries, Catalog2)
     ).
 
@@ -1285,7 +1287,7 @@ dump_catalog_missing_raw_key(_Config) ->
             content_type => <<>>,
             charset => utf8
         },
-        entries => [{singular, undefined, <<"k">>, <<"v">>}]
+        entries => [{singular, undefined, ~"k", ~"v"}]
     },
     Dumped = erli18n_po:dump(Catalog),
     %% Re-parse the dumped output to confirm a minimal valid header was
@@ -1293,7 +1295,7 @@ dump_catalog_missing_raw_key(_Config) ->
     {ok, Catalog2} = erli18n_po:parse(Dumped),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog2))),
     ?assertEqual(
-        [{singular, undefined, <<"k">>, <<"v">>}],
+        [{singular, undefined, ~"k", ~"v"}],
         maps:get(entries, Catalog2)
     ).
 
@@ -1341,7 +1343,7 @@ tab_indented_line_in_main_parser(_Config) ->
     >>,
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(
-        [{singular, undefined, <<"x">>, <<"y">>}],
+        [{singular, undefined, ~"x", ~"y"}],
         maps:get(entries, Catalog)
     ).
 
@@ -1359,27 +1361,27 @@ line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
     %% terminator. The byte content of each line is identical across the
     %% three variants; only the line terminator differs.
     Lines = [
-        <<"msgid \"\"">>,
-        <<"msgstr \"\"">>,
-        <<"\"Content-Type: text/plain; charset=UTF-8\\n\"">>,
-        <<"\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"">>,
-        <<"">>,
-        <<"msgid \"Hello\"">>,
-        <<"msgstr \"Oi\"">>,
-        <<"">>,
-        <<"msgid \"Bye\"">>,
-        <<"msgstr \"Tchau\"">>
+        ~"msgid \"\"",
+        ~"msgstr \"\"",
+        ~"\"Content-Type: text/plain; charset=UTF-8\\n\"",
+        ~"\"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"",
+        ~"",
+        ~"msgid \"Hello\"",
+        ~"msgstr \"Oi\"",
+        ~"",
+        ~"msgid \"Bye\"",
+        ~"msgstr \"Tchau\""
     ],
     Join = fun(Sep) ->
         iolist_to_binary(lists:join(Sep, Lines))
     end,
-    LfBin = Join(<<"\n">>),
-    CrlfBin = Join(<<"\r\n">>),
-    LoneCrBin = Join(<<"\r">>),
+    LfBin = Join(~"\n"),
+    CrlfBin = Join(~"\r\n"),
+    LoneCrBin = Join(~"\r"),
 
     Expected = [
-        {singular, undefined, <<"Hello">>, <<"Oi">>},
-        {singular, undefined, <<"Bye">>, <<"Tchau">>}
+        {singular, undefined, ~"Hello", ~"Oi"},
+        {singular, undefined, ~"Bye", ~"Tchau"}
     ],
 
     {ok, LfCatalog} = erli18n_po:parse(LfBin),
@@ -1407,6 +1409,30 @@ line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
         maps:get(charset, maps:get(header, LoneCrCatalog))
     ),
     ?assertEqual(
-        <<"nplurals=2; plural=(n != 1);">>,
+        ~"nplurals=2; plural=(n != 1);",
         maps:get(plural_forms, maps:get(header, LoneCrCatalog))
     ).
+
+%% Malformed escapes / indices in a .po surface a structured syntax error
+%% (input -> output). The escape-heavy literals use the same `\"` / `\\`
+%% conventions as the other parser cases in this suite.
+parse_rejects_malformed_escapes_and_index(_Config) ->
+    %% Octal escape > 255.
+    ?assertEqual(
+        {error, {syntax_error, 1, {octal_escape_out_of_range, 256}}},
+        erli18n_po:parse(~"msgid \"\\400\"\nmsgstr \"x\"\n")
+    ),
+    %% A trailing invalid-UTF-8 escape (\377 = byte 255) flushed at EOF.
+    ?assertEqual(
+        {error, {syntax_error, 1, {escape_invalid_utf8, <<255>>}}},
+        erli18n_po:parse(~"msgid \"\\377\"\nmsgstr \"y\"\n")
+    ),
+    %% An over-long msgstr index: the prepass classifies the line as `other`
+    %% and the main parser rejects it.
+    ?assertEqual(
+        {error, {syntax_error, 1, {index_too_long, 7}}},
+        erli18n_po:parse(
+            ~"msgstr[88888888] \"x\"\nmsgid \"\"\nmsgstr \"Content-Type: text/plain; charset=UTF-8\\n\"\n"
+        )
+    ),
+    ok.

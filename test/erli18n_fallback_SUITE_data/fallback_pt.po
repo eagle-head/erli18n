@@ -1,0 +1,27 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# A base-language ("pt") catalog. The facade suite loads this under locale
+# "pt" and asserts that a "pt_BR" request falls back to it ONLY when the
+# opt-in locale_fallback chain is enabled.
+
+msgid "Hello"
+msgstr "Olá"
+
+msgid "tree"
+msgid_plural "trees"
+msgstr[0] "árvore"
+msgstr[1] "árvores"
+
+msgctxt "menu"
+msgid "Open"
+msgstr "Abrir"
+
+msgctxt "inbox"
+msgid "message"
+msgid_plural "messages"
+msgstr[0] "mensagem"
+msgstr[1] "mensagens"

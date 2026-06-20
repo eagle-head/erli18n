@@ -149,10 +149,10 @@ prop_encoding_mismatch() ->
         {
             valid_po_text(),
             oneof([
-                <<"UTF-8">>,
-                <<"LATIN1">>,
-                <<"SHIFT_JIS">>,
-                <<"KOI8-R">>
+                ~"UTF-8",
+                ~"LATIN1",
+                ~"SHIFT_JIS",
+                ~"KOI8-R"
             ])
         },
         begin
@@ -167,8 +167,8 @@ prop_encoding_mismatch() ->
                     %% SHIFT_JIS / KOI8-R must surface this exact
                     %% error per PSD-002 / EX-013.
                     case Charset of
-                        <<"SHIFT_JIS">> -> true;
-                        <<"KOI8-R">> -> true;
+                        ~"SHIFT_JIS" -> true;
+                        ~"KOI8-R" -> true;
                         _ -> true
                     end;
                 {error, _} ->
@@ -198,7 +198,7 @@ prop_extreme_inputs() ->
     ).
 
 build_extreme(many_empty_entries) ->
-    Entry = <<"msgid \"x\"\nmsgstr \"\"\n\n">>,
+    Entry = ~"msgid \"x\"\nmsgstr \"\"\n\n",
     Header = minimal_valid_po_header(),
     iolist_to_binary([Header, lists:duplicate(1000, Entry)]);
 build_extreme(giant_msgid) ->
@@ -274,7 +274,7 @@ prop_decode_is_linear() ->
 %% Build a PO blob whose single entry has an `N`-byte ASCII msgid.
 giant_msgid_po(N) ->
     Header = minimal_valid_po_header(),
-    Giant = binary:copy(<<"a">>, N),
+    Giant = binary:copy(~"a", N),
     Entry = <<"msgid \"", Giant/binary, "\"\nmsgstr \"\"\n">>,
     <<Header/binary, Entry/binary>>.
 
@@ -323,7 +323,7 @@ prop_end_to_end_no_supervisor_restart() ->
                     try
                         erli18n:ensure_loaded(
                             ?FUZZ_DOMAIN,
-                            <<"xx">>,
+                            ~"xx",
                             PoPath
                         )
                     catch
@@ -336,7 +336,7 @@ prop_end_to_end_no_supervisor_restart() ->
                     %% catalog may never have been installed; both are
                     %% acceptable cleanup outcomes.
                     try
-                        erli18n:unload(?FUZZ_DOMAIN, <<"xx">>)
+                        erli18n:unload(?FUZZ_DOMAIN, ~"xx")
                     catch
                         _:_ -> ok
                     end
@@ -433,7 +433,7 @@ check_giant_integer_run(msgstr_index_system_limit) ->
 check_giant_integer_run(plural_literal_giant) ->
     Header = <<
         "nplurals=2; plural=",
-        (binary:copy(<<"9">>, ?GIANT_DIGIT_RUN))/binary,
+        (binary:copy(~"9", ?GIANT_DIGIT_RUN))/binary,
         ";"
     >>,
     case erli18n_plural:compile(Header) of
@@ -483,7 +483,7 @@ error_payload_bytes(Reason) ->
 
 %% A PO whose header declares `nplurals=<DigitCount digits>`.
 po_with_nplurals(DigitCount) ->
-    Digits = binary:copy(<<"9">>, DigitCount),
+    Digits = binary:copy(~"9", DigitCount),
     <<
         "msgid \"\"\n"
         "msgstr \"\"\n"
@@ -499,7 +499,7 @@ po_with_nplurals(DigitCount) ->
 %% A PO with a plural entry whose `msgstr[<DigitCount digits>]` index is
 %% an enormous digit run.
 po_with_msgstr_index(DigitCount) ->
-    Digits = binary:copy(<<"9">>, DigitCount),
+    Digits = binary:copy(~"9", DigitCount),
     <<
         (minimal_valid_po_header())/binary,
         "msgid \"a\"\n"
@@ -546,31 +546,31 @@ prop_header_content_type_whitespace_no_crash() ->
 %% Includes spaces and tabs — both are LWSP per RFC 822 and both used to
 %% defeat the literal prepass matcher.
 header_ws() ->
-    oneof([<<>>, <<" ">>, <<"  ">>, <<"\t">>, <<" \t ">>]).
+    oneof([<<>>, ~" ", ~"  ", ~"\t", ~" \t "]).
 
 %% A mix of supported (must parse OK) and unsupported (must surface
 %% {unsupported_charset,_}) charset tokens.
 header_charset() ->
     oneof([
-        {supported, <<"UTF-8">>},
-        {supported, <<"utf8">>},
-        {supported, <<"ISO-8859-1">>},
-        {supported, <<"US-ASCII">>},
-        {unsupported, <<"Shift_JIS">>},
-        {unsupported, <<"KOI8-R">>},
-        {unsupported, <<"windows-1252">>},
-        {unsupported, <<"euc-jp">>}
+        {supported, ~"UTF-8"},
+        {supported, ~"utf8"},
+        {supported, ~"ISO-8859-1"},
+        {supported, ~"US-ASCII"},
+        {unsupported, ~"Shift_JIS"},
+        {unsupported, ~"KOI8-R"},
+        {unsupported, ~"windows-1252"},
+        {unsupported, ~"euc-jp"}
     ]).
 
 po_with_spaced_content_type(WsBeforeColon, WsAfterColon, {_Kind, Charset}) ->
     iolist_to_binary([
-        <<"msgid \"\"\nmsgstr \"\"\n\"Content-Type">>,
+        ~"msgid \"\"\nmsgstr \"\"\n\"Content-Type",
         WsBeforeColon,
-        <<":">>,
+        ~":",
         WsAfterColon,
-        <<"text/plain; charset=">>,
+        ~"text/plain; charset=",
         Charset,
-        <<"\\n\"\n">>
+        ~"\\n\"\n"
     ]).
 
 check_spaced_content_type(Po, {Kind, _Charset}) ->

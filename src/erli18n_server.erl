@@ -38,8 +38,9 @@ Think of this module in three layers:
    load (finding #6).
 
 **Trusted vs untrusted.** A `.po`'s `Plural-Forms` rule is untrusted input;
-that is why it is compiled with bounds (see `erli18n_plural`) and
-`lookup_plural_form/5` wraps the evaluation in a belt-and-suspenders `try`. This
+that is why it is compiled with bounds (see `erli18n_plural`), whose
+`evaluate/2` is total — it clamps malformed rules instead of raising, so
+`lookup_plural_form/5` evaluates them directly. This
 module's anti-DoS bounds (`max_bytes`, `max_entries`) reject large catalogs
 BEFORE any ETS mutation.
 
@@ -760,11 +761,10 @@ to the `gen_server`.
 - **Header present without `Plural-Forms`** (`plural := fallback`) -> uses the
   C/Germanic default (`N == 1 -> form 0; otherwise form 1`).
 - **Header with a compiled rule** -> evaluates the rule. `erli18n_plural:evaluate/2`
-  is total (it clamps malformed rules instead of crashing), and the surrounding
-  `try` is belt-and-suspenders that degrades to the Germanic form should a future
-  regression reintroduce a throw on this per-request hot path (finding #1,
-  anti-DoS). In other words: this function never crashes the calling process
-  because of an untrusted plural rule.
+  is total (it clamps malformed rules instead of crashing), so the form index is
+  computed directly — no per-request `try` on this hot path (finding #1, anti-DoS).
+  In other words: this function never crashes the calling process because of an
+  untrusted plural rule.
 
 ## Failure modes
 A non-integer `N` (or other args outside the guards) is `function_clause`.
@@ -801,19 +801,11 @@ lookup_plural_form(Domain, Locale, Context, Msgid, N) when
             Index = fallback_form_index(N),
             lookup_plural(Domain, Locale, Context, Msgid, Index);
         {ok, #{plural := Compiled}} ->
-            %% Boundary guard (finding #1, plural-eval-throws-per-lookup-
-            %% dos, Layer 4). `evaluate/2` is now total — it clamps
-            %% malformed rules instead of raising — so this `try` never
-            %% fires in practice. It is belt-and-suspenders: should a
-            %% future regression reintroduce a throw on this per-request
-            %% hot path, we degrade to the default Germanic form index
-            %% rather than crash the calling request process.
-            Index =
-                try
-                    erli18n_plural:evaluate(Compiled, N)
-                catch
-                    error:_ -> fallback_form_index(N)
-                end,
+            %% `evaluate/2` is total (finding #1, plural-eval-throws-per-lookup-
+            %% dos, Layer 4): it CLAMPS malformed rules instead of raising, so
+            %% the form index is computed directly — no per-request try/catch on
+            %% this hot path (its totality is enforced by the plural properties).
+            Index = erli18n_plural:evaluate(Compiled, N),
             lookup_plural(Domain, Locale, Context, Msgid, Index);
         undefined ->
             undefined
@@ -836,8 +828,10 @@ request). Returns a map with:
   catalog.
 
 ## Failure modes
-Crashes with `{ets_info_invalid, _}` if the table does not exist (dead server) —
-a descriptive payload instead of propagating `undefined`.
+Crashes with a `case_clause` if the table does not exist (dead server): `ets:info/2`
+returns `undefined`, which matches no clause of the internal `ets_info_integer/2`.
+The server creates the table in `init/1` and never deletes it, so this is reachable
+only when the `gen_server` is already dead.
 
 ```erlang
 %% Single catalog with 130 data rows (see loaded_catalogs/0) + 1 header.
@@ -858,7 +852,7 @@ memory_info() ->
     %% `undefined` only happens when the table doesn't exist. The server
     %% creates the table in `init/1` and never deletes it, so reaching
     %% `undefined` here means the gen_server is dead — at which point
-    %% crashing with a descriptive payload is the right answer.
+    %% crashing with a `case_clause` is the right answer.
     Words = ets_info_integer(memory),
     Bytes = Words * erlang:system_info(wordsize),
     NumKeys = ets_info_integer(size),
@@ -874,14 +868,15 @@ memory_info() ->
     }.
 
 %% Narrow `ets:info(?ETS_TABLE, Key)` to `non_neg_integer()`. The `memory`
-%% and `size` keys are both documented to return `non_neg_integer()` when
-%% the table exists. Any other shape is a contract violation worth crashing
-%% on.
+%% and `size` keys are both documented to return `non_neg_integer()` while
+%% the table exists, which it always does at every call site (the server is
+%% the table's proprietor for its whole lifetime). The single guarded clause
+%% reflects that invariant; an impossible `undefined` would be a `case_clause`
+%% crash, the correct outcome for a dead-table contract violation.
 -spec ets_info_integer(memory | size) -> non_neg_integer().
 ets_info_integer(Key) ->
     case ets:info(?ETS_TABLE, Key) of
-        N when is_integer(N), N >= 0 -> N;
-        Other -> error({ets_info_invalid, {?ETS_TABLE, Key, Other, expected, non_neg_integer}})
+        N when is_integer(N), N >= 0 -> N
     end.
 
 -doc """
@@ -1512,8 +1507,8 @@ default_po_path(App, Domain, Locale) when
     %% `file:filename()` (a string) for the public contract. All inputs
     %% are strings (`PrivDir`, literal strings, `binary_to_list/1`,
     %% `atom_to_list/1` + concat), so the result is a string too.
-    %% Narrow at the boundary so an unexpected binary surfaces as a
-    %% badmatch instead of corrupting the contract downstream.
+    %% Narrow at the boundary so an impossible binary would surface as a
+    %% `case_clause` crash instead of corrupting the contract downstream.
     Joined = filename:join([
         PrivDir,
         "locale",
@@ -1522,8 +1517,7 @@ default_po_path(App, Domain, Locale) when
         atom_to_list(Domain) ++ ".po"
     ]),
     case Joined of
-        Str when is_list(Str) -> Str;
-        Other -> error({unexpected_filename_shape, Other, expected, string})
+        Str when is_list(Str) -> Str
     end.
 
 %% =========================
@@ -1592,25 +1586,21 @@ init([]) ->
     ok = rebuild_catalog_index(),
     {ok, #{}}.
 
-%% Create the side index table if it does not already exist. The table is
-%% server-owned (dies with the worker, rebuilt on `init/1') and protected:
-%% only this process writes to it. Re-entrant so a worker restart that
-%% inherits a stale name (it won't — the table dies with the old worker)
-%% degrades to a no-op rather than crashing.
+%% Create the side index table. The table is server-owned (protected, so only
+%% this process writes to it) and dies with the worker, and `init/1' — the sole
+%% caller — runs exactly once per worker process. The name is therefore always
+%% free here, so the table is created unconditionally; a worker restart gets a
+%% fresh process with no surviving table and rebuilds the index from the data
+%% rows (`rebuild_catalog_index/0').
 -spec create_catalog_index() -> ets:table().
 create_catalog_index() ->
-    case ets:info(?CATALOG_INDEX_TABLE, name) of
-        undefined ->
-            ets:new(?CATALOG_INDEX_TABLE, [
-                set,
-                protected,
-                named_table,
-                {read_concurrency, true},
-                {keypos, 1}
-            ]);
-        _Existing ->
-            ?CATALOG_INDEX_TABLE
-    end.
+    ets:new(?CATALOG_INDEX_TABLE, [
+        set,
+        protected,
+        named_table,
+        {read_concurrency, true},
+        {keypos, 1}
+    ]).
 
 %% Rebuild the index from the data table. Runs exactly once per worker
 %% lifetime (in `init/1'), NOT on the per-load path. Cost is O(rows) of
@@ -1952,16 +1942,14 @@ compute_divergence(Locale, #{} = PluralCompiled) ->
 emit_divergence_log(_Domain, _Locale, none) ->
     ok;
 emit_divergence_log(Domain, Locale, {plural_divergence, HdrRule, CldrRule}) ->
-    ?LOG_WARNING(
-        #{
-            event => plural_divergence,
-            domain_name => Domain,
-            locale => Locale,
-            header_rule => HdrRule,
-            cldr_rule => CldrRule
-        },
-        #{domain => [erli18n, server]}
-    ),
+    Report = #{
+        event => plural_divergence,
+        domain_name => Domain,
+        locale => Locale,
+        header_rule => HdrRule,
+        cldr_rule => CldrRule
+    },
+    ?LOG_WARNING(Report, #{domain => [erli18n, server]}),
     ok.
 
 %% Telemetry counterpart to the ?LOG_WARNING above. Always emitted on
@@ -2107,9 +2095,9 @@ stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, MaxEntries, Bin, Parsed) ->
     #{header := Header, entries := Entries} = Parsed,
     NumEntries = length(Entries),
     case within_entry_cap(NumEntries, MaxEntries) of
-        false ->
-            {error, {too_many_entries, NumEntries, narrow_cap(MaxEntries)}};
-        true ->
+        {too_many, Max} ->
+            {error, {too_many_entries, NumEntries, Max}};
+        ok ->
             stage_compiled(
                 Domain,
                 Locale,
@@ -2122,17 +2110,19 @@ stage_parsed(Domain, Locale, PoPath, IncludeFuzzy, MaxEntries, Bin, Parsed) ->
             )
     end.
 
+%% `ok` when within the entry cap, or `{too_many, Max}` carrying the INTEGER
+%% cap when exceeded. Returning the cap (rather than a bare boolean) keeps it
+%% available for the `too_many_entries` tuple with no separate narrowing step —
+%% `infinity` simply never reaches the error path.
 -spec within_entry_cap(non_neg_integer(), non_neg_integer() | infinity) ->
-    boolean().
-within_entry_cap(_N, infinity) -> true;
-within_entry_cap(N, Max) when is_integer(Max) -> N =< Max.
-
-%% `within_entry_cap/2' only returns `false' for the integer-cap clause, so
-%% in the error path the cap is provably a `non_neg_integer()'. Narrow it for
-%% the `too_many_entries' tuple so eqwalizer sees the closed shape.
--spec narrow_cap(non_neg_integer() | infinity) -> non_neg_integer().
-narrow_cap(N) when is_integer(N), N >= 0 -> N;
-narrow_cap(infinity) -> error(unreachable_infinity_cap).
+    ok | {too_many, non_neg_integer()}.
+within_entry_cap(_N, infinity) ->
+    ok;
+within_entry_cap(N, Max) when is_integer(Max) ->
+    case N =< Max of
+        true -> ok;
+        false -> {too_many, Max}
+    end.
 
 -spec stage_compiled(
     domain(),
@@ -2321,7 +2311,7 @@ rewrite_index(Domain, Locale, NewKeys) ->
     {ok | not_loaded, non_neg_integer()}.
 do_unload_with_count(Domain, Locale) ->
     DataKeys = index_keys(Domain, Locale),
-    DataDeleted = delete_keys(DataKeys, 0),
+    DataDeleted = delete_keys(DataKeys),
     %% The header is not a data key (no index entry), so delete it directly.
     %% `ets:take/2' removes and returns it atomically, letting us count
     %% whether it was present (a header-only `.po' has a header but no data
@@ -2345,24 +2335,16 @@ do_unload_with_count(Domain, Locale) ->
         end,
     {Result, Deleted}.
 
-%% Delete each data key from the catalog table, tallying how many were
-%% present. `ets:delete/2' is O(1) on a `set'; the loop is O(length(Keys))
-%% — i.e. O(target catalog size), independent of total resident rows.
-%% `ets:member/2' guards the count so a stale index key (which cannot
-%% happen while the server is the sole writer) would not inflate the tally.
--spec delete_keys([data_key()], non_neg_integer()) -> non_neg_integer().
-delete_keys([], Acc) ->
-    Acc;
-delete_keys([Key | Rest], Acc) ->
-    Acc1 =
-        case ets:member(?ETS_TABLE, Key) of
-            true ->
-                true = ets:delete(?ETS_TABLE, Key),
-                Acc + 1;
-            false ->
-                Acc
-        end,
-    delete_keys(Rest, Acc1).
+%% Delete each data key from the catalog table, returning how many keys were
+%% removed. `ets:delete/2' is O(1) on a `set'; the sweep is O(length(Keys))
+%% — i.e. O(target catalog size), independent of total resident rows. The
+%% keys come straight from the catalog's own index, and the server is the
+%% table's sole writer, so every key is present: the count is simply
+%% `length(Keys)', with no per-key membership probe.
+-spec delete_keys([data_key()]) -> non_neg_integer().
+delete_keys(Keys) ->
+    _ = [ets:delete(?ETS_TABLE, Key) || Key <- Keys],
+    length(Keys).
 
 %% Build the stop metadata for the catalog load/reload span. Maps the
 %% internal load result onto the stop-metadata schema:
@@ -2465,14 +2447,14 @@ object_keys([{Key, _Value} | Rest]) ->
 
 %% Narrow a stored object's key to the `data_key/0' shape. The build paths
 %% only ever emit `?SINGULAR_KEY'/`?PLURAL_KEY' tuples (never a header), so
-%% the two clauses are exhaustive; anything else is an invariant break.
+%% these two clauses cover every key `object_keys/1' is handed; an impossible
+%% shape would be a `function_clause' crash, the correct invariant-break
+%% outcome.
 -spec object_key(tuple()) -> data_key().
 object_key({singular, D, L, Ctx, Msgid}) ->
     ?SINGULAR_KEY(D, L, Ctx, Msgid);
 object_key({plural, D, L, Ctx, Msgid, Idx}) ->
-    ?PLURAL_KEY(D, L, Ctx, Msgid, Idx);
-object_key(Other) ->
-    error({unexpected_catalog_key, Other}).
+    ?PLURAL_KEY(D, L, Ctx, Msgid, Idx).
 
 %% Deregister a catalog. Idempotent: deleting an absent key is a no-op.
 -spec index_delete(domain(), locale()) -> ok.
@@ -2482,19 +2464,20 @@ index_delete(D, L) ->
 
 %% O(1) count of distinct loaded catalogs — the whole point of the index.
 %% `ets:info(_, size)' is documented O(1); the table only ever exists
-%% after `init/1' creates it, so a real `undefined' here means the server
-%% is dead and crashing with a descriptive payload is correct.
+%% after `init/1' creates it and lives for the server's whole lifetime, so
+%% the single guarded clause reflects that invariant. An impossible
+%% `undefined' (server dead) becomes a `case_clause' crash, which is correct.
 -spec index_size() -> non_neg_integer().
 index_size() ->
     case ets:info(?CATALOG_INDEX_TABLE, size) of
         N when is_integer(N), N >= 0 ->
-            N;
-        Other ->
-            error(
-                {ets_info_invalid, {?CATALOG_INDEX_TABLE, size, Other, expected, non_neg_integer}}
-            )
+            N
     end.
 
+%% Fold one catalog-table row into the per-(domain, locale) data-row tally.
+%% The table only ever holds singular/plural/header rows (the server is its
+%% sole writer), so these three clauses cover every row; headers are not data
+%% and leave the tally unchanged.
 -spec count_per_catalog(
     tuple(),
     #{{domain(), locale()} => non_neg_integer()}
@@ -2504,8 +2487,6 @@ count_per_catalog({{singular, D, L, _, _}, _}, Acc) ->
 count_per_catalog({{plural, D, L, _, _, _}, _}, Acc) ->
     maps:update_with({D, L}, fun(N) -> N + 1 end, 1, Acc);
 count_per_catalog({{header, _, _}, _}, Acc) ->
-    Acc;
-count_per_catalog(_Other, Acc) ->
     Acc.
 
 %% Used by which_keys/2. Singulars are appended verbatim; plurals are

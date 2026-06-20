@@ -822,7 +822,7 @@ See also `compile/1` and `cldr_rule/1`.
 """.
 -spec fallback_rule() -> binary().
 fallback_rule() ->
-    <<"nplurals=2; plural=n != 1;">>.
+    ~"nplurals=2; plural=n != 1;".
 
 %% =========================
 %% Header tokenization
@@ -836,7 +836,7 @@ fallback_rule() ->
 -spec extract_nplurals(binary()) ->
     {ok, pos_integer()} | {error, compile_error()}.
 extract_nplurals(Header) ->
-    case locate_field(Header, <<"nplurals">>) of
+    case locate_field(Header, ~"nplurals") of
         {ok, Tail} ->
             {Digits, _} = consume_integer(skip_ws(Tail)),
             case byte_size(Digits) of
@@ -866,7 +866,7 @@ extract_nplurals(Header) ->
 -spec extract_plural_expr(binary()) ->
     {ok, binary()} | {error, compile_error()}.
 extract_plural_expr(Header) ->
-    case locate_field(Header, <<"plural">>) of
+    case locate_field(Header, ~"plural") of
         {ok, Tail} ->
             ExprRaw = take_until_semicolon_or_end(Tail),
             case trim(ExprRaw) of
@@ -1495,15 +1495,16 @@ validate_safe(Ast, NPlurals) ->
 %% form; the {error, _} arm just propagates any future eval anomaly.
 -spec static_form_in_range(ast(), pos_integer()) -> ok | {error, plural_eval_error()}.
 static_form_in_range(Ast, NPlurals) ->
+    %% `Ast` is constant and already cleared of static div-by-zero upstream, so
+    %% `eval_ast_checked/2` returns `{ok, _}` here; an `{error, _}` would be a
+    %% contract violation and crashes explicitly (`case_clause`).
     case eval_ast_checked(Ast, 0) of
         {ok, Value} ->
             Form = to_integer(Value),
             case Form >= 0 andalso Form < NPlurals of
                 true -> ok;
                 false -> {error, {form_out_of_range, Form, NPlurals}}
-            end;
-        {error, _} = Err ->
-            Err
+            end
     end.
 
 %% Walk the AST for a `/` or `%` whose divisor is statically zero. The
@@ -1549,16 +1550,15 @@ check_static_divisor(Op, Divisor) ->
         false ->
             ok;
         true ->
+            %% A nested static div-by-zero inside the divisor is already
+            %% reported by the recursive walk, so `eval_ast_checked/2` returns
+            %% `{ok, _}` here (an `{error, _}` would crash explicitly).
             case eval_ast_checked(Divisor, 0) of
                 {ok, V} ->
                     case to_integer(V) of
                         0 -> {error, {division_by_zero, Op}};
                         _ -> ok
-                    end;
-                %% A nested static div-by-zero inside the divisor is
-                %% already reported by the recursive walk above.
-                {error, _} = Err ->
-                    Err
+                    end
             end
     end.
 
@@ -1681,85 +1681,85 @@ rows only exist where they diverge from the base language (e.g. `pt_PT` =
 via `cldr_rule/1`.
 
 For the maintainer: each expression MUST be valid for `compile/1` —
-`cldr_compiled_table/0` calls `compile/1` on each row when building the
-cache and silently DROPS the ones that fail (the locale degrades to "no
-CLDR entry" instead of crashing the loader). Hence a malformed row becomes
-a silent divergence defect, not a noisy error; review edits carefully.
+`build_cldr_compiled_table/0` calls `compile/1` on each row when building the
+cache and accepts only `{ok, _}`. A row that fails to compile is a defect in
+this trusted static literal and crashes the build loudly with `case_clause`,
+rather than silently degrading to "no CLDR entry"; review edits carefully.
 """.
 cldr_data() ->
     [
         %% Germanic / Romance singular vs. plural (n != 1)
-        {<<"en">>, 2, <<"n != 1">>},
-        {<<"en_US">>, 2, <<"n != 1">>},
-        {<<"en_GB">>, 2, <<"n != 1">>},
-        {<<"de">>, 2, <<"n != 1">>},
-        {<<"de_AT">>, 2, <<"n != 1">>},
-        {<<"de_CH">>, 2, <<"n != 1">>},
-        {<<"nl">>, 2, <<"n != 1">>},
-        {<<"sv">>, 2, <<"n != 1">>},
-        {<<"da">>, 2, <<"n != 1">>},
-        {<<"no">>, 2, <<"n != 1">>},
-        {<<"nb">>, 2, <<"n != 1">>},
-        {<<"nn">>, 2, <<"n != 1">>},
-        {<<"fi">>, 2, <<"n != 1">>},
-        {<<"es">>, 2, <<"n != 1">>},
-        {<<"es_MX">>, 2, <<"n != 1">>},
-        {<<"es_ES">>, 2, <<"n != 1">>},
-        {<<"it">>, 2, <<"n != 1">>},
-        {<<"el">>, 2, <<"n != 1">>},
-        {<<"bg">>, 2, <<"n != 1">>},
-        {<<"hu">>, 2, <<"n != 1">>},
-        {<<"tr">>, 2, <<"n != 1">>},
-        {<<"he">>, 2, <<"n != 1">>},
-        {<<"fa">>, 2, <<"n != 1">>},
-        {<<"hi">>, 2, <<"n != 1">>},
-        {<<"et">>, 2, <<"n != 1">>},
+        {~"en", 2, ~"n != 1"},
+        {~"en_US", 2, ~"n != 1"},
+        {~"en_GB", 2, ~"n != 1"},
+        {~"de", 2, ~"n != 1"},
+        {~"de_AT", 2, ~"n != 1"},
+        {~"de_CH", 2, ~"n != 1"},
+        {~"nl", 2, ~"n != 1"},
+        {~"sv", 2, ~"n != 1"},
+        {~"da", 2, ~"n != 1"},
+        {~"no", 2, ~"n != 1"},
+        {~"nb", 2, ~"n != 1"},
+        {~"nn", 2, ~"n != 1"},
+        {~"fi", 2, ~"n != 1"},
+        {~"es", 2, ~"n != 1"},
+        {~"es_MX", 2, ~"n != 1"},
+        {~"es_ES", 2, ~"n != 1"},
+        {~"it", 2, ~"n != 1"},
+        {~"el", 2, ~"n != 1"},
+        {~"bg", 2, ~"n != 1"},
+        {~"hu", 2, ~"n != 1"},
+        {~"tr", 2, ~"n != 1"},
+        {~"he", 2, ~"n != 1"},
+        {~"fa", 2, ~"n != 1"},
+        {~"hi", 2, ~"n != 1"},
+        {~"et", 2, ~"n != 1"},
         %% French family: 0 and 1 are singular, 2+ plural
-        {<<"fr">>, 2, <<"n > 1">>},
-        {<<"fr_FR">>, 2, <<"n > 1">>},
-        {<<"fr_CA">>, 2, <<"n > 1">>},
-        {<<"pt">>, 2, <<"n > 1">>},
-        {<<"pt_BR">>, 2, <<"n > 1">>},
-        {<<"pt_PT">>, 2, <<"n != 1">>},
+        {~"fr", 2, ~"n > 1"},
+        {~"fr_FR", 2, ~"n > 1"},
+        {~"fr_CA", 2, ~"n > 1"},
+        {~"pt", 2, ~"n > 1"},
+        {~"pt_BR", 2, ~"n > 1"},
+        {~"pt_PT", 2, ~"n != 1"},
         %% Slavic 3-form (one / few / many) family
-        {<<"ru">>, 3, <<
+        {~"ru", 3, <<
             "n%10==1 && n%100!=11 ? 0 : "
             "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2"
         >>},
-        {<<"uk">>, 3, <<
+        {~"uk", 3, <<
             "n%10==1 && n%100!=11 ? 0 : "
             "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2"
         >>},
-        {<<"sr">>, 3, <<
+        {~"sr", 3, <<
             "n%10==1 && n%100!=11 ? 0 : "
             "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2"
         >>},
-        {<<"hr">>, 3, <<
+        {~"hr", 3, <<
             "n%10==1 && n%100!=11 ? 0 : "
             "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2"
         >>},
-        {<<"pl">>, 3, <<
+        {~"pl", 3, <<
             "n==1 ? 0 : "
             "n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2"
         >>},
-        {<<"cs">>, 3, <<"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2">>},
-        {<<"sk">>, 3, <<"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2">>},
-        {<<"sl">>, 4, <<
+        {~"cs", 3, ~"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2"},
+        {~"sk", 3, ~"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2"},
+        {~"sl", 4, <<
             "n%100==1 ? 0 : n%100==2 ? 1 : "
             "n%100==3 || n%100==4 ? 2 : 3"
         >>},
-        {<<"ro">>, 3, <<"n==1 ? 0 : (n==0 || (n%100>0 && n%100<20)) ? 1 : 2">>},
+        {~"ro", 3, ~"n==1 ? 0 : (n==0 || (n%100>0 && n%100<20)) ? 1 : 2"},
         %% Asian degenerate (PSD-008): single form
-        {<<"ja">>, 1, <<"0">>},
-        {<<"ko">>, 1, <<"0">>},
-        {<<"vi">>, 1, <<"0">>},
-        {<<"th">>, 1, <<"0">>},
-        {<<"zh">>, 1, <<"0">>},
-        {<<"zh_CN">>, 1, <<"0">>},
-        {<<"zh_TW">>, 1, <<"0">>},
-        {<<"zh_HK">>, 1, <<"0">>},
+        {~"ja", 1, ~"0"},
+        {~"ko", 1, ~"0"},
+        {~"vi", 1, ~"0"},
+        {~"th", 1, ~"0"},
+        {~"zh", 1, ~"0"},
+        {~"zh_CN", 1, ~"0"},
+        {~"zh_TW", 1, ~"0"},
+        {~"zh_HK", 1, ~"0"},
         %% Arabic 6-form
-        {<<"ar">>, 6, <<
+        {~"ar", 6, <<
             "n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : "
             "n%100>=3 && n%100<=10 ? 3 : "
             "n%100>=11 ? 4 : 5"
@@ -1779,7 +1779,7 @@ lookup_locale(Locale, [_ | Rest]) ->
 %% Strip the region tag from a locale (`pt_BR` -> `pt`, `zh-Hant` ->
 %% `zh`). Accepts both `_` and `-` as separators per BCP47 leniency.
 base_locale(Locale) ->
-    case binary:match(Locale, [<<"_">>, <<"-">>]) of
+    case binary:match(Locale, [~"_", ~"-"]) of
         nomatch -> Locale;
         {Pos, _Len} -> binary:part(Locale, 0, Pos)
     end.
@@ -1872,18 +1872,16 @@ build_cldr_compiled_table() ->
                 Expr/binary,
                 ";"
             >>,
+            %% `cldr_data/0` is a trusted static literal whose every row
+            %% compiles; a row that failed would be a defect and crashes
+            %% explicitly at table build (`case_clause`) rather than silently
+            %% degrading to "no CLDR entry".
             case compile(Header) of
                 {ok, #{nplurals := NC, expr := Ast}} ->
                     %% Store the raw CLDR EXPRESSION (not the synthesised
                     %% header) as `raw`, to match the legacy warning
                     %% payload that surfaced `cldr_rule/1`'s expr.
-                    Acc#{Locale => #{nplurals => NC, expr => Ast, raw => Expr}};
-                {error, _} ->
-                    %% A canonical CLDR row that fails to compile is a
-                    %% defect in `cldr_data/0`; skip it so the locale
-                    %% degrades to "no CLDR entry" instead of poisoning
-                    %% the cache.
-                    Acc
+                    Acc#{Locale => #{nplurals => NC, expr => Ast, raw => Expr}}
             end
         end,
         #{},

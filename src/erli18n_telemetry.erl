@@ -87,7 +87,8 @@ true
 - Emission: `emit/3` (pointwise), `span/3` (start/stop/exception).
 - Event names: `event_catalog_load/0`, `event_catalog_reload/0`,
   `event_catalog_unload/0`, `event_lookup_miss/0`, `event_lookup_fuzzy_skip/0`,
-  `event_plural_divergence/0`, `event_catalog_memory_warning/0`.
+  `event_locale_fallback/0`, `event_plural_divergence/0`,
+  `event_catalog_memory_warning/0`.
 - Configuration/gating: `lookup_telemetry_enabled/0`,
   `memory_warning_threshold/0`, `memory_warning_rate_limit_seconds/0`,
   `memory_warning_check/1`.
@@ -156,6 +157,7 @@ true
     event_catalog_unload/0,
     event_lookup_miss/0,
     event_lookup_fuzzy_skip/0,
+    event_locale_fallback/0,
     event_plural_divergence/0,
     event_catalog_memory_warning/0
 ]).
@@ -199,11 +201,13 @@ suffix that `span/3` appends).
         | catalog
         | lookup
         | plural
+        | locale
         | load
         | reload
         | unload
         | miss
         | fuzzy_skip
+        | fallback
         | divergence_warning
         | memory_warning
         | atom()
@@ -330,6 +334,34 @@ Sibling: `event_lookup_miss/0`. Gate: `lookup_telemetry_enabled/0`.
 -spec event_lookup_fuzzy_skip() -> event_name().
 event_lookup_fuzzy_skip() ->
     [erli18n, lookup, fuzzy_skip].
+
+-doc """
+Name of the **locale fallback** event: `[erli18n, locale, fallback]`. Emitted
+(Phase 2) when an exact-locale lookup MISSES but the opt-in canonicalization-
+aware fallback chain resolves the translation from a less-specific or
+canonicalized locale (`pt_BR` → `pt`). The low-frequency, interesting signal
+"a non-exact locale served a translation" — distinct from a true
+`[erli18n, lookup, miss]` (whole chain missed).
+
+**Opt-in** under the SAME flag as the lookup events
+(`lookup_telemetry_enabled/0`): fallback resolution is by construction a
+sub-event of a lookup miss, so it shares the switch and the multi-tenant
+msgid-exposure policy. Off the exact-hit path entirely.
+
+Measurements: `#{count => 1, chain_depth => non_neg_integer()}` (depth = the
+0-based position in the chain of the candidate that hit). Metadata:
+`#{domain, requested_locale, resolved_locale, function, context}`.
+
+```erlang
+1> erli18n_telemetry:event_locale_fallback().
+[erli18n,locale,fallback]
+```
+
+Gate: `lookup_telemetry_enabled/0`. Sibling: `event_lookup_miss/0`.
+""".
+-spec event_locale_fallback() -> event_name().
+event_locale_fallback() ->
+    [erli18n, locale, fallback].
 
 -doc """
 Name of the **plural divergence warning** event:
