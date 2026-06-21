@@ -27,6 +27,51 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 _No unreleased changes._
 
+## [0.4.0] — 2026-06-21
+
+Storage migration: the translation-catalog substrate moves from ETS to
+`persistent_term`. The benchmark proved `persistent_term` reads roughly 55%
+faster for this read-hot / load-once library because `persistent_term:get/2`
+returns the term without copying it onto the caller's heap. The public API and
+all lookup/fallback/idempotency semantics are unchanged; the only observable
+differences are documented below. The minor bump follows the `0.x` SemVer
+policy above.
+
+### Changed
+
+- **Catalog storage migrated from ETS to `persistent_term`** (new module
+  `erli18n_pt_store`). Each `{Domain, Locale}` catalog is one persistent term
+  (key `{erli18n_catalog, Domain, Locale}`) holding a single map of its entries
+  plus the header. Reads are copy-free and lock-free from the calling process.
+  There is **no lookup behaviour change**: `lookup_singular/4`,
+  `lookup_plural_form/5` and `lookup_header/2` keep their exact specs, guards,
+  miss semantics (`undefined`) and return shapes.
+- **`reload/3,4` and `unload/2` now trigger a node-wide `persistent_term`
+  literal-area garbage collection.** Replacing or erasing the catalog map
+  defers a cleanup in which every process still referencing the old map runs a
+  major (fullsweep) GC and all processes are made runnable to scan their heaps.
+  This cost is paid once per (re)load or unload and is negligible for erli18n's
+  load-once-at-boot workload, but it is a real cost the previous ETS storage did
+  not have. It is documented here and in the `erli18n_server` /
+  `erli18n_pt_store` module docs, never hidden.
+- **`memory_info/0`** — the `ets_bytes` field now reports the approximate
+  `persistent_term` storage size in bytes. The field name is kept for backwards
+  compatibility with the 0.3.0 return shape (the storage is no longer ETS).
+- **A lookup against a stopped catalog now returns `undefined` instead of
+  crashing.** Because the catalogs live in runtime-owned `persistent_term`
+  rather than in a process-owned ETS table, a missing or unloaded catalog is a
+  clean miss on the read path, not an access to a dead table.
+
+### Removed
+
+- **`erli18n_table_owner`** and the entire ETS heir / `'ETS-TRANSFER'` /
+  `give_away/3` handoff subsystem. That machinery existed only so ETS catalogs
+  survived a worker crash (Finding #10). `persistent_term` is node-global and
+  runtime-owned, so a worker crash destroys nothing: the supervisor collapses to
+  a single `erli18n_server` child under `one_for_one` (was `rest_for_one` with
+  an owner-first ordering), and the secondary ETS catalog index and the
+  associated `erli18n.hrl` macros are gone with it.
+
 ## [0.3.0] — 2026-06-19
 
 Phase 2: **canonicalization-aware BCP-47 fallback chain + `Accept-Language`
