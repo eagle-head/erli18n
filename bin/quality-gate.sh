@@ -110,14 +110,21 @@ run_eqwalizer() {
     fi
     printf '    %s$ %s eqwalize-all%s\n' "$YELLOW" "$elp_bin" "$RESET"
     local start=$SECONDS
-    if "$elp_bin" eqwalize-all; then
-        local elapsed=$((SECONDS - start))
-        printf '    %s[OK]%s  pass (%ds)\n\n' "$GREEN$BOLD" "$RESET" "$elapsed"
-    else
+    local out
+    # `elp eqwalize-all` returns exit 0 even when it prints type errors, so the
+    # exit code alone cannot be trusted (same class of bug worked around in
+    # run_elp_lint). Inspect the OUTPUT: fail on an `N ERROR(S)` summary or any
+    # `error:` diagnostic line; treat "NO ERRORS" as the only pass.
+    out=$("$elp_bin" eqwalize-all 2>&1)
+    printf '%s\n' "$out"
+    if grep -Eq '^[0-9]+ ERRORS?$|^error:' <<<"$out"; then
         local elapsed=$((SECONDS - start))
         printf '    %s[FAIL]%s  fail (%ds)\n\n' "$RED$BOLD" "$RESET" "$elapsed"
         FAILED_COUNT=$((FAILED_COUNT + 1))
         FAILED_STEPS+=("eqwalizer (gradual typing)")
+    else
+        local elapsed=$((SECONDS - start))
+        printf '    %s[OK]%s  pass (%ds)\n\n' "$GREEN$BOLD" "$RESET" "$elapsed"
     fi
 }
 
