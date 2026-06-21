@@ -12,7 +12,6 @@
 #   EDoc step is vestigial — `ex_doc` reads the docs from the BEAM, not from
 #   EDoc's chunks. This script does exactly what the plugin does *after* the
 #   EDoc step, minus the crashing precondition.
-#   Full write-up: notes/edoc-exdoc-native-doc-bug.md
 #
 # This is NOT part of the library (scripts/ is excluded from the Hex package
 # `files` whitelist). Offline; no network, no install.

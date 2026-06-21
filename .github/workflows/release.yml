@@ -76,7 +76,7 @@ jobs:
       # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh
       # calls the ex_doc escript directly, skipping the vestigial EDoc step
       # that crashes `rebar3 ex_doc`/`rebar3 hex publish docs` on a Markdown
-      # backtick in a `%%` comment (see notes/edoc-exdoc-native-doc-bug.md).
+      # backtick in a `%%` comment.
       - name: Build docs (bypassing the EDoc bug)
         run: scripts/gen_docs.sh
 
