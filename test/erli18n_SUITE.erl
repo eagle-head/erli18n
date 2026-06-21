@@ -145,8 +145,8 @@ end_per_suite(_Config) ->
     ok = application:stop(erli18n),
     ok.
 
-%% Clear ETS catalogs, process-dict locale, and application env between
-%% tests so each case starts from a known baseline. The application env
+%% Clear persistent_term catalogs, process-dict locale, and application env
+%% between tests so each case starts from a known baseline. The application env
 %% reset is critical: `set_default_locale`/`textdomain` writes persist
 %% across tests otherwise (RISK: leakage between cases).
 init_per_testcase(_TC, Config) ->
@@ -910,7 +910,7 @@ default_locale_getter_setter(_Config) ->
     ?assertEqual(~"pt_BR", erli18n:default_locale()).
 
 textdomain_getter_setter(_Config) ->
-    %% Constant from include/erli18n.hrl is `default`.
+    %% The application's default domain is `default`.
     ?assertEqual(default, erli18n:textdomain()),
     ok = erli18n:textdomain(my_app),
     ?assertEqual(my_app, erli18n:textdomain()).

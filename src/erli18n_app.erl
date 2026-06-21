@@ -16,28 +16,32 @@ callback module, not because there is any i18n logic to run at boot.
 ## Mental model (for the maintainer)
 
 Think of this module as the thinnest possible shell around the
-supervision tree. All the load-bearing complexity lives **one hop ahead**:
+supervision tree, with ONE cleanup responsibility on shutdown. The
+load-bearing complexity lives **one hop ahead**:
 
 - `start/2` calls `erli18n_sup:start_link/0` and returns the supervisor's
   `{ok, Pid}` *raw*, unwrapped. That `Pid` becomes the pid of the
   application that the `application_controller` goes on to monitor.
-- The real topology lives in `erli18n_sup`: a `rest_for_one` strategy with
-  two children in load-bearing order — `erli18n_table_owner` (owner/heir of
-  the ETS table) **before** `erli18n_server` (worker/writer). A crash of the
-  worker does not take down the owner, so the `erli18n_catalog` table and all
-  loaded catalogs survive the restart and are re-handed-over via
-  `ETS-TRANSFER`. This is a bug fix, not an accidental detail: see
-  `erli18n_sup` and Finding #10 of the technical review.
-- **This module's own state: zero.** It does not touch ETS, does not touch
-  the process dictionary, and neither reads nor writes `application:get_env/2`.
-  The `env` defaults (`emit_lookup_telemetry`, `memory_warning_threshold`,
+- The real topology lives in `erli18n_sup`: a `one_for_one` strategy with
+  a single child — `erli18n_server` (worker/writer). The catalogs live in
+  `persistent_term` (see `erli18n_pt_store`), which is owned by the
+  **runtime**, not by any process, so a crash of the worker loses no
+  catalog and the tree needs no table owner, no heir, and no child
+  ordering. See `erli18n_sup`.
+- **`stop/1` has real work: it erases the catalogs.** `persistent_term`
+  is node-global and is NOT cleared when the application stops, so without
+  an explicit erase a stop/start cycle would leave stale catalogs behind
+  (and a fresh start would see them as already loaded). `stop/1` calls
+  `erli18n_pt_store:erase_all/0` to remove every `{erli18n_catalog, _, _}`
+  term. This module reads no `application:get_env/2`: the `env` defaults
+  (`emit_lookup_telemetry`, `memory_warning_threshold`,
   `memory_warning_rate_limit_seconds`) are declared in `erli18n.app.src`
   and consumed by `erli18n_telemetry` — never here.
-- That is why `stop/1` ignores the `State` and returns `ok`: there is no
-  resource to release at this level. The ordered shutdown of the children
-  (including the `terminate/2` of the worker and of the owner) is the
-  responsibility of the supervision tree, triggered by the
-  `application_controller` *after* `stop/1` returns.
+- The ordered shutdown of the child (including the worker's `terminate/2`)
+  is the supervision tree's job, triggered by the `application_controller`
+  *before* it calls `stop/1`. By the time `stop/1` runs the worker is
+  already down, but the catalogs it installed still live in
+  `persistent_term` — which is exactly why `stop/1` must erase them here.
 
 ## When a dev touches this module
 
@@ -109,12 +113,10 @@ goes on to monitor; when it dies, the application is considered terminated.
   callback has no `try`/`catch` and no fallback. The normal case of a child
   failing at boot is an `{error, {shutdown, Reason}}` — the form that
   `supervisor:start_link/3` returns (and which the *Return* section of
-  `erli18n_sup:start_link/0` already documents) when a child fails its own
-  `init/1`, e.g. `erli18n_table_owner` failing to create the ETS table
-  or `erli18n_server` failing to claim it. That is the term the
-  maintainer will see and match on. An error here makes `ensure_all_started/1`
-  fail and the application does not come up — the correct OTP behavior, with
-  no masking.
+  `erli18n_sup:start_link/0` already documents) when the `erli18n_server`
+  child fails its own `init/1`. That is the term the maintainer will see and
+  match on. An error here makes `ensure_all_started/1` fail and the
+  application does not come up — the correct OTP behavior, with no masking.
 
 ## Example
 
@@ -138,14 +140,16 @@ start(_Type, _Args) ->
     erli18n_sup:start_link().
 
 -doc """
-Callback `c:application:stop/1`: post-shutdown cleanup point — a no-op here.
+Callback `c:application:stop/1`: erases the loaded catalogs on shutdown.
 
 The `application_controller` calls `stop/1` **after** having already torn
-down the supervision tree (terminating the children in reverse start order:
-`erli18n_server` before `erli18n_table_owner`, each running its own
-`terminate/2`). By the time control reaches here, no resource of this module
-is left to release, because it created none — no ETS, no process
-dictionary, no ports. That is why the body is just `ok`.
+down the supervision tree (terminating `erli18n_server`, which runs its own
+`terminate/2`). The worker is down by now, but the catalogs it installed
+still live in `persistent_term`, which is node-global and is NOT cleared
+when the application stops. So this callback calls
+`erli18n_pt_store:erase_all/0` to remove every `{erli18n_catalog, _, _}`
+term — otherwise a stop/start cycle would leak stale catalogs (and a fresh
+start would treat them as already loaded). It returns `ok`.
 
 ## Parameters
 
@@ -155,12 +159,14 @@ dictionary, no ports. That is why the body is just `ok`.
   substitutes `[]` for the `State` when calling this callback: when `start/2`
   uses the `{ok, Pid}` form instead of `{ok, Pid, State}`, the controller
   normalizes the missing state to `[]`. That is why the argument here is
-  `[]`. **Ignored** either way: there is no state to undo.
+  `[]`. **Ignored**: the cleanup target (`persistent_term`) is node-global,
+  not carried in `State`.
 
 ## Return
 
-- `ok` — always. This callback has no error path and no crash path: it is
-  total and does not inspect the argument.
+- `ok` — always. `erli18n_pt_store:erase_all/0` returns the count of erased
+  catalogs (used only for observability/tests); this callback discards it and
+  returns the OTP-mandated `ok`. It has no error path: `erase_all/0` is total.
 
 ## Example
 
@@ -173,8 +179,13 @@ ok
 undefined
 ```
 
-Sibling function: `start/2`. The shutdown of the children belongs to the
+Sibling function: `start/2`. The shutdown of the child belongs to the
 supervision tree: see `erli18n_sup`.
 """.
 stop(_State) ->
+    %% `persistent_term' is node-global and NOT cleared on application stop;
+    %% erase every catalog so a stop/start cycle does not leak stale state.
+    %% The returned count is for observability/tests only — discard it and
+    %% return the OTP-mandated `ok'.
+    _ErasedCount = erli18n_pt_store:erase_all(),
     ok.

@@ -55,8 +55,8 @@ DoS that `binary_to_atom/2` would open on untrusted `msgstr`.
 
 ## Anti-DoS
 
-Consistent with the project's plural caps (see `erli18n_plural` and
-`include/erli18n.hrl`), the work is bounded fail-closed. Because `format/2`
+Consistent with the project's plural caps (see `erli18n_plural`), the work is
+bounded fail-closed. Because `format/2`
 must stay total, the lenient path CLAMPS rather than raises:
 
 - `?MAX_OUTPUT_BYTES` (65536) — the accumulated output is truncated once it

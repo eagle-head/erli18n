@@ -1,9 +1,10 @@
 %%% =====================================================================
 %%% Common Test suite filling the remaining behavioural corners of
 %%% `erli18n_server`: the `infinity` / invalid anti-DoS bounds, the
-%%% header-only (empty) catalog path, idempotent (re)loads, and the
-%%% crash-recovery index rebuild via the ETS heir. Each case drives a public
-%%% entry point and asserts the observable result/state — input -> output.
+%%% header-only (empty) catalog path, idempotent (re)loads, and
+%%% crash-recovery durability via `persistent_term` (node-global storage that
+%%% survives a writer crash with no heir). Each case drives a public entry
+%%% point and asserts the observable result/state — input -> output.
 %%% =====================================================================
 -module(erli18n_server_coverage_SUITE).
 
@@ -26,7 +27,7 @@
     ensure_loaded_many_idempotent_within_batch/1,
     ensure_loaded_idempotent_under_concurrency/1,
     reload_header_only_catalog/1,
-    crash_recovery_rebuilds_index/1,
+    crash_recovery_preserves_catalog/1,
     insert_plural_empty_form_list_is_noop/1
 ]).
 
@@ -39,7 +40,7 @@ all() ->
         ensure_loaded_many_idempotent_within_batch,
         ensure_loaded_idempotent_under_concurrency,
         reload_header_only_catalog,
-        crash_recovery_rebuilds_index,
+        crash_recovery_preserves_catalog,
         insert_plural_empty_form_list_is_noop
     ].
 
@@ -151,10 +152,13 @@ reload_header_only_catalog(Config) ->
     {ok, 0} = erli18n_server:ensure_loaded(d_reload, ~"pt", Path),
     ?assertEqual({ok, 0}, erli18n_server:reload(d_reload, ~"pt", Path)).
 
-crash_recovery_rebuilds_index(Config) ->
-    %% A catalog with singular AND plural entries survives a server crash via
-    %% the ETS heir; on restart the server rebuilds its key index from the
-    %% surviving rows, so which_keys/2 reports the same set afterwards.
+crash_recovery_preserves_catalog(Config) ->
+    %% A catalog with singular AND plural entries survives a server crash
+    %% because it lives in `persistent_term` (node-global, owned by the
+    %% runtime — process-independent). On restart the server re-derives its
+    %% observability view straight from persistent_term, so which_keys/2
+    %% reports the same set afterwards. There is no index to rebuild from
+    %% surviving rows; the catalog was never lost.
     Path = fixture(Config, "singular_plural.po"),
     {ok, _} = erli18n_server:ensure_loaded(d_crash, ~"pt", Path),
     Before = lists:sort(erli18n_server:which_keys(d_crash, ~"pt")),
@@ -167,10 +171,10 @@ crash_recovery_rebuilds_index(Config) ->
     ?assertEqual(Before, After).
 
 insert_plural_empty_form_list_is_noop(_Config) ->
-    %% A plural insert carrying ZERO message forms writes no data rows, so by
-    %% the index membership rule (index row present <=> >=1 data entry) it
-    %% must register no catalog: `ok`, nothing loaded, no keys. This drives the
-    %% empty-key-list arm of the index maintenance.
+    %% A plural insert carrying ZERO message forms writes no entries, so the
+    %% empty-merge no-op fires: no persistent term is created, no catalog is
+    %% registered (`ok`, nothing loaded, no keys). This drives the
+    %% empty-entries arm of `erli18n_pt_store:merge_entries/3`.
     ?assertEqual(
         ok, erli18n_server:insert_plural(d_empty, ~"fr", undefined, ~"file", [])
     ),

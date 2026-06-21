@@ -381,7 +381,7 @@ event_plural_divergence() ->
 
 -doc """
 Name of the **memory warning** event: `[erli18n, catalog, memory_warning]`.
-Emitted by `memory_warning_check/1` when the catalogs' ETS usage crosses
+Emitted by `memory_warning_check/1` when the catalogs' storage usage crosses
 `memory_warning_threshold/0`, **rate-limited** to at most one emission per
 `memory_warning_rate_limit_seconds/0`. Always on (does not go through the
 lookup flag).
@@ -604,7 +604,7 @@ lookup_telemetry_enabled() ->
 
 %% Bytes threshold for memory_warning. Default 100 MiB (104857600).
 -doc """
-Threshold, in **bytes**, of the catalogs' ETS usage above which
+Threshold, in **bytes**, of the catalogs' storage usage above which
 `event_catalog_memory_warning/0` becomes eligible. Compared against `ets_bytes`
 inside `memory_warning_check/1` with a strict `>` (equaling the threshold does
 **not** fire).
@@ -701,7 +701,8 @@ rate-limit, or warning. Called by the loader (`erli18n_server`) at the end of a
 successful load.
 
 Parameter:
-- `MemInfo` — a snapshot map. The keys read are `ets_bytes` (ETS usage, the
+- `MemInfo` — a snapshot map. The keys read are `ets_bytes` (catalog storage
+  usage in bytes; the field name is historical — storage is persistent_term; the
   trigger; default `0` if absent), `num_catalogs` and `num_keys` (only used in
   the measurement when warning; default `0`). Must be a map, otherwise
   `function_clause`.
@@ -796,7 +797,7 @@ memory_warning_check(MemInfo) when is_map(MemInfo) ->
                         %% `{Domain, Locale}` tuples to bound payload
                         %% size in multi-tenant deployments.
                         %% `erli18n_server:loaded_catalogs/0` is a
-                        %% caller-process ETS scan — safe to call from
+                        %% caller-process persistent_term scan — safe to call from
                         %% any process, including the server itself,
                         %% because it never re-enters the gen_server.
                         #{domain_locales_sample => Sample}
@@ -813,15 +814,15 @@ Invariants and safety for the maintainer:
 - Guarded by `erlang:function_exported(erli18n_server, loaded_catalogs, 0)`: if
   the server is not present (e.g. module not loaded in isolated tests), it
   returns `[]` instead of crashing.
-- `erli18n_server:loaded_catalogs/0` is an ETS scan in the **caller process** —
-  safe to call from any process, **including the gen_server itself**, because
-  it never re-enters the `gen_server` (no deadlock risk).
-- No ordering: the order is whatever the ETS scan returns. The contract is an
+- `erli18n_server:loaded_catalogs/0` is a persistent_term scan in the **caller
+  process** — safe to call from any process, **including the gen_server itself**,
+  because it never re-enters the `gen_server` (no deadlock risk).
+- No ordering: the order is whatever the persistent_term scan returns. The contract is an
   observability sample, it does not require determinism, and sorting would only
   add cost. The limit of 10 (`lists:sublist/2`) bounds the payload size in a
   multi-tenant deployment.
 """.
-%% Sample up to 10 (Domain, Locale) tuples. Order is whatever ETS scan
+%% Sample up to 10 (Domain, Locale) tuples. Order is whatever persistent_term scan
 %% returns; we don't sort because the spec doesn't require determinism
 %% and sorting would add overhead at no benefit for an observability
 %% sample.

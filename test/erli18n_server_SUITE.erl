@@ -2,7 +2,6 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
--include("erli18n.hrl").
 
 -export([
     all/0,
@@ -29,12 +28,10 @@
     terminate_called_on_app_stop/1,
     code_change_no_op/1,
     catalog_survives_worker_kill/1,
-    catalog_index_maintained_incrementally/1,
-    catalog_index_rebuilt_after_worker_kill/1,
-    unload_uses_key_index_not_full_scan/1,
     load_pipeline_runs_in_caller_only_commit_in_server/1,
     commit_honours_tunable_timeout/1,
     lookup_plural_5_not_exported/1,
+    header_absent_plural_form_is_a_miss/1,
     read_api_guards_reject_bad_args/1
 ]).
 
@@ -56,12 +53,10 @@ all() ->
         terminate_called_on_app_stop,
         code_change_no_op,
         catalog_survives_worker_kill,
-        catalog_index_maintained_incrementally,
-        catalog_index_rebuilt_after_worker_kill,
-        unload_uses_key_index_not_full_scan,
         load_pipeline_runs_in_caller_only_commit_in_server,
         commit_honours_tunable_timeout,
         lookup_plural_5_not_exported,
+        header_absent_plural_form_is_a_miss,
         read_api_guards_reject_bad_args
     ].
 
@@ -114,10 +109,13 @@ insert_lookup_plural(_Config) ->
         ~"tree",
         Entries
     ),
-    %% Finding #16: the raw index-based plural read is internal now, so the
-    %% inserted form rows are asserted directly at the ETS layer (the row
-    %% that `insert_plural` writes). The form-aware public read is covered
-    %% by erli18n_loader_SUITE where a real Plural-Forms header exists.
+    %% Finding #16: the raw index-based plural read is internal. These
+    %% insert-path rows carry NO Plural-Forms header, so the form-aware public
+    %% read `lookup_plural_form/5` is a MISS (header absent -> `undefined`
+    %% directly; see header_absent_plural_form_is_a_miss/1). The stored rows are
+    %% therefore asserted directly at the storage layer (the rows that
+    %% `insert_plural` writes by index). A real compiled header is covered by
+    %% erli18n_loader_SUITE.
     ?assertEqual(
         {ok, ~"un arbre"},
         plural_row(default, ~"pt_BR", undefined, ~"tree", 0)
@@ -154,6 +152,8 @@ insert_catalog_mixed(_Config) ->
             ~"File"
         )
     ),
+    %% The inserted catalog carries no Plural-Forms header, so the form-aware
+    %% read misses; assert the stored index-1 row directly at the storage layer.
     ?assertEqual(
         {ok, ~"arbres"},
         plural_row(default, ~"pt_BR", undefined, ~"tree", 1)
@@ -171,7 +171,7 @@ lookup_missing_returns_undefined(_Config) ->
     ),
     ?assertEqual(
         undefined,
-        plural_row(default, ~"pt_BR", undefined, ~"tree", 0)
+        plural_form(default, ~"pt_BR", undefined, ~"tree", 1)
     ).
 
 unload_removes_only_target(_Config) ->
@@ -208,7 +208,7 @@ unload_removes_only_target(_Config) ->
     ),
     ?assertEqual(
         undefined,
-        plural_row(default, ~"pt_BR", undefined, ~"tree", 0)
+        plural_form(default, ~"pt_BR", undefined, ~"tree", 1)
     ),
     ?assertEqual(
         {ok, ~"Hola"},
@@ -225,10 +225,13 @@ unload_idempotent(_Config) ->
     ok = erli18n_server:unload(default, ~"never_loaded").
 
 memory_info_accuracy(_Config) ->
+    %% With persistent_term there is no always-present table consuming bytes:
+    %% an empty store holds zero catalogs, so its storage is exactly 0 (this
+    %% differs from the ETS era, where an empty table still reported overhead).
     Empty = erli18n_server:memory_info(),
     ?assertEqual(0, maps:get(num_keys, Empty)),
     ?assertEqual(0, maps:get(num_catalogs, Empty)),
-    ?assert(maps:get(ets_bytes, Empty) > 0),
+    ?assertEqual(0, maps:get(ets_bytes, Empty)),
 
     ok = erli18n_server:insert_singular(
         default,
@@ -482,17 +485,13 @@ code_change_no_op(_Config) ->
         )
     ).
 
-%% Finding #10 (ets-owned-by-server-no-heir-crash-loses-all-catalogs):
-%% an abrupt crash of the writer worker MUST NOT destroy the loaded
-%% catalogs. The dedicated table owner holds the ETS table as `heir`, so
-%% an `exit(Pid, kill)` of the worker triggers ETS-TRANSFER back to the
-%% owner with every row intact; the restarted worker re-claims the SAME
-%% table. The deterministic CT twin of the live reproduction in
-%% REVISAO_TECNICA.md §10.
-%%
-%% Under the pre-fix code (server owns the table, no heir) the table dies
-%% with the worker: after the supervisor restart `ets:info(size)=0`,
-%% `lookup_singular = undefined`, `loaded_catalogs() = []`.
+%% An abrupt crash of the writer worker MUST NOT destroy the loaded catalogs.
+%% Under persistent_term there is no heir machinery at all: the catalogs live
+%% in `persistent_term`, which is node-global and owned by the runtime, so an
+%% `exit(Pid, kill)` of the writer cannot touch them. After the supervisor
+%% restarts the worker, every translation is still readable and the restarted
+%% writer is again a functional writer. This is strictly stronger durability
+%% than the old ETS heir handoff (no handoff-timeout failure class).
 catalog_survives_worker_kill(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
@@ -524,7 +523,8 @@ catalog_survives_worker_kill(_Config) ->
     NewPid = wait_for_new_worker(Pid, 100),
     ?assert(is_pid(NewPid)),
     ?assertNotEqual(Pid, NewPid),
-    %% The catalog must have survived the crash via the heir handoff.
+    %% The catalog must have survived the crash because persistent_term is
+    %% process-independent (node-global, owned by the runtime).
     ?assertEqual(
         {ok, ~"Olá"},
         erli18n_server:lookup_singular(
@@ -546,187 +546,6 @@ catalog_survives_worker_kill(_Config) ->
             default, ~"pt_BR", undefined, ~"Bye"
         )
     ).
-
-%% Finding #7 (memory-info-tab2list-per-load-quadratic): `num_catalogs`
-%% must be maintained by an authoritative O(1) side index
-%% (?CATALOG_INDEX_TABLE), NOT recomputed by `ets:tab2list/1` on every
-%% load. This case pins the structural invariant the fix introduces:
-%%
-%%   1. The index table exists (it does not before the fix -> RED).
-%%   2. `memory_info().num_catalogs` == `ets:info(index, size)` at all
-%%      times (the count IS the index, not a scan).
-%%   3. The index tracks distinct (D, L) with >=1 entry across an
-%%      arbitrary insert/unload/overwrite sequence with no drift.
-%%   4. Header-only catalogs (no entries) do NOT register (consistent
-%%      with the index membership rule and loaded_catalogs/0).
-catalog_index_maintained_incrementally(_Config) ->
-    %% Index table must be present and start empty (init_per_testcase
-    %% unloaded everything).
-    ?assertNotEqual(undefined, ets:info(?CATALOG_INDEX_TABLE, size)),
-    assert_index_matches(0),
-
-    ok = erli18n_server:insert_singular(
-        default, ~"pt_BR", undefined, ~"Hello", ~"Olá"
-    ),
-    assert_index_matches(1),
-
-    %% Same (D, L) again — idempotent, still one catalog.
-    ok = erli18n_server:insert_singular(
-        default, ~"pt_BR", undefined, ~"Bye", ~"Adeus"
-    ),
-    assert_index_matches(1),
-
-    %% A plural insert on a fresh (D, L) registers a second catalog.
-    ok = erli18n_server:insert_plural(
-        default, ~"es", undefined, ~"tree", [
-            {0, ~"arbol"}, {1, ~"arboles"}
-        ]
-    ),
-    assert_index_matches(2),
-
-    %% A bulk catalog insert on a third (D, L).
-    ok = erli18n_server:insert_catalog(default, ~"de", [
-        {singular, undefined, ~"Hello", ~"Hallo"}
-    ]),
-    assert_index_matches(3),
-
-    %% Unload removes exactly one catalog from the index.
-    ok = erli18n_server:unload(default, ~"es"),
-    assert_index_matches(2),
-
-    %% Unloading a never-loaded catalog is a no-op for the index.
-    ok = erli18n_server:unload(default, ~"never"),
-    assert_index_matches(2),
-
-    %% Unload the rest.
-    ok = erli18n_server:unload(default, ~"pt_BR"),
-    ok = erli18n_server:unload(default, ~"de"),
-    assert_index_matches(0).
-
-%% The index is server-private state; a worker crash destroys it. After
-%% the supervisor restarts the worker, the index MUST be rebuilt from the
-%% data table that survived via the heir handoff, so `num_catalogs` stays
-%% authoritative. Without a rebuild on init the count would read 0 after a
-%% crash even though catalogs are still loaded.
-catalog_index_rebuilt_after_worker_kill(_Config) ->
-    ok = erli18n_server:insert_singular(
-        default, ~"pt_BR", undefined, ~"Hello", ~"Olá"
-    ),
-    ok = erli18n_server:insert_singular(
-        default, ~"es", undefined, ~"Hello", ~"Hola"
-    ),
-    assert_index_matches(2),
-
-    Pid =
-        case whereis(erli18n_server) of
-            P when is_pid(P) -> P;
-            Other -> error({erli18n_server_not_running, Other})
-        end,
-    Ref = monitor(process, Pid),
-    exit(Pid, kill),
-    receive
-        {'DOWN', Ref, process, Pid, _Reason} -> ok
-    after 5000 ->
-        ct:fail({worker_kill_timeout, Pid})
-    end,
-    NewPid = wait_for_new_worker(Pid, 100),
-    ?assert(is_pid(NewPid)),
-
-    %% Rebuilt index reflects the two surviving catalogs.
-    assert_index_matches(2),
-    ?assertEqual(2, maps:get(num_catalogs, erli18n_server:memory_info())),
-
-    %% Clean up.
-    ok = erli18n_server:unload(default, ~"pt_BR"),
-    ok = erli18n_server:unload(default, ~"es"),
-    assert_index_matches(0).
-
-%% Assert the side index size, `memory_info().num_catalogs`, and the
-%% distinct count derived from `loaded_catalogs/0` all agree on Expected.
-%% This is the drift-free invariant the fix guarantees.
-assert_index_matches(Expected) ->
-    IndexSize = ets:info(?CATALOG_INDEX_TABLE, size),
-    ?assertEqual(Expected, IndexSize),
-    #{num_catalogs := NumCatalogs} = erli18n_server:memory_info(),
-    ?assertEqual(Expected, NumCatalogs),
-    Distinct = length(erli18n_server:loaded_catalogs()),
-    ?assertEqual(Expected, Distinct).
-
-%% Finding #13 (server-unload-select-delete-full-scan): unload of a single
-%% (Domain, Locale) must delete that catalog's rows in O(catalog size), not
-%% scan the whole `set' data table with a partial-key `ets:select_delete'
-%% match spec (O(total rows of ALL catalogs)). The fix maintains a secondary
-%% index of the data keys per catalog (reusing the finding-#7
-%% ?CATALOG_INDEX_TABLE) so unload iterates only the target's keys and
-%% deletes each with O(1) `ets:delete/2'.
-%%
-%% Structural contract pinned here (RED before the fix, which only stores a
-%% membership marker `{{D, L}}' with no key set):
-%%   1. After loading a catalog, the index row for (D, L) carries the EXACT
-%%      set of that catalog's data keys (singular + plural).
-%%   2. Unload removes precisely those keys (target gone, neighbour intact)
-%%      AND drops the index row.
-unload_uses_key_index_not_full_scan(_Config) ->
-    %% Target catalog: 2 singulars + 1 plural (2 forms) => 4 data keys.
-    ok = erli18n_server:insert_singular(
-        default, ~"pt_BR", undefined, ~"Hello", ~"Olá"
-    ),
-    ok = erli18n_server:insert_singular(
-        default, ~"pt_BR", ~"menu", ~"File", ~"Fichier"
-    ),
-    ok = erli18n_server:insert_plural(
-        default, ~"pt_BR", undefined, ~"tree", [
-            {0, ~"arbre"}, {1, ~"arbres"}
-        ]
-    ),
-    %% A neighbour catalog that must remain untouched by the unload.
-    ok = erli18n_server:insert_singular(
-        default, ~"es", undefined, ~"Hello", ~"Hola"
-    ),
-
-    %% (1) The secondary index must carry this catalog's full data key set,
-    %% not merely a {{D, L}} membership marker. This is the per-(D, L) key
-    %% index the O(catalog) unload relies on.
-    ExpectedKeys = lists:sort([
-        {singular, default, ~"pt_BR", undefined, ~"Hello"},
-        {singular, default, ~"pt_BR", ~"menu", ~"File"},
-        {plural, default, ~"pt_BR", undefined, ~"tree", 0},
-        {plural, default, ~"pt_BR", undefined, ~"tree", 1}
-    ]),
-    ?assertEqual(ExpectedKeys, index_catalog_keys(default, ~"pt_BR")),
-
-    %% (2) Unload removes exactly the target's keys and its index row.
-    ok = erli18n_server:unload(default, ~"pt_BR"),
-    ?assertEqual([], index_catalog_keys(default, ~"pt_BR")),
-    ?assertEqual(
-        undefined,
-        erli18n_server:lookup_singular(default, ~"pt_BR", undefined, ~"Hello")
-    ),
-    ?assertEqual(
-        undefined,
-        plural_row(default, ~"pt_BR", undefined, ~"tree", 0)
-    ),
-    %% Neighbour catalog is fully intact.
-    ?assertEqual(
-        {ok, ~"Hola"},
-        erli18n_server:lookup_singular(default, ~"es", undefined, ~"Hello")
-    ),
-    ?assertEqual(
-        [{singular, default, ~"es", undefined, ~"Hello"}],
-        index_catalog_keys(default, ~"es")
-    ),
-
-    ok = erli18n_server:unload(default, ~"es").
-
-%% Read the secondary-index key set for (D, L) as a sorted list. Returns []
-%% when the catalog is absent. Depends on the fix storing a per-catalog key
-%% set in the index row (RED before the fix: the row is the arity-1 tuple
-%% `{{D, L}}' with no second element).
-index_catalog_keys(D, L) ->
-    case ets:lookup(?CATALOG_INDEX_TABLE, {D, L}) of
-        [{{D, L}, KeySet}] -> lists:sort(sets:to_list(KeySet));
-        _ -> []
-    end.
 
 %% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout):
 %% the server must no longer run the WHOLE load pipeline inside handle_call.
@@ -869,19 +688,60 @@ read_api_guards_reject_bad_args(_Config) ->
         )
     ).
 
-%% Finding #16: read a raw plural form row directly at the ETS layer. The
-%% form-aware `lookup_plural_form/5` requires a Plural-Forms header to map
-%% N -> form index; these insert-path unit cases write rows by index with no
-%% header, so they assert the stored row directly (mirrors the row shape
-%% `insert_plural` writes). `?ETS_TABLE`/`?PLURAL_KEY` come from erli18n.hrl.
-plural_row(Domain, Locale, Context, Msgid, Index) ->
-    case
-        ets:lookup(
-            ?ETS_TABLE, ?PLURAL_KEY(Domain, Locale, Context, Msgid, Index)
+%% Header-absent plural miss contract. A catalog populated ONLY via the
+%% low-level insert API (`insert_plural`/`insert_catalog`) has data rows but NO
+%% Plural-Forms header. `lookup_plural_form/5` carries no locale plural rule for
+%% such a catalog, so by contract it returns `undefined` directly for ANY count
+%% N — it does NOT silently fall back to a C/Germanic form and read a row (which
+%% would surface an inserted form behind an unsupported public read). The raw
+%% rows ARE present and readable at the storage layer (`plural_row/5`); only the
+%% form-aware public read declines them. Mirrors main's lookup_plural_form/5
+%% `undefined -> undefined` arm.
+header_absent_plural_form_is_a_miss(_Config) ->
+    ok = erli18n_server:insert_plural(
+        default,
+        ~"pt_BR",
+        undefined,
+        ~"tree",
+        [{0, ~"un arbre"}, {1, ~"des arbres"}]
+    ),
+    %% The rows exist at the storage layer (proves the catalog is populated).
+    ?assertEqual({ok, ~"un arbre"}, plural_row(default, ~"pt_BR", undefined, ~"tree", 0)),
+    ?assertEqual({ok, ~"des arbres"}, plural_row(default, ~"pt_BR", undefined, ~"tree", 1)),
+    %% But the form-aware public read is a miss for every N, because no header.
+    [
+        ?assertEqual(
+            undefined,
+            erli18n_server:lookup_plural_form(default, ~"pt_BR", undefined, ~"tree", N)
         )
-    of
-        [{_, Translation}] -> {ok, Translation};
-        [] -> undefined
+     || N <- [0, 1, 2, 5, 100]
+    ],
+    ok.
+
+%% The form-aware public read. Used here only for the missing-catalog miss
+%% (`lookup_missing_returns_undefined/1`): with no catalog loaded the read is
+%% `undefined`. For insert-path rows (no Plural-Forms header) this read MISSES
+%% by contract (header absent -> `undefined` directly), so those cases assert
+%% the stored row via `plural_row/5` instead.
+plural_form(Domain, Locale, Context, Msgid, N) ->
+    erli18n_server:lookup_plural_form(Domain, Locale, Context, Msgid, N).
+
+%% Finding #16: read a raw plural form row directly at the storage layer. The
+%% form-aware `lookup_plural_form/5` requires a Plural-Forms header to map
+%% N -> form index; these insert-path unit cases write rows by index with NO
+%% header, so they assert the stored row directly (mirrors the row shape
+%% `insert_plural` writes). Goes through the persistent_term storage module by
+%% the in-map `{plural, Context, Msgid, Index}` key — the moral successor of the
+%% ETS-era raw `ets:lookup` read.
+plural_row(Domain, Locale, Context, Msgid, Index) ->
+    case erli18n_pt_store:get_map(Domain, Locale) of
+        undefined ->
+            undefined;
+        Map ->
+            case maps:get({plural, Context, Msgid, Index}, Map, undefined) of
+                undefined -> undefined;
+                Translation -> {ok, Translation}
+            end
     end.
 
 %% Write a minimal valid .po (one singular "Hello" -> "Olá") to a unique

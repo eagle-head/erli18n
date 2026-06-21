@@ -356,7 +356,7 @@ ensure_loaded_file_not_found(_Config) ->
         {error, {file_error, enoent}},
         erli18n_server:ensure_loaded(default, ~"pt_BR", Path)
     ),
-    %% Failure leaves ETS untouched.
+    %% Failure leaves the catalog store untouched.
     ?assertEqual(
         undefined,
         erli18n_server:lookup_header(default, ~"pt_BR")
@@ -404,7 +404,7 @@ ensure_loaded_invalid_po(Config) ->
     ?assertEqual(undefined, erli18n_server:lookup_header(default, ~"x")).
 
 %% PSD-002: SHIFT_JIS is not in {utf8, latin1, us_ascii} so the load
-%% must fail with `{unsupported_charset, _}` and leave ETS untouched.
+%% must fail with `{unsupported_charset, _}` and leave the catalog store untouched.
 ensure_loaded_unsupported_charset(Config) ->
     Path = fixture(Config, "shift_jis.po"),
     ?assertEqual(
@@ -413,7 +413,7 @@ ensure_loaded_unsupported_charset(Config) ->
     ),
     ?assertEqual(undefined, erli18n_server:lookup_header(default, ~"ja")).
 
-%% PSD-009: plural_count_mismatch propagated from the parser. ETS stays
+%% PSD-009: plural_count_mismatch propagated from the parser. The catalog store stays
 %% clean — no partial state.
 ensure_loaded_plural_mismatch(Config) ->
     Path = fixture(Config, "mismatch.po"),
@@ -659,7 +659,7 @@ reload_failure_preserves_catalog(Config) ->
                 )
             ),
             %% The header must also survive unchanged (same po_path /
-            %% loaded_at — the failed reload never mutated ETS).
+            %% loaded_at — the failed reload never mutated the catalog store).
             ?assertEqual(
                 {ok, HeaderBefore},
                 erli18n_server:lookup_header(default, ~"pt_BR"),
@@ -760,7 +760,7 @@ unload_removes_header_too(Config) ->
         )
     ).
 
-%% A catalog with 3 singular + 1 plural (2 forms in ETS) reports 4
+%% A catalog with 3 singular + 1 plural (2 forms stored) reports 4
 %% which_keys entries — the plural is deduplicated.
 which_keys_returns_unique_msgids(_Config) ->
     Entries = [
@@ -826,7 +826,7 @@ lookup_plural_form_with_fallback_locale(Config) ->
         )
     ).
 
-%% Atomicity: if the load fails (here via unsupported_charset), ETS state
+%% Atomicity: if the load fails (here via unsupported_charset), the catalog store
 %% present before the call is preserved. No partial writes leaked.
 atomicidade_load_fails(Config) ->
     GoodPath = fixture(Config, "minimal_en.po"),
@@ -835,7 +835,7 @@ atomicidade_load_fails(Config) ->
     {ok, 1} = erli18n_server:ensure_loaded(default, ~"pt_BR", GoodPath),
     BeforeMem = erli18n_server:memory_info(),
     %% Attempt a bad load on a different (D, L) so we can confirm the
-    %% partial-failure does not leak into ETS at all.
+    %% partial-failure does not leak into the catalog store at all.
     ?assertEqual(
         {error, {unsupported_charset, ~"SHIFT_JIS"}},
         erli18n_server:ensure_loaded(default, ~"ja", BadPath)
@@ -863,7 +863,7 @@ atomicidade_load_fails(Config) ->
 
 %% Header has a syntactically-valid Plural-Forms field that the .po
 %% parser preserves verbatim, but `erli18n_plural:compile/1` rejects.
-%% The load must fail with `{plural_compile_error, _}` and ETS must
+%% The load must fail with `{plural_compile_error, _}` and the catalog store must
 %% remain untouched. Exercises the compile-failure branch of
 %% `install_parsed` (the `{error, {plural_compile_error, _}}` return)
 %% and the `{error, _} = E` re-raise inside `maybe_compile_plural`.
@@ -911,7 +911,7 @@ ensure_loaded_header_only_no_entries(Config) ->
 ensure_loaded_plural_empty_forms_list(Config) ->
     Path = fixture(Config, "empty_plural_forms.po"),
     %% The load succeeds with 1 entry counted (header records the entry
-    %% count, even though it yielded zero ETS objects).
+    %% count, even though it yielded zero stored entries).
     ?assertEqual(
         {ok, 1},
         erli18n_server:ensure_loaded(default, ~"empty_pl", Path)
@@ -1097,7 +1097,7 @@ which_keys_filters_other_catalogs(_Config) ->
 %% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout),
 %% bounds class. A `.po` larger than `max_bytes` must be rejected with
 %% `{error, {input_too_large, Size, Limit}}` BEFORE the whole file is read
-%% into memory (the cap is applied via `filelib:file_size/1`). ETS stays
+%% into memory (the cap is applied via `filelib:file_size/1`). The catalog store stays
 %% untouched. Pre-fix `opts()` exposes only `include_fuzzy`, so the option
 %% is silently ignored and the load succeeds -> RED.
 ensure_loaded_rejects_oversized_file(Config) ->
@@ -1124,7 +1124,7 @@ ensure_loaded_rejects_oversized_file(Config) ->
 
 %% Finding #6, bounds class (post-parse cap). A catalog with more than
 %% `max_entries` parsed entries must be rejected with
-%% `{error, {too_many_entries, Count, Limit}}` and leave ETS untouched.
+%% `{error, {too_many_entries, Count, Limit}}` and leave the catalog store untouched.
 %% minimal_en.po has exactly 1 entry, so `max_entries => 0` must reject it
 %% while `max_entries => 1` accepts it.
 ensure_loaded_rejects_too_many_entries(Config) ->

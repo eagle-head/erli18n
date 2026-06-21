@@ -1,5 +1,9 @@
 # Elixir Forum announcement — erli18n (draft)
 
+> DRAFT - working notes, not part of the published package. This is a 0.1.0-era
+> announcement draft; the storage-engine wording below has been corrected to the
+> current 0.4.0 `persistent_term` reality (catalogs no longer use ETS).
+
 Metadata for posting (not part of the post body):
 
 - **Category:** Your Libraries & Projects → **Libraries**
@@ -16,7 +20,7 @@ Hi everyone! 👋
 
 I just published my first Hex package, **erli18n** — a GNU `gettext`–compatible internationalization library for **Erlang/OTP**, written in pure Erlang (and callable from Elixir too, since it's a normal Hex dep: `:erli18n.gettext(...)`).
 
-I want to be upfront about one thing: **the main goal of this project is learning.** I built it to dig deep into Erlang/OTP — `gen_server` + supervision, ETS ownership/heir patterns, the `.po` format and CLDR plural rules, property-based testing with PropEr, `telemetry`, native EEP-59 docs, and the whole Hex release pipeline. So please read it as a `0.1.0` learning project rather than battle-tested production infra — though I worked hard to make it correct and thoroughly tested.
+I want to be upfront about one thing: **the main goal of this project is learning.** I built it to dig deep into Erlang/OTP — `gen_server` + supervision, copy-free `persistent_term` storage for read-mostly data, the `.po` format and CLDR plural rules, property-based testing with PropEr, `telemetry`, native EEP-59 docs, and the whole Hex release pipeline. So please read it as a learning project rather than battle-tested production infra — though I worked hard to make it correct and thoroughly tested.
 
 **What it does** — the full GNU gettext C-macro family as plain Erlang functions:
 
@@ -40,7 +44,7 @@ A few things I focused on:
 
 - 📦 **Drop-in `.po` / `.pot`** — loads the files translators already produce in Poedit, Crowdin, Weblate, or `xgettext`.
 - 🌍 **Real CLDR pluralization** — an actual `Plural-Forms` evaluator, CLDR rules inlined for **49 locales**.
-- ⚡ **Lock-free lookups** — reads run straight from ETS in the calling process; only writes go through a `gen_server`, so there's no bottleneck on the hot path.
+- ⚡ **Copy-free lookups** — reads run straight from `persistent_term` in the calling process, with no copy onto the caller heap and no lock; only writes go through a `gen_server`, so there's no bottleneck on the hot path.
 - 📊 **Optional telemetry** — 7 events (catalog spans, lookup misses, plural divergence, memory warnings); `telemetry` is an *optional* dependency.
 - ✅ **Heavily tested** — Common Test + PropEr + fuzzing, plus a parity suite that checks output byte-for-byte against GNU `msgfmt` as a ground-truth oracle.
 

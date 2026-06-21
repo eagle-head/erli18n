@@ -71,7 +71,7 @@ RFC 4647 §3.4 *Lookup*: canonicalize, then progressively drop the trailing
 subtag, appending the (canonicalized) default last. `pt-BR` with default
 `en` yields `[<<"pt_BR">>, <<"pt">>, <<"en">>]`. The chain is
 order-preserving deduplicated and bounded. The facade walks it doing one
-`ets:lookup` per candidate, short-circuiting on the first hit — so the cost
+catalog read per candidate, short-circuiting on the first hit — so the cost
 is O(chain length) extra reads **only on a miss**, zero on a hit.
 
 Script subtags are kept during truncation (`zh_Hant_TW → zh_Hant → zh`),
@@ -141,7 +141,7 @@ so a stream of distinct hostile tags cannot exhaust the atom table.
 -doc """
 A locale tag as a binary, in erli18n catalog-key shape after
 canonicalization (`<<"pt_BR">>`, `<<"zh_Hant">>`). Same semantics as
-`erli18n_server:locale/0`.
+`t:erli18n_server:locale/0`.
 """.
 -type locale() :: binary().
 
@@ -172,7 +172,7 @@ A quality value as an integer in milli-units, `0..1000` (`q=1` → `1000`,
 %% pathological `a-a-a-...` cannot force per-segment allocation.
 -define(MAX_SUBTAGS, 8).
 
-%% Maximum fallback-chain length (extra `ets:lookup`s on a miss).
+%% Maximum fallback-chain length (extra catalog reads on a miss).
 -define(MAX_CHAIN, 8).
 
 %% Maximum `Accept-Language` header size; a larger header parses to `[]`
@@ -325,7 +325,7 @@ non-empty (at minimum `[canonicalize(Locale)]`).
 [<<"en">>]
 ```
 
-The facade walks this list with one `ets:lookup` per candidate, returning on
+The facade walks this list with one catalog read per candidate, returning on
 the first hit; this is what makes a `pt_BR` user fall back to a loaded `pt`
 catalog. See `canonicalize/1`.
 """.

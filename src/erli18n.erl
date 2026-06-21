@@ -45,19 +45,19 @@ passthroughs to the server.
 - **The resolved locale** of each lookup is `which_locale/0` if set, otherwise
   `default_locale/0` (internal function `resolved_locale/0`).
 - **Reads are lock-free.** The `erli18n_server` `lookup_*` functions read
-  directly from protected ETS in the caller's own process; only writes
-  (load/reload) go through the owning `gen_server`. There is no process
+  directly from `persistent_term` in the caller's own process (copy-free); only
+  writes (load/reload) go through the writer `gen_server`. There is no process
   bottleneck on the read path.
 - **The category is always LC_MESSAGES.** The `d*`/`dc*` variants exist solely
   for NAME parity with C gettext; the category is never a parameter.
 - **Graceful degradation.** On a miss (missing catalog, nonexistent entry) or an
   empty translation (`msgstr ""`), the lookup returns the original `msgid` (or
   `msgid_plural` in the plural form, according to `N`). A crash of
-  `erli18n_server` (the worker/writer) does **not** empty the catalogs: the ETS
-  table is held by a dedicated owner (`erli18n_table_owner`) that is its `heir`,
-  so on restart it comes back INTACT via `'ETS-TRANSFER'` and lookups keep
-  serving the loaded translations — there is no loss of the caller's process nor
-  of the translations (see `erli18n_server` and `erli18n_table_owner`).
+  `erli18n_server` (the writer) does **not** empty the catalogs: they live in
+  `persistent_term`, which is node-global and owned by the runtime, so they
+  survive a writer crash with no heir machinery — on restart the writer only
+  re-derives its observability view and lookups keep serving the loaded
+  translations (see `erli18n_server` and `erli18n_pt_store`).
 - **Plural evaluation is total (anti-DoS).** The `Plural-Forms` rule from the
   `.po` header is the source of truth at runtime. Evaluation clamps
   (libintl-style: out-of-range form → 0, zero divisor → 0) and large ASTs are
@@ -159,8 +159,6 @@ who has never seen the project:
 %%  Lookup rules (R1-R6) come from BR-MIGRAR-001/002 and PSD-003. See the
 %%  per-function comments below for citations.
 %% ============================================================================
-
--include("erli18n.hrl").
 
 %% Singular lookup (R1) — gettext/dgettext/dcgettext family.
 -export([
@@ -332,11 +330,10 @@ auto-bind `count => N` (a caller-supplied `count` wins). See
 %% inspecting a process state via `erlang:process_info(_, dictionary)`.
 -define(LOCALE_KEY, '$erli18n_locale').
 
-%% Application env defaults. `?GETTEXT_DOMAIN` comes from
-%% include/erli18n.hrl (= `default`), aligned with the xgettext keyword
-%% convention so marker macros and runtime stay in sync.
+%% Application env defaults. The default domain is `default`, aligned with the
+%% xgettext keyword convention so marker macros and runtime stay in sync.
 -define(DEFAULT_LOCALE, <<"en">>).
--define(DEFAULT_DOMAIN, ?GETTEXT_DOMAIN).
+-define(DEFAULT_DOMAIN, default).
 
 %% =========================
 %% Singular lookup — gettext family
@@ -1622,7 +1619,7 @@ set_default_locale(Locale) when is_binary(Locale) ->
 
 -doc """
 Returns the application's default domain (env `erli18n.default_domain`, default
-`?GETTEXT_DOMAIN` = `default`).
+`default`).
 
 It is the domain used by the variants without an explicit domain — `gettext/1`,
 `ngettext/3`, `pgettext/2`, `npgettext/4`.
@@ -1692,8 +1689,8 @@ idempotently. It is the typical boot call: load each catalog once.
 
 Idempotence: if the pair is already loaded, it returns `{ok, already}` **without
 re-reading from disk** — to force a re-read, use `reload/3`. Loading is atomic:
-parse, plural-rule compilation, and CLDR validation run before any ETS
-insertion; on error the state stays intact.
+parse, plural-rule compilation, and CLDR validation run before any catalog
+install; on error the state stays intact.
 
 Return: `{ok, NumEntries}` on the first load, `{ok, already}` if already
 present, or `{error, Reason}` on a file/parse/compile failure (e.g.
@@ -1760,8 +1757,9 @@ present).
 - `PoPath` — path to the `.po` (always re-read from disk).
 
 The operation is atomic and **without an empty window**: the fallible pipeline
-(read/parse/compile) runs without touching ETS and the swap is atomic
-(insert-before-prune), so concurrent lookups never see the empty catalog.
+(read/parse/compile) runs without touching the live catalog, and the install is a
+single atomic persistent_term overwrite (whole-catalog replacement), so
+concurrent lookups never see an empty or half-applied catalog.
 On error, the previous catalog stays intact.
 
 Return: `{ok, NumEntries}` on success or `{error, Reason}` on failure.
@@ -1859,8 +1857,10 @@ dashboards).
 
 The return has three fixed keys:
 
-- `ets_bytes` — bytes consumed by the ETS table (already converted from VM words
-  to bytes; multiplied by `erlang:system_info(wordsize)`).
+- `ets_bytes` — approximate bytes consumed by the catalog storage (already
+  converted from VM words to bytes; multiplied by `erlang:system_info(wordsize)`).
+  **The field name is historical** (storage is now `persistent_term`, not ETS);
+  it is kept for backwards compatibility with the 0.3.0 return shape.
 - `num_catalogs` — number of loaded `(Domain, Locale)` catalogs.
 - `num_keys` — total number of entries (keys) across all catalogs.
 
@@ -2154,7 +2154,7 @@ chain. Returns `{ok, Translation}` on a fallback hit (and emits the
 
 `Function` is the originating family (for telemetry); `Locale` is the locale
 already tried verbatim by the exact lookup (its canonical form is dropped from
-the chain head to avoid a redundant `ets:lookup`).
+the chain head to avoid a redundant catalog read).
 """.
 -spec fallback_lookup_singular(atom(), domain(), context(), msgid(), locale()) ->
     {ok, translation()} | miss.
@@ -2196,7 +2196,7 @@ fallback_lookup_plural(Function, Domain, Context, Msgid, N, Locale) ->
             end
     end.
 
-%% Walk the candidate chain, one `ets:lookup` per entry, first non-empty hit
+%% Walk the candidate chain, one catalog read per entry, first non-empty hit
 %% wins; `Depth` is the 0-based index of the candidate that hit (telemetry).
 -spec resolve_singular([locale()], domain(), context(), msgid(), non_neg_integer()) ->
     {ok, translation(), locale(), non_neg_integer()} | miss.
@@ -2256,7 +2256,7 @@ fallback_default_locale() ->
 
 %% The exact lookup already tried `Locale` verbatim and missed. If the chain
 %% head equals it (the common already-canonical case), skip that one redundant
-%% `ets:lookup` by dropping the head — but report the starting telemetry
+%% catalog read by dropping the head — but report the starting telemetry
 %% `chain_depth` as 1 (the dropped head was depth 0), so an identical fallback
 %% reports the SAME depth whether the request arrived canonical (`pt_BR`) or
 %% not (`pt-BR`). Returns `{ChainToWalk, StartDepth}`.

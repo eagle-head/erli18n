@@ -7,7 +7,7 @@
 %%% a pure function of (catalog state, query) — no race conditions, no
 %%% wall-clock dependency, no random.
 %%%
-%%% This property guards against subtle concurrency bugs where the ETS
+%%% This property guards against subtle concurrency bugs where the persistent_term
 %%% read in `erli18n_server:lookup_singular/4` could observe a partial
 %%% write from a concurrent `ensure_loaded`. We do not exercise
 %%% concurrent inserts in this v0.1 property — that would belong in a
@@ -212,8 +212,8 @@ n_for_plural() ->
 %% Setup / teardown
 %% =========================
 %%
-%% The ETS catalog is `protected` and owned by `erli18n_server` — only
-%% that process can write. So we set up catalogs by synthesizing a
+%% The catalog terms live in node-global `persistent_term` (runtime-owned) —
+%% only `erli18n_server` installs/replaces them. So we set up catalogs by synthesizing a
 %% minimal `.po` text, dumping it to a temp file, and invoking the
 %% normal `ensure_loaded/3` pipeline. This is also closer to the
 %% real-world load path, making the determinism property exercise the
@@ -269,7 +269,7 @@ load_temp_po(PoBin) ->
             error({load_failed, Reason})
     end,
     %% Delete the temp file eagerly — the parsed catalog already lives
-    %% in ETS and the path is only needed for the load step.
+    %% in the persistent_term store and the path is only needed for the load step.
     file:delete(Path),
     ok.
 
