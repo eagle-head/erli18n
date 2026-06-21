@@ -15,3 +15,8 @@ logs/
 
 # Generated API documentation (scripts/gen_docs.sh -> ex_doc; published to HexDocs)
 doc/
+
+# Benchmark harness — archived on the experiment/persistent-term-benchmark branch
+# only, never on main. This ignores leftover working-tree scratch from branch
+# switches so it is never accidentally tracked here.
+bench/
