@@ -1,5 +1,11 @@
 name: CI
 
+# Give each run a descriptive title in the Actions list instead of a bare "CI":
+# a PR run shows the PR number + source branch; a push/dispatch run shows the
+# ref and the event. (GitHub Actions "run-name".)
+run-name: >-
+  CI · ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || format('{0} · {1}', github.ref_name, github.event_name) }}
+
 on:
   # CI runs on every push to main and on every pull request targeting main,
   # plus on demand via workflow_dispatch. Pull requests from forks are gated by
