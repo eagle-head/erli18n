@@ -52,6 +52,30 @@
     plural_header_bin/1
 ]).
 
+%% PropEr `?FORALL`/`?LET`/`?SUCHTHAT`/`vector`/`oneof` generators are
+%% statically typed as `term()`/`proper_gen:instance()` by eqwalizer, so every
+%% function that binds a generated value to a documented shape (an
+%% `erli18n_po:parsed_catalog()`, a `binary()` msgid/translation/context, the
+%% `[binary()]` fed to `lists:zip/2`, the integer fed to
+%% `proper_unicode:utf8/2`/`binary:copy/2`, …) carries a static
+%% `-eqwalizer({nowarn_function, F/A}).` annotation — the same zero-runtime-dep
+%% pattern used in the runtime modules `erli18n_server`/`erli18n_pt_store`. This
+%% replaces the former runtime `eqwalizer` cast-helper calls (and the
+%% `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, prop_roundtrip_parse_dump/0}).
+-eqwalizer({nowarn_function, prop_idempotent_normalization/0}).
+-eqwalizer({nowarn_function, prop_large_string_roundtrip/0}).
+-eqwalizer({nowarn_function, prop_parse_output_is_valid_utf8/0}).
+-eqwalizer({nowarn_function, prop_msgid_plural_roundtrip/0}).
+-eqwalizer({nowarn_function, plural_forms/1}).
+-eqwalizer({nowarn_function, valid_context/0}).
+-eqwalizer({nowarn_function, valid_msgid/0}).
+-eqwalizer({nowarn_function, valid_translation/0}).
+-eqwalizer({nowarn_function, valid_msgid_with_eot/0}).
+-eqwalizer({nowarn_function, valid_translation_with_eot/0}).
+-eqwalizer({nowarn_function, plural_source_spec/0}).
+-eqwalizer({nowarn_function, po_source_with_escapes/0}).
+
 %% =========================
 %% Properties
 %% =========================
@@ -75,7 +99,7 @@ prop_roundtrip_parse_dump() ->
             %% PropEr generator boundary: cast to the documented
             %% `erli18n_po:parsed_catalog()` shape — `valid_po/0` is
             %% hand-rolled to satisfy that contract.
-            Po = eqwalizer:dynamic_cast(PoGen),
+            Po = PoGen,
             Dumped = erli18n_po:dump(Po),
             case erli18n_po:parse(Dumped) of
                 {ok, Reparsed} ->
@@ -111,7 +135,7 @@ prop_idempotent_normalization() ->
         valid_po(),
         begin
             %% Generator boundary — see `prop_roundtrip_parse_dump/0`.
-            Po = eqwalizer:dynamic_cast(PoGen),
+            Po = PoGen,
             Dumped1 = erli18n_po:dump(Po),
             case erli18n_po:parse(Dumped1) of
                 {ok, Parsed1} ->
@@ -193,8 +217,8 @@ prop_large_string_roundtrip() ->
             %% Generator boundary — see `prop_roundtrip_parse_dump/0`.
             %% `oneof/1` is typed `term()` by eqwalizer; cast to the
             %% documented integer shapes the generators produce.
-            N = eqwalizer:dynamic_cast(NGen),
-            Filler = eqwalizer:dynamic_cast(FillerGen),
+            N = NGen,
+            Filler = FillerGen,
             Big = binary:copy(<<Filler>>, N),
             Msgid = <<"id-", Big/binary>>,
             Translation = <<"tr-", Big/binary>>,
@@ -235,7 +259,7 @@ prop_parse_output_is_valid_utf8() ->
         SrcGen,
         po_source_with_escapes(),
         begin
-            Src = eqwalizer:dynamic_cast(SrcGen),
+            Src = SrcGen,
             case erli18n_po:parse(Src) of
                 {ok, #{entries := Entries}} ->
                     lists:all(fun entry_fields_valid_utf8/1, Entries);
@@ -272,7 +296,7 @@ prop_msgid_plural_roundtrip() ->
                 src := Src,
                 msgid := Msgid,
                 msgid_plural := MsgidPlural
-            } = eqwalizer:dynamic_cast(SpecGen),
+            } = SpecGen,
             %% Precondition: the two forms differ, so emitting the wrong
             %% one is observable.
             true = (Msgid =/= MsgidPlural),
@@ -385,7 +409,7 @@ plural_forms(NPlurals) ->
         %% (`[binary()]`, the contract of `valid_translation/0`).
         lists:zip(
             lists:seq(0, NPlurals - 1),
-            eqwalizer:dynamic_cast(TranslationsGen)
+            TranslationsGen
         )
     ).
 
@@ -402,7 +426,7 @@ valid_context() ->
                 %% Generator boundary — cast the `choose/2` instance to
                 %% the documented `non_neg_integer()` shape consumed by
                 %% `proper_unicode:utf8/2`.
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             )}
     ]).
 
@@ -423,13 +447,13 @@ valid_msgid() ->
             ?LET(
                 NGen,
                 choose(1, 50),
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             ),
             %% Generator boundary — `BGen` is `proper_gen:instance()`
             %% (statically `term()`); the documented shape is `binary()`.
-            byte_size(eqwalizer:dynamic_cast(BGen)) > 0
+            byte_size(BGen) > 0
         ),
-        maybe_inject_escapes(eqwalizer:dynamic_cast(BaseGen), 30)
+        maybe_inject_escapes(BaseGen, 30)
     ).
 
 %% Translation: same population as msgid but allowed empty (PSD-003 says
@@ -441,10 +465,10 @@ valid_translation() ->
         ?LET(
             NGen,
             choose(0, 50),
-            proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+            proper_unicode:utf8(NGen, 2)
         ),
         %% Generator boundary — see `valid_msgid/0`.
-        maybe_inject_escapes(eqwalizer:dynamic_cast(BaseGen), 30)
+        maybe_inject_escapes(BaseGen, 30)
     ).
 
 %% Msgid variant that forces an EOT byte (0x04) somewhere in the
@@ -461,18 +485,18 @@ valid_msgid_with_eot() ->
             ?LET(
                 NGen,
                 choose(0, 20),
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             ),
             ?LET(
                 NGen,
                 choose(1, 20),
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             )
         },
         %% Generator boundary — see `valid_msgid/0`.
         begin
-            Prefix = eqwalizer:dynamic_cast(PrefixGen),
-            Suffix = eqwalizer:dynamic_cast(SuffixGen),
+            Prefix = PrefixGen,
+            Suffix = SuffixGen,
             <<Prefix/binary, 4, Suffix/binary>>
         end
     ).
@@ -486,18 +510,18 @@ valid_translation_with_eot() ->
             ?LET(
                 NGen,
                 choose(0, 20),
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             ),
             ?LET(
                 NGen,
                 choose(0, 20),
-                proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+                proper_unicode:utf8(NGen, 2)
             )
         },
         %% Generator boundary — see `valid_msgid/0`.
         begin
-            Prefix = eqwalizer:dynamic_cast(PrefixGen),
-            Suffix = eqwalizer:dynamic_cast(SuffixGen),
+            Prefix = PrefixGen,
+            Suffix = SuffixGen,
             <<Prefix/binary, 4, Suffix/binary>>
         end
     ).
@@ -544,9 +568,9 @@ plural_source_spec() ->
         {NPluralsGen, MsgidGen, MsgidPluralGen},
         {oneof([3, 6]), valid_msgid(), valid_msgid()},
         begin
-            NPlurals = eqwalizer:dynamic_cast(NPluralsGen),
-            Msgid = eqwalizer:dynamic_cast(MsgidGen),
-            MsgidPluralBase = eqwalizer:dynamic_cast(MsgidPluralGen),
+            NPlurals = NPluralsGen,
+            Msgid = MsgidGen,
+            MsgidPluralBase = MsgidPluralGen,
             %% Force distinctness: prepend a sentinel that cannot collide
             %% with the singular form (which never starts with this run).
             MsgidPlural = <<"PLURAL-", MsgidPluralBase/binary>>,
@@ -563,7 +587,7 @@ plural_source_spec() ->
                 },
                 entries => [{plural, undefined, Msgid, MsgidPlural, Forms}]
             },
-            CatalogCast = eqwalizer:dynamic_cast(Catalog),
+            CatalogCast = Catalog,
             Src = erli18n_po:dump(CatalogCast),
             #{src => Src, msgid => Msgid, msgid_plural => MsgidPlural}
         end
@@ -670,8 +694,8 @@ po_source_with_escapes() ->
         {CharsetGen, EscapeGen},
         {oneof([~"UTF-8", ~"ISO-8859-1", ~"US-ASCII"]), escape_fragment()},
         begin
-            Charset = eqwalizer:dynamic_cast(CharsetGen),
-            Escape = eqwalizer:dynamic_cast(EscapeGen),
+            Charset = CharsetGen,
+            Escape = EscapeGen,
             <<
                 "msgid \"\"\n"
                 "msgstr \"\"\n"
@@ -703,12 +727,12 @@ escape_fragment() ->
         ?LET(
             BGen,
             choose(16#80, 16#FF),
-            hex_escape_bin(eqwalizer:dynamic_cast(BGen))
+            hex_escape_bin(BGen)
         ),
         ?LET(
             BGen,
             choose(16#80, 16#FF),
-            octal_escape_bin(eqwalizer:dynamic_cast(BGen))
+            octal_escape_bin(BGen)
         ),
         %% Consecutive high-byte hex escapes forming a UTF-8 multibyte
         %% codepoint (U+0080..U+07FF -> two bytes 0xC2..0xDF, 0x80..0xBF).
@@ -716,8 +740,8 @@ escape_fragment() ->
             {HiGen, LoGen},
             {choose(16#C2, 16#DF), choose(16#80, 16#BF)},
             <<
-                (hex_escape_bin(eqwalizer:dynamic_cast(HiGen)))/binary,
-                (hex_escape_bin(eqwalizer:dynamic_cast(LoGen)))/binary
+                (hex_escape_bin(HiGen))/binary,
+                (hex_escape_bin(LoGen))/binary
             >>
         )
     ]).

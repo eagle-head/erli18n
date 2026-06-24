@@ -84,8 +84,8 @@ passthroughs to the server.
 ```erlang
 1> application:ensure_all_started(erli18n).
 {ok, [erli18n]}
-2> PoPath = erli18n:default_po_path(minha_app, my_domain, <<"fr">>).
-"/.../minha_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
+2> PoPath = erli18n:default_po_path(my_app, my_domain, <<"fr">>).
+"/.../my_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
 3> {ok, N} = erli18n:ensure_loaded(my_domain, <<"fr">>, PoPath).
 {ok, 12}
 %% N = 12 (entries loaded). Re-running this step would return
@@ -1836,8 +1836,8 @@ the `priv/` directory of `App` (via `code:priv_dir/1`). A convenience to feed
 `ensure_loaded/3,4` and `reload/3,4` without assembling the path manually.
 
 ```erlang
-1> erli18n:default_po_path(minha_app, my_domain, <<"fr">>).
-"/.../minha_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
+1> erli18n:default_po_path(my_app, my_domain, <<"fr">>).
+"/.../my_app/priv/locale/fr/LC_MESSAGES/my_domain.po"
 ```
 
 Delegates to `erli18n_server:default_po_path/3`.

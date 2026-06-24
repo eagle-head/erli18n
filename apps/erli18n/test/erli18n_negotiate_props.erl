@@ -30,6 +30,28 @@
 
 -export([wild_tag/0, clean_tag/0, header_bytes/0, tag_list/0]).
 
+%% PropEr `?FORALL`/`?LET` generators are statically typed as `term()` by
+%% eqwalizer, so every function that binds a generated value to a documented
+%% shape (a `binary()` tag/header, a tag/preference list, the token list fed to
+%% `iolist_to_binary/1`, a byte fed to a `<<...>>` literal, the list fed to
+%% `lists:sublist/2`) carries a static `-eqwalizer({nowarn_function, F/A}).`
+%% annotation — the same zero-runtime-dep pattern used in the runtime modules
+%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
+%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, prop_canonicalize_is_total/0}).
+-eqwalizer({nowarn_function, prop_canonicalize_idempotent/0}).
+-eqwalizer({nowarn_function, prop_separator_equivalence/0}).
+-eqwalizer({nowarn_function, prop_parse_accept_language_is_total/0}).
+-eqwalizer({nowarn_function, prop_best_match_is_member/0}).
+-eqwalizer({nowarn_function, wild_tag/0}).
+-eqwalizer({nowarn_function, tag_token/0}).
+-eqwalizer({nowarn_function, clean_tag/0}).
+-eqwalizer({nowarn_function, subtag/0}).
+-eqwalizer({nowarn_function, header_bytes/0}).
+-eqwalizer({nowarn_function, header_token/0}).
+-eqwalizer({nowarn_function, bounded_list/2}).
+-eqwalizer({nowarn_function, non_empty_bounded_list/2}).
+
 %% =========================
 %% Properties
 %% =========================
@@ -39,7 +61,7 @@ prop_canonicalize_is_total() ->
         TagGen,
         wild_tag(),
         begin
-            Tag = eqwalizer:dynamic_cast(TagGen),
+            Tag = TagGen,
             try erli18n_negotiate:canonicalize(Tag) of
                 Out when is_binary(Out) -> true;
                 Other -> ct_fail("P-CANON-TOTAL non-binary", [Other, Tag])
@@ -55,7 +77,7 @@ prop_canonicalize_idempotent() ->
         TagGen,
         wild_tag(),
         begin
-            Tag = eqwalizer:dynamic_cast(TagGen),
+            Tag = TagGen,
             Once = erli18n_negotiate:canonicalize(Tag),
             Twice = erli18n_negotiate:canonicalize(Once),
             case Once =:= Twice of
@@ -70,7 +92,7 @@ prop_separator_equivalence() ->
         TagGen,
         clean_tag(),
         begin
-            Tag = eqwalizer:dynamic_cast(TagGen),
+            Tag = TagGen,
             Dashed = binary:replace(Tag, ~"_", ~"-", [global]),
             Scored = binary:replace(Tag, ~"-", ~"_", [global]),
             A = erli18n_negotiate:canonicalize(Dashed),
@@ -87,7 +109,7 @@ prop_parse_accept_language_is_total() ->
         HeaderGen,
         header_bytes(),
         begin
-            Header = eqwalizer:dynamic_cast(HeaderGen),
+            Header = HeaderGen,
             try erli18n_negotiate:parse_accept_language(Header) of
                 List when is_list(List) ->
                     valid_al_output(List) orelse ct_fail("P-AL-TOTAL bad output", [List, Header]);
@@ -105,8 +127,8 @@ prop_best_match_is_member() ->
         {PrefGen, AvailGen},
         {tag_list(), tag_list()},
         begin
-            Pref = eqwalizer:dynamic_cast(PrefGen),
-            Avail = eqwalizer:dynamic_cast(AvailGen),
+            Pref = PrefGen,
+            Avail = AvailGen,
             Default = ~"und",
             try erli18n_negotiate:best_match(Pref, Avail, Default) of
                 R when is_binary(R) ->
@@ -154,17 +176,17 @@ ct_fail(Label, Args) ->
 %% the POSIX charset/modifier suffix markers, with occasional raw bytes. May
 %% be oversized or have many subtags (exercises the fail-soft bounds).
 wild_tag() ->
-    ?LET(Toks, list(tag_token()), iolist_to_binary(eqwalizer:dynamic_cast(Toks))).
+    ?LET(Toks, list(tag_token()), iolist_to_binary(Toks)).
 
 tag_token() ->
     frequency([
-        {6, ?LET(C, oneof([$a, $b, $z, $A, $Z, $i, $w]), <<(eqwalizer:dynamic_cast(C))>>)},
-        {3, ?LET(D, oneof([$0, $1, $9]), <<(eqwalizer:dynamic_cast(D))>>)},
+        {6, ?LET(C, oneof([$a, $b, $z, $A, $Z, $i, $w]), <<C>>)},
+        {3, ?LET(D, oneof([$0, $1, $9]), <<D>>)},
         {3, ~"-"},
         {3, ~"_"},
         {1, ~"."},
         {1, ~"@"},
-        {1, ?LET(Byte, range(0, 255), <<(eqwalizer:dynamic_cast(Byte))>>)}
+        {1, ?LET(Byte, range(0, 255), <<Byte>>)}
     ]).
 
 %% A bounded, well-formed-ish tag: 1..6 subtags of 1..4 ALPHA/DIGIT bytes,
@@ -174,29 +196,29 @@ clean_tag() ->
     ?LET(
         Subtags,
         non_empty_bounded_list(subtag(), 6),
-        iolist_to_binary(lists:join(~"-", eqwalizer:dynamic_cast(Subtags)))
+        iolist_to_binary(lists:join(~"-", Subtags))
     ).
 
 subtag() ->
-    ?LET(Chars, non_empty_bounded_list(alnum(), 4), list_to_binary(eqwalizer:dynamic_cast(Chars))).
+    ?LET(Chars, non_empty_bounded_list(alnum(), 4), list_to_binary(Chars)).
 
 alnum() ->
     oneof([$a, $b, $c, $x, $z, $0, $1, $9]).
 
 %% Arbitrary Accept-Language header bytes biased toward the header grammar.
 header_bytes() ->
-    ?LET(Toks, list(header_token()), iolist_to_binary(eqwalizer:dynamic_cast(Toks))).
+    ?LET(Toks, list(header_token()), iolist_to_binary(Toks)).
 
 header_token() ->
     frequency([
-        {5, ?LET(C, oneof([$e, $n, $p, $t, $d, $a, $r, $-]), <<(eqwalizer:dynamic_cast(C))>>)},
+        {5, ?LET(C, oneof([$e, $n, $p, $t, $d, $a, $r, $-]), <<C>>)},
         {3, ~","},
         {3, ~";"},
         {2, ~"q="},
-        {2, ?LET(D, oneof([$0, $1, $2, $5, $8, $9, $.]), <<(eqwalizer:dynamic_cast(D))>>)},
+        {2, ?LET(D, oneof([$0, $1, $2, $5, $8, $9, $.]), <<D>>)},
         {2, ~" "},
         {1, ~"*"},
-        {1, ?LET(Byte, range(0, 255), <<(eqwalizer:dynamic_cast(Byte))>>)}
+        {1, ?LET(Byte, range(0, 255), <<Byte>>)}
     ]).
 
 %% A small list of tags (preference or available set).
@@ -218,7 +240,7 @@ some_tag() ->
 
 %% PropEr `list/1` with an upper bound on length (resize keeps it small).
 bounded_list(Gen, Max) ->
-    ?LET(L, list(Gen), lists:sublist(eqwalizer:dynamic_cast(L), Max)).
+    ?LET(L, list(Gen), lists:sublist(L, Max)).
 
 non_empty_bounded_list(Gen, Max) ->
-    ?LET(L, non_empty(list(Gen)), lists:sublist(eqwalizer:dynamic_cast(L), Max)).
+    ?LET(L, non_empty(list(Gen)), lists:sublist(L, Max)).

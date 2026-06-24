@@ -85,7 +85,9 @@
     msgid_plural_bare_keyword_before_header_prepass/1,
     tab_indented_line_in_main_parser/1,
     line_endings_lf_crlf_lone_cr_parse_identically/1,
-    parse_rejects_malformed_escapes_and_index/1
+    parse_rejects_malformed_escapes_and_index/1,
+    plural_nplurals_header_dos_bounded/1,
+    many_continuation_lines_join_correctly_and_bounded/1
 ]).
 
 all() ->
@@ -165,7 +167,9 @@ all() ->
         msgid_plural_bare_keyword_before_header_prepass,
         tab_indented_line_in_main_parser,
         line_endings_lf_crlf_lone_cr_parse_identically,
-        parse_rejects_malformed_escapes_and_index
+        parse_rejects_malformed_escapes_and_index,
+        plural_nplurals_header_dos_bounded,
+        many_continuation_lines_join_correctly_and_bounded
     ].
 
 init_per_suite(Config) ->
@@ -1436,3 +1440,89 @@ parse_rejects_malformed_escapes_and_index(_Config) ->
         )
     ),
     ok.
+
+%% Finding #1 (po-plural-nplurals-seq-allocation-dos): the header's
+%% `nplurals=` value is attacker-controlled and `collect_digits/2` caps
+%% only the DIGIT COUNT (max 7 digits => up to 9_999_999), so a 158-byte
+%% `.po` can legitimately declare `nplurals=9999999`. The PSD-009 index
+%% validation must NEVER size a list by that header value: the old
+%% `lists:seq(0, Nplurals - 1)` materialized a ~10M-element list (~80MB,
+%% reproduced at ~340ms vs ~0.1ms for a real catalog). After the fix the
+%% present index set is validated WITHOUT building the header-sized
+%% sequence, so this returns the EXACT same structured
+%% `{plural_count_mismatch, Msgid, Nplurals, Indices}` error a genuine
+%% count mismatch always produced, and it completes in bounded time.
+%%
+%% Black-box, through `parse/1`: input -> structured error, with a
+%% deterministic wall-clock ceiling that the pre-fix ~10M-allocation could
+%% not meet. A generous 200ms bound (the fix runs in single-digit ms)
+%% keeps the test stable on slow CI while still failing hard against the
+%% unbounded allocation it replaces.
+plural_nplurals_header_dos_bounded(_Config) ->
+    Attack = <<
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
+        "\"Plural-Forms: nplurals=9999999; plural=0;\\n\"\n"
+        "\n"
+        "msgid \"Tree\"\n"
+        "msgid_plural \"Trees\"\n"
+        "msgstr[0] \"a\"\n"
+    >>,
+    %% Tiny input; a multi-MB allocation here would be a clear DoS.
+    ?assert(byte_size(Attack) < 200),
+    T0 = erlang:monotonic_time(microsecond),
+    Result = erli18n_po:parse(Attack),
+    ElapsedUs = erlang:monotonic_time(microsecond) - T0,
+    %% The exact structured PSD-009 error is preserved verbatim: only
+    %% index 0 is present, but the header declares 9_999_999 forms.
+    ?assertEqual(
+        {error, {plural_count_mismatch, ~"Tree", 9999999, [0]}},
+        Result
+    ),
+    %% Bounded: never materializes the header-sized sequence.
+    ?assert(ElapsedUs < 200000).
+
+%% Finding #17 (po-append-to-last-superlinear): a field built from MANY
+%% continuation lines must (a) join to the byte-correct concatenation and
+%% (b) build in O(total) time. The fix accumulates each continuation
+%% segment as an O(1) prepend onto a reversed list and joins once at
+%% finalization, instead of the old per-line `<<Prev/binary, Bin/binary>>`
+%% that re-copied the growing accumulator out of the record.
+%%
+%% Black-box, through `parse/1`: a msgid AND a msgstr each spread over
+%% thousands of continuation lines must reassemble to the exact expected
+%% binary (correctness of the new reversed-list-then-join path, including
+%% segment ORDER — a reversed join would corrupt it), and the parse must
+%% finish within a generous bound.
+many_continuation_lines_join_correctly_and_bounded(_Config) ->
+    N = 4000,
+    Seq = lists:seq(1, N),
+    %% Each continuation line carries one distinct ASCII chunk; ORDER is
+    %% load-bearing, so a wrong (reversed) join would fail the equality.
+    MsgidConts = iolist_to_binary([
+        <<"\"m", (integer_to_binary(I))/binary, ".\"\n">>
+     || I <- Seq
+    ]),
+    MsgstrConts = iolist_to_binary([
+        <<"\"s", (integer_to_binary(I))/binary, ".\"\n">>
+     || I <- Seq
+    ]),
+    Bin = <<
+        (minimal_header())/binary,
+        "msgid \"\"\n",
+        MsgidConts/binary,
+        "msgstr \"\"\n",
+        MsgstrConts/binary
+    >>,
+    ExpectedMsgid = iolist_to_binary([<<"m", (integer_to_binary(I))/binary, ".">> || I <- Seq]),
+    ExpectedMsgstr = iolist_to_binary([<<"s", (integer_to_binary(I))/binary, ".">> || I <- Seq]),
+    T0 = erlang:monotonic_time(microsecond),
+    {ok, Catalog} = erli18n_po:parse(Bin),
+    ElapsedUs = erlang:monotonic_time(microsecond) - T0,
+    ?assertEqual(
+        [{singular, undefined, ExpectedMsgid, ExpectedMsgstr}],
+        maps:get(entries, Catalog)
+    ),
+    %% Bounded build over thousands of continuation lines.
+    ?assert(ElapsedUs < 2000000).

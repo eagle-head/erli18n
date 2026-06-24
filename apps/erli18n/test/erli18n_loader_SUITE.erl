@@ -11,6 +11,15 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
+%% `ensure_loaded_accepts_binary_path/1` passes a BINARY path to
+%% `erli18n_server:ensure_loaded/3`, whose published spec is `file:filename()`
+%% (i.e. `string()`) even though the loader normalises and accepts a binary at
+%% runtime. eqwalizer sees only the documented spec, so re-announce the boundary
+%% with a static annotation — the same zero-runtime-dep pattern used in the
+%% runtime modules `erli18n_server`/`erli18n_pt_store`, replacing the former
+%% runtime `eqwalizer` cast-helper call (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, ensure_loaded_accepts_binary_path/1}).
+
 -export([
     all/0,
     init_per_suite/1,
@@ -946,10 +955,11 @@ ensure_loaded_accepts_binary_path(Config) ->
     %% The public spec for `ensure_loaded/3` is `file:filename()`
     %% (i.e. `string()`), but at runtime the loader normalises via
     %% `to_binary_path/1` and accepts a binary too. This test exists
-    %% specifically to pin that binary-path behaviour. We cast at the
-    %% boundary so eqwalizer sees the documented spec while the runtime
-    %% test exercises the real binary branch.
-    PathArg = eqwalizer:dynamic_cast(PathBin),
+    %% specifically to pin that binary-path behaviour. The whole function
+    %% carries a static `-eqwalizer({nowarn_function, ...})` annotation
+    %% (declared at the top of this module) so eqwalizer sees the documented
+    %% spec while the runtime test exercises the real binary branch.
+    PathArg = PathBin,
     ?assertEqual(
         {ok, 1},
         erli18n_server:ensure_loaded(

@@ -40,6 +40,21 @@
 %% Generators
 -export([c_plural_expr/0, c_plural_expr/1, c_op/0]).
 
+%% PropEr `?FORALL`/`?LET` generators are statically typed as `term()` by
+%% eqwalizer (their runtime payload is opaque), so every function that binds a
+%% generated value to a documented shape (a `pos_integer()` nplurals, the
+%% recursive AST consumed by `ast_to_text/1`, an `integer()` N, a `binary()`
+%% header/body, …) carries a static `-eqwalizer({nowarn_function, F/A}).`
+%% annotation — the same zero-runtime-dep pattern used in the runtime modules
+%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
+%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, prop_index_in_range/0}).
+-eqwalizer({nowarn_function, prop_compile_or_error/0}).
+-eqwalizer({nowarn_function, prop_compile_bounded/0}).
+-eqwalizer({nowarn_function, prop_compile_node_bounded/0}).
+-eqwalizer({nowarn_function, patho_header/0}).
+-eqwalizer({nowarn_function, patho_body/0}).
+
 %% =========================
 %% Properties
 %% =========================
@@ -63,14 +78,15 @@ prop_index_in_range() ->
         {pos_integer_small(), c_plural_expr(), n_population()},
         begin
             %% PropEr generators are statically typed as `term()` by
-            %% eqwalizer (their runtime payload is opaque). Cast at the
-            %% property boundary to the documented generator contracts
-            %% — `pos_integer_small/0` yields `pos_integer()`,
+            %% eqwalizer (their runtime payload is opaque). This property
+            %% carries a static `-eqwalizer({nowarn_function, ...})` (top of
+            %% module) so the generated values are used at their documented
+            %% contracts — `pos_integer_small/0` yields `pos_integer()`,
             %% `n_population/0` yields `integer()`, and `c_plural_expr/0`
             %% yields the recursive AST consumed by `ast_to_text/1`.
-            NPlurals = eqwalizer:dynamic_cast(NPluralsGen),
-            ExprAst = eqwalizer:dynamic_cast(ExprAstGen),
-            N = eqwalizer:dynamic_cast(NGen),
+            NPlurals = NPluralsGen,
+            ExprAst = ExprAstGen,
+            N = NGen,
             ExprText = ast_to_text(ExprAst),
             Wrapped = wrap_in_range(ExprText, NPlurals),
             Header =
@@ -133,9 +149,10 @@ prop_compile_or_error() ->
         {NPluralsGen, ExprAstGen},
         {pos_integer_small(), c_plural_expr()},
         begin
-            %% Same generator-boundary cast as in `prop_index_in_range/0`.
-            NPlurals = eqwalizer:dynamic_cast(NPluralsGen),
-            ExprAst = eqwalizer:dynamic_cast(ExprAstGen),
+            %% Same generator boundary as in `prop_index_in_range/0`; this
+            %% property carries its own static `-eqwalizer({nowarn_function,...})`.
+            NPlurals = NPluralsGen,
+            ExprAst = ExprAstGen,
             ExprText = ast_to_text(ExprAst),
             Header =
                 <<"nplurals=", (integer_to_binary(NPlurals))/binary, "; plural=", ExprText/binary,
@@ -177,7 +194,7 @@ prop_compile_bounded() ->
         HeaderGen,
         patho_header(),
         begin
-            Header = eqwalizer:dynamic_cast(HeaderGen),
+            Header = HeaderGen,
             {Micros, Result} = timer:tc(fun() ->
                 erli18n_plural:compile(Header)
             end),
@@ -252,7 +269,7 @@ prop_compile_node_bounded() ->
         FactorsGen,
         oneof([10, 100, 200, 256, 300, 1000, 4000]),
         begin
-            Factors = eqwalizer:dynamic_cast(FactorsGen),
+            Factors = FactorsGen,
             Body = multiply_chain(Factors),
             Header =
                 <<"nplurals=2; plural=", Body/binary, ";">>,
@@ -299,13 +316,11 @@ patho_header() ->
         {NPluralsGen, BodyGen},
         {oneof([1, 2, 3, 6]), patho_body()},
         %% PropEr generator payloads are statically `term()` (opaque to
-        %% eqwalizer); cast at the boundary to the documented contracts —
-        %% `NPlurals` is a `pos_integer()`, `Body` a `binary()` produced
-        %% by `build_patho/2`.
-        build_patho_header(
-            eqwalizer:dynamic_cast(NPluralsGen),
-            eqwalizer:dynamic_cast(BodyGen)
-        )
+        %% eqwalizer); this generator carries a static
+        %% `-eqwalizer({nowarn_function, ...})` (top of module) so the values
+        %% are used at their documented contracts — `NPlurals` is a
+        %% `pos_integer()`, `Body` a `binary()` produced by `build_patho/2`.
+        build_patho_header(NPluralsGen, BodyGen)
     ).
 
 -spec build_patho_header(pos_integer(), binary()) -> binary().
@@ -318,10 +333,7 @@ patho_body() ->
     ?LET(
         {ShapeGen, CountGen},
         {oneof([flat_add, nested_paren, bang_chain]), oneof([10, 100, 1000, 10_000, 100_000])},
-        build_patho(
-            eqwalizer:dynamic_cast(ShapeGen),
-            eqwalizer:dynamic_cast(CountGen)
-        )
+        build_patho(ShapeGen, CountGen)
     ).
 
 %% `n+n+...+n` — the exact flat shape that triggered the O(n^2)

@@ -89,7 +89,9 @@ true
 
 ## Key functions
 
-Input: `parse/1`, `parse/2`, `parse_file/1`, `parse_file/2`. Output: `dump/1`.
+Input: `parse/1`, `parse/2`, `parse_file/1`, `parse_file/2`. Output: `dump/1`,
+and `escape_string/1` (the PO-value escaper `dump/1` uses, exported so the
+`rebar3_erli18n` plugin can serialize the metadata it owns byte-identically).
 Result type: `parsed_catalog/0`; an entry is an `entry/0`; errors are a
 `parse_error/0`.
 """.
@@ -100,7 +102,8 @@ Result type: `parsed_catalog/0`; an entry is an `entry/0`; errors are a
     parse/2,
     parse_file/1,
     parse_file/2,
-    dump/1
+    dump/1,
+    escape_string/1
 ]).
 
 -export_type([
@@ -262,12 +265,27 @@ Structured parse error — the only "normal" failure mode of the public API.
 %% =========================
 
 %% Accumulator for a single entry being built line-by-line.
+%%
+%% Finding #17 (po-append-to-last-superlinear): each string field is built
+%% as a REVERSED list of segments (`[binary()]`, newest first) while the
+%% entry's lines stream in, never as a growing binary. A continuation line
+%% prepends ONE segment in O(1) (`append_to_last/2`); the whole field is
+%% joined into a binary exactly once, at finalization (`finalize_buffers/1`
+%% -> `iolist_to_binary/1`), so building an n-byte field is genuinely
+%% O(n) total. The old shape did `<<Prev/binary, Bin/binary>>` per
+%% continuation: because `Prev` lived inside the record (more than one
+%% reference), the runtime's in-place binary-append optimization did not
+%% apply and each append re-copied the accumulator -> Θ(n²) on a single
+%% many-continuation msgid. `undefined` still means "field never seen", so
+%% the downstream pattern matches (`msgid = undefined`, `msgid = <<>>`) are
+%% unchanged — they run AFTER `finalize_buffers/1` has flattened the
+%% buffers back to binaries.
 -record(po_st, {
-    context :: context(),
-    msgid :: undefined | binary(),
-    msgid_plural :: undefined | binary(),
-    msgstr :: undefined | binary(),
-    msgstr_plurals = [] :: [{plural_index(), binary()}],
+    context :: undefined | [binary()] | binary(),
+    msgid :: undefined | [binary()] | binary(),
+    msgid_plural :: undefined | [binary()] | binary(),
+    msgstr :: undefined | [binary()] | binary(),
+    msgstr_plurals = [] :: [{plural_index(), [binary()] | binary()}],
     last_field ::
         undefined
         | msgctxt
@@ -522,6 +540,16 @@ strip_bom(Bin) when is_binary(Bin) -> Bin.
 %% This pass runs over raw bytes. The header (per GNU spec) is always
 %% ASCII-safe, so reading it byte-by-byte is correct regardless of the
 %% declared charset.
+%%
+%% Finding #16 (INFO): the header's `msgstr` lines are decoded here AND
+%% again in the main pass. This second decode is INHERENT, not a
+%% workaround: the body charset is only knowable after the header has been
+%% read, and the line-by-line parse must run over the already-transcoded
+%% body — so the header round-trips through the decoder twice by
+%% construction. The cost is bounded: it is the HEADER only (one block,
+%% ASCII-safe, a handful of short lines per the GNU spec), not the catalog
+%% body, so there is no structural single-decode win to be had without
+%% regressing charset detection. Left as-is deliberately.
 extract_header_charset(Bin) ->
     case extract_header_msgstr(Bin) of
         {ok, HeaderText} -> charset_from_header(HeaderText);
@@ -631,8 +659,15 @@ consume_continuations([Line | Rest] = All, Acc) ->
 %% strictly better above a few dozen bytes. `[binary()]` is a subtype of
 %% `iolist()`, so the `-spec` is preserved and eqwalizer-friendly.
 %%
-%% `append_to_last/2` deliberately keeps the accumulator on the LEFT and
-%% is already O(total); do not "unify" the two.
+%% Finding #17: `append_to_last/2` now ALSO accumulates continuation
+%% segments as a reversed `[binary()]` list and routes them through THIS
+%% same join (via `finalize_buffers/1`), so the per-field build is
+%% genuinely O(total). The previous comment claimed `append_to_last/2`'s
+%% left-accumulator binary append was "already O(total)" — it was not: the
+%% growing accumulator lived inside the `#po_st{}` record (more than one
+%% reference), defeating the runtime's in-place append optimization and
+%% making a many-continuation field super-linear. Both paths now share
+%% this single linear join.
 -spec bins_to_binary([binary()]) -> binary().
 bins_to_binary(Bins) when is_list(Bins) ->
     iolist_to_binary(lists:reverse(Bins)).
@@ -861,33 +896,43 @@ handle_string_field(Field, Content, Rest, Ln, Cur, St) ->
             {error, {syntax_error, Ln, Reason}}
     end.
 
+%% Finding #17: each string field starts life as a one-element REVERSED
+%% segment list (`[Bin]`), so a later continuation just prepends (O(1)) and
+%% the whole field joins once at finalization. The `last_field` tag drives
+%% which buffer `append_to_last/2` extends.
 set_field(msgctxt, Bin, Cur) ->
     Cur#po_st{
-        context = Bin,
+        context = [Bin],
         last_field = msgctxt
     };
 set_field(msgid, Bin, Cur) ->
     Cur#po_st{
-        msgid = Bin,
+        msgid = [Bin],
         last_field = msgid
     };
 set_field(msgid_plural, Bin, Cur) ->
     Cur#po_st{
-        msgid_plural = Bin,
+        msgid_plural = [Bin],
         last_field = msgid_plural
     };
 set_field(msgstr, Bin, Cur) ->
     Cur#po_st{
-        msgstr = Bin,
+        msgstr = [Bin],
         last_field = msgstr
     };
 set_field({msgstr, Idx}, Bin, Cur) ->
     Existing = Cur#po_st.msgstr_plurals,
     Cur#po_st{
-        msgstr_plurals = [{Idx, Bin} | Existing],
+        msgstr_plurals = [{Idx, [Bin]} | Existing],
         last_field = {msgstr, Idx}
     }.
 
+%% Finding #17 (po-append-to-last-superlinear): append ONE continuation
+%% segment by PREPENDING it to the field's reversed segment list (O(1)),
+%% never by re-copying a growing binary. The field is joined into a binary
+%% exactly once, later, in `finalize_buffers/1`, so building an n-byte
+%% field over many continuation lines is genuinely O(n) total instead of
+%% the old Θ(n²).
 append_to_last(Cur, Bin) ->
     %% classify_line only emits {continuation, _} when last_field =/= undefined
     %% (orphan continuations are intercepted as {syntax_error,
@@ -895,30 +940,27 @@ append_to_last(Cur, Bin) ->
     %% unreachable: hitting it would mean a contract violation and we
     %% want it to crash visibly with case_clause.
     %%
-    %% The intermediate `is_binary(Prev)` guards turn the record fields
-    %% (typed `undefined | binary()`) into `binary()` at this point, so
-    %% the binary append below is type-checked. A non-binary would mean
-    %% `set_field/3` was bypassed — contract violation, badmatch.
+    %% The matched `[_ | _] = Segs` pattern proves the field is a NON-EMPTY
+    %% reversed segment list at this point — `set_field/3` always seeds it
+    %% with `[Bin]` before any continuation can extend it, so a non-list /
+    %% empty-list field would mean `set_field/3` was bypassed (contract
+    %% violation, badmatch).
     case Cur#po_st.last_field of
         msgctxt ->
-            Prev = Cur#po_st.context,
-            true = is_binary(Prev),
-            Cur#po_st{context = <<Prev/binary, Bin/binary>>};
+            [_ | _] = Segs = Cur#po_st.context,
+            Cur#po_st{context = [Bin | Segs]};
         msgid ->
-            Prev = Cur#po_st.msgid,
-            true = is_binary(Prev),
-            Cur#po_st{msgid = <<Prev/binary, Bin/binary>>};
+            [_ | _] = Segs = Cur#po_st.msgid,
+            Cur#po_st{msgid = [Bin | Segs]};
         msgid_plural ->
-            Prev = Cur#po_st.msgid_plural,
-            true = is_binary(Prev),
-            Cur#po_st{msgid_plural = <<Prev/binary, Bin/binary>>};
+            [_ | _] = Segs = Cur#po_st.msgid_plural,
+            Cur#po_st{msgid_plural = [Bin | Segs]};
         msgstr ->
-            Prev = Cur#po_st.msgstr,
-            true = is_binary(Prev),
-            Cur#po_st{msgstr = <<Prev/binary, Bin/binary>>};
+            [_ | _] = Segs = Cur#po_st.msgstr,
+            Cur#po_st{msgstr = [Bin | Segs]};
         {msgstr, Idx} ->
-            [{Idx, Prev} | T] = Cur#po_st.msgstr_plurals,
-            Cur#po_st{msgstr_plurals = [{Idx, <<Prev/binary, Bin/binary>>} | T]}
+            [{Idx, [_ | _] = Segs} | T] = Cur#po_st.msgstr_plurals,
+            Cur#po_st{msgstr_plurals = [{Idx, [Bin | Segs]} | T]}
     end.
 
 is_empty_entry(#po_st{
@@ -938,14 +980,54 @@ is_empty_entry(_) ->
 %% Entry finalization
 %% =========================
 
-finalize_entry(#po_st{obsolete = true}, St) ->
+%% Finding #17: flatten the per-field reversed segment buffers
+%% (`[binary()]`, built O(1)-per-continuation) back into single binaries
+%% EXACTLY ONCE, here at the finalization boundary, before any of the
+%% `finalize_entry_flat/2` clauses pattern-match on `msgid = undefined` /
+%% `msgid = <<>>` or `emit_entry/2` reads the fields. After this call every
+%% string field is `undefined | binary()` again, so all downstream matches
+%% are unchanged.
+finalize_entry(Cur, St) ->
+    finalize_entry_flat(finalize_buffers(Cur), St).
+
+%% Join each field's reversed segment list into one binary with a single
+%% linear `iolist_to_binary/1` pass (`bins_to_binary/1`), leaving
+%% `undefined` (field never seen) untouched. No `-spec`: like the other
+%% `#po_st{}`-consuming internals (`set_field/3`, `append_to_last/2`,
+%% `emit_entry/2`) it takes the record directly, and elvis'
+%% `no_spec_with_records` rule forbids naming the record in a spec.
+finalize_buffers(#po_st{} = Cur) ->
+    Cur#po_st{
+        context = flatten_field(Cur#po_st.context),
+        msgid = flatten_field(Cur#po_st.msgid),
+        msgid_plural = flatten_field(Cur#po_st.msgid_plural),
+        msgstr = flatten_field(Cur#po_st.msgstr),
+        %% Plural buffers are always a reversed `[binary()]` segment list at
+        %% finalization (never `undefined`, never a bare binary), so join them
+        %% with `bins_to_binary/1` directly. The `is_list/1` guard narrows the
+        %% record field's `[binary()] | binary()` union to the list arm; it is
+        %% always true here (the buffer is built only by prepending segments),
+        %% so it drops nothing and the join stays a single linear pass.
+        msgstr_plurals = [
+            {Idx, bins_to_binary(Segs)}
+         || {Idx, Segs} <- Cur#po_st.msgstr_plurals, is_list(Segs)
+        ]
+    }.
+
+%% `undefined` -> `undefined` (field never seen); a reversed segment list
+%% -> one binary in a single linear pass.
+-spec flatten_field(undefined | [binary()] | binary()) -> undefined | binary().
+flatten_field(undefined) -> undefined;
+flatten_field(Segs) when is_list(Segs) -> bins_to_binary(Segs).
+
+finalize_entry_flat(#po_st{obsolete = true}, St) ->
     %% Per PSD-007: drop obsolete entries silently.
     {ok, St};
-finalize_entry(#po_st{msgid = undefined}, St) ->
+finalize_entry_flat(#po_st{msgid = undefined}, St) ->
     %% No msgid in this block — nothing to emit (trailing blank lines,
     %% comment-only blocks, etc.).
     {ok, St};
-finalize_entry(#po_st{msgid = <<>>} = Cur, #pst{header = undefined} = St) ->
+finalize_entry_flat(#po_st{msgid = <<>>} = Cur, #pst{header = undefined} = St) ->
     %% Header entry: msgid == "". `build_header/1` is total — the prepass
     %% (parse/2) already reconciled the charset and short-circuited an
     %% unsupported one before do_parse, so it returns `{ok, _}` here.
@@ -953,11 +1035,11 @@ finalize_entry(#po_st{msgid = <<>>} = Cur, #pst{header = undefined} = St) ->
     {ok, Header} = build_header(HeaderText),
     Nplurals = nplurals_from_header(Header),
     {ok, St#pst{header = Header, nplurals = Nplurals}};
-finalize_entry(#po_st{msgid = <<>>}, St) ->
+finalize_entry_flat(#po_st{msgid = <<>>}, St) ->
     %% Duplicate header entry — preserve the first one (parity with
     %% msgfmt which uses the first one). Drop silently.
     {ok, St};
-finalize_entry(Cur, St) ->
+finalize_entry_flat(Cur, St) ->
     case Cur#po_st.fuzzy andalso not St#pst.include_fuzzy of
         true ->
             %% Per PSD-001: fuzzy entries dropped by default.
@@ -1021,13 +1103,31 @@ it ACCEPTS any set — a deliberate fail-open, matched with the fail-open of
 `[0, 1, ..., Nplurals-1]` (already sorted by the caller); a divergence becomes
 `{error, {plural_count_mismatch, Msgid, Nplurals, Indices}}`, which bubbles up as
 a `parse_error()`.
+
+Anti-DoS (finding #1, po-plural-nplurals-seq-allocation-dos): `Nplurals` is
+attacker-controlled — `collect_digits/2` only caps the DIGIT COUNT, so the
+header may legitimately declare `nplurals=9999999`. The validation MUST NOT
+size any list by that value (the old `lists:seq(0, Nplurals - 1)` allocated a
+~10M-element list, ~80MB, for a 158-byte `.po`). Instead it checks the two
+conditions that `Indices =:= lists:seq(0, Nplurals - 1)` decomposes into,
+without ever materializing the expected sequence: (1) the present set is a
+dense `[0, 1, ..., length(Indices) - 1]` prefix — sized by the bytes actually
+present in the file, not the header; and (2) that length equals `Nplurals`. A
+genuine count mismatch still yields the EXACT same
+`{plural_count_mismatch, Msgid, Nplurals, Indices}` payload, in O(length(Indices)).
 """.
 %% Per PSD-009: index set must be exactly [0, 1, ..., Nplurals-1].
 validate_plural_indices(_Msgid, undefined, _Indices) ->
     ok;
 validate_plural_indices(Msgid, Nplurals, Indices) ->
-    Expected = lists:seq(0, Nplurals - 1),
-    case Indices =:= Expected of
+    %% Size the comparison list by the indices PRESENT in the file
+    %% (`length(Indices)`), never by the untrusted header `Nplurals`. The
+    %% set is exactly `[0..Nplurals-1]` iff it is a dense 0-based prefix of
+    %% its own length AND that length equals `Nplurals`; checking both
+    %% avoids `lists:seq(0, Nplurals - 1)`, which an adversarial
+    %% `nplurals=9999999` would blow up into a multi-MB allocation.
+    DensePrefix = lists:seq(0, length(Indices) - 1),
+    case Indices =:= DensePrefix andalso length(Indices) =:= Nplurals of
         true -> ok;
         false -> {error, {plural_count_mismatch, Msgid, Nplurals, Indices}}
     end.
@@ -1626,6 +1726,25 @@ dump_plural_form(Idx, T) ->
     Escaped = escape_string(T),
     <<"msgstr[", IdxBin/binary, "] \"", Escaped/binary, "\"\n">>.
 
+-doc """
+Escape a raw string for the body of a PO `"..."` value.
+
+Applies the five GNU gettext PO escapes — backslash, double-quote, newline,
+tab, carriage return — so the result can be wrapped in `"..."` and parsed back
+byte-identically by `parse/1`. This is the exact escaping `dump/1` uses for
+every emitted field, exposed as public API so the separate `rebar3_erli18n`
+plugin package can serialize PO metadata it owns (notably the `#|`
+previous-msgid lines written by `rebar3_erli18n_po_meta`) byte-identically to
+`dump/1`, across the published `{deps, [erli18n]}` boundary, instead of
+vendoring a duplicate escaper that would have to stay in lock-step forever.
+
+The five escapes applied, every other byte passed through unchanged:
+
+```erlang
+1> erli18n_po:escape_string(<<"a\"b\nc\td\\e">>).
+<<"a\\\"b\\nc\\td\\\\e">>
+```
+""".
 -spec escape_string(binary()) -> binary().
 escape_string(Bin) ->
     escape_string(Bin, []).

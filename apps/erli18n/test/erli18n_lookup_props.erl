@@ -40,6 +40,22 @@
 -define(TEST_DOMAIN, prop_lookup_dom).
 -define(TEST_LOCALE, <<"px">>).
 
+%% PropEr `?FORALL`/`?LET`/`?SUCHTHAT` generators are statically typed as
+%% `term()` by eqwalizer, so every function that binds a generated value to a
+%% documented shape (a `binary()` msgid/translation/context, an `integer()` N,
+%% the `proper_gen:instance()` fed to `byte_size/1`/`proper_unicode:utf8/2`)
+%% carries a static `-eqwalizer({nowarn_function, F/A}).` annotation — the same
+%% zero-runtime-dep pattern used in the runtime modules
+%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
+%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, prop_singular_lookup_deterministic/0}).
+-eqwalizer({nowarn_function, prop_plural_lookup_deterministic/0}).
+-eqwalizer({nowarn_function, prop_contextual_lookup_deterministic/0}).
+-eqwalizer({nowarn_function, prop_miss_fallback_deterministic/0}).
+-eqwalizer({nowarn_function, non_empty_msgid/0}).
+-eqwalizer({nowarn_function, non_empty_translation/0}).
+-eqwalizer({nowarn_function, non_empty_context/0}).
+
 %% =========================
 %% Properties
 %% =========================
@@ -52,10 +68,11 @@ prop_singular_lookup_deterministic() ->
         {non_empty_msgid(), non_empty_translation()},
         begin
             %% PropEr generators are statically typed as `term()` by
-            %% eqwalizer; cast at the property boundary to the documented
-            %% generator contracts (`binary()` for both).
-            Msgid = eqwalizer:dynamic_cast(MsgidGen),
-            Translation = eqwalizer:dynamic_cast(TranslationGen),
+            %% eqwalizer; this property carries a static
+            %% `-eqwalizer({nowarn_function, ...})` (top of module) so the
+            %% generated values are used at their documented `binary()` shapes.
+            Msgid = MsgidGen,
+            Translation = TranslationGen,
             setup_singular_catalog(undefined, Msgid, Translation),
             R1 = erli18n:gettext(?TEST_DOMAIN, Msgid, ?TEST_LOCALE),
             R2 = erli18n:gettext(?TEST_DOMAIN, Msgid, ?TEST_LOCALE),
@@ -72,11 +89,12 @@ prop_plural_lookup_deterministic() ->
         {MsgidGen, SingularTGen, PluralTGen, NGen},
         {non_empty_msgid(), non_empty_translation(), non_empty_translation(), n_for_plural()},
         begin
-            %% Generator boundary — see `prop_singular_lookup_deterministic/0`.
-            Msgid = eqwalizer:dynamic_cast(MsgidGen),
-            SingularT = eqwalizer:dynamic_cast(SingularTGen),
-            PluralT = eqwalizer:dynamic_cast(PluralTGen),
-            N = eqwalizer:dynamic_cast(NGen),
+            %% Generator boundary — see `prop_singular_lookup_deterministic/0`;
+            %% this property carries its own static `-eqwalizer(nowarn)`.
+            Msgid = MsgidGen,
+            SingularT = SingularTGen,
+            PluralT = PluralTGen,
+            N = NGen,
             setup_plural_catalog(Msgid, SingularT, PluralT),
             R1 = erli18n:ngettext(
                 ?TEST_DOMAIN,
@@ -116,10 +134,11 @@ prop_contextual_lookup_deterministic() ->
         {CtxGen, MsgidGen, TranslationGen},
         {non_empty_context(), non_empty_msgid(), non_empty_translation()},
         begin
-            %% Generator boundary — see `prop_singular_lookup_deterministic/0`.
-            Ctx = eqwalizer:dynamic_cast(CtxGen),
-            Msgid = eqwalizer:dynamic_cast(MsgidGen),
-            Translation = eqwalizer:dynamic_cast(TranslationGen),
+            %% Generator boundary — see `prop_singular_lookup_deterministic/0`;
+            %% this property carries its own static `-eqwalizer(nowarn)`.
+            Ctx = CtxGen,
+            Msgid = MsgidGen,
+            Translation = TranslationGen,
             setup_singular_catalog(Ctx, Msgid, Translation),
             R1 = erli18n:pgettext(?TEST_DOMAIN, Ctx, Msgid, ?TEST_LOCALE),
             R2 = erli18n:pgettext(?TEST_DOMAIN, Ctx, Msgid, ?TEST_LOCALE),
@@ -136,8 +155,9 @@ prop_miss_fallback_deterministic() ->
         MsgidGen,
         non_empty_msgid(),
         begin
-            %% Generator boundary — see `prop_singular_lookup_deterministic/0`.
-            Msgid = eqwalizer:dynamic_cast(MsgidGen),
+            %% Generator boundary — see `prop_singular_lookup_deterministic/0`;
+            %% this property carries its own static `-eqwalizer(nowarn)`.
+            Msgid = MsgidGen,
             %% guarantee no catalog
             teardown(),
             R1 = erli18n:gettext(?TEST_DOMAIN, Msgid, ?TEST_LOCALE),
@@ -164,11 +184,12 @@ non_empty_msgid() ->
         ?LET(
             NGen,
             choose(1, 30),
-            proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+            proper_unicode:utf8(NGen, 2)
         ),
-        %% Generator boundary — narrow `BGen` (a `proper_gen:instance()`)
-        %% to the documented `binary()` shape so `byte_size/1` type-checks.
-        byte_size(eqwalizer:dynamic_cast(BGen)) > 0
+        %% `BGen` (a `proper_gen:instance()`) is used at its documented
+        %% `binary()` shape so `byte_size/1` type-checks; the whole generator
+        %% carries a static `-eqwalizer({nowarn_function, ...})` (top of module).
+        byte_size(BGen) > 0
     ).
 
 %% Non-empty translation, mirrors msgid shape so the lookup post-cond
@@ -180,10 +201,10 @@ non_empty_translation() ->
         ?LET(
             NGen,
             choose(1, 50),
-            proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+            proper_unicode:utf8(NGen, 2)
         ),
         %% Generator boundary — see `non_empty_msgid/0`.
-        byte_size(eqwalizer:dynamic_cast(BGen)) > 0
+        byte_size(BGen) > 0
     ).
 
 %% Non-empty context for `pgettext` testing. Empty context binary `<<>>`
@@ -196,10 +217,10 @@ non_empty_context() ->
         ?LET(
             NGen,
             choose(1, 20),
-            proper_unicode:utf8(eqwalizer:dynamic_cast(NGen), 2)
+            proper_unicode:utf8(NGen, 2)
         ),
         %% Generator boundary — see `non_empty_msgid/0`.
-        byte_size(eqwalizer:dynamic_cast(BGen)) > 0
+        byte_size(BGen) > 0
     ).
 
 %% Plural N: small positives (the common case), but including 0 because
