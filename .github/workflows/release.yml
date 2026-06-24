@@ -1,28 +1,81 @@
 name: Release
 
-# Tag-triggered publish to Hex.pm. Pushing a `vX.Y.Z` tag (or running this
-# workflow manually with a tag input) publishes the package to
-# https://hex.pm/packages/erli18n and the docs to https://hexdocs.pm/erli18n.
+# Tag-triggered publish to Hex.pm for the erli18n umbrella, which ships TWO
+# packages from this one repo:
+#
+#   - erli18n          (apps/erli18n,         the runtime library)
+#   - rebar3_erli18n   (apps/rebar3_erli18n,  the rebar3 plugin)
+#
+# ONE parameterized workflow publishes EITHER package, keyed off a per-package
+# PREFIXED tag and a per-package working directory. A single data-driven body
+# (resolve APP from the tag prefix, then `cd apps/$APP` for the build/publish/doc
+# steps) keeps the logic identical for both packages — the data-driven,
+# one-workflow approach used by multi-package Erlang/Elixir umbrellas.
+#
+# Why publish FROM the app directory (cd apps/$APP) rather than `--app NAME` from
+# the umbrella root: the published `requirements` are built from the LOCK, not
+# from `{deps}`. rebar3_hex's create_package reads `LockDeps = rebar_state:get(
+# State, {locks, default}, [])` (rebar3_hex_build.erl:369), keeps only level-0
+# `{pkg,...}` lock entries (rebar3_hex_app.erl:43-63 get_deps/lock_to_dep), and
+# update_versions/2 (rebar3_hex_build.erl:424-442) iterates those LOCK entries —
+# using `{deps}` ONLY to override each requirement string. The umbrella root
+# `rebar.lock` locks just `telemetry`; the sibling app `erli18n` is path-resolved
+# and never appears in the root lock, so an `--app rebar3_erli18n` build FROM THE
+# ROOT publishes `requirements = telemetry` and OMITS `erli18n` entirely (a
+# locally-reproduced bug). Building from `apps/rebar3_erli18n/` resolves `erli18n`
+# from Hex into a per-app lock as a level-0 `{pkg,...}` entry, so create_package
+# emits `requirements = {erli18n, "~> 0.5"}` (telemetry demoted to a transitive
+# level-1 lock and excluded). Each app carries its own `{project_plugins,
+# [rebar3_hex, rebar3_ex_doc]}` so a per-app `rebar3 hex` invocation has the
+# `hex`/`ex_doc` providers. This matches the exemplar
+# open-telemetry/opentelemetry-erlang, which publishes each app self-contained
+# from its own directory; its root lock never lists the sibling
+# `opentelemetry_api`, yet published `opentelemetry` 1.7.0 lists
+# `requirements = {opentelemetry_api, "~> 1.5.0"}`
+# (hex.pm/api/packages/opentelemetry/releases/1.7.0).
+#
+# Tag scheme — per-package PREFIXED tags (both OTel repos use prefixed tags,
+# e.g. opentelemetry/v1.7.0, opentelemetry_api/v1.5.0, opentelemetry-phoenix-v2.0.1):
+#
+#   erli18n-vX.Y.Z          -> APP=erli18n
+#   rebar3_erli18n-vX.Y.Z   -> APP=rebar3_erli18n
+#
+# The workflow derives APP and the app.src / CHANGELOG paths from the tag prefix,
+# so the validate / build / publish / release-notes logic stays identical for
+# both packages (DRY), exactly the contrib model.
 #
 # Why a tag — not push/merge to main: Hex versions are IMMUTABLE (a published
 # version can never be overwritten, only reverted within 24h). Merges to main
 # happen many times per release, so publishing is gated on a deliberate version
-# tag instead. The tag must match the `vsn` in src/erli18n.app.src (checked
-# below) so the git tag and the Hex version can never drift.
+# tag instead. The tag's version must match the `vsn` in that package's
+# .app.src (checked below) so the git tag and the Hex version can never drift.
+#
+# PUBLISH ORDER (strict, manually gated): erli18n FIRST, then rebar3_erli18n.
+# The plugin declares {erli18n, "~> 0.5"}; that requirement cannot resolve on
+# hex.pm until erli18n 0.5.0 is published, and a consumer installing the plugin
+# against the still-published erli18n 0.4.0 hits `undef` on
+# erli18n_po:escape_string/1 (the new 0.5.0 export the plugin calls). This
+# workflow does NOT auto-publish both in one run: each package is published by
+# pushing ITS OWN tag, and the rebar3_erli18n-v* path carries an explicit guard
+# (see "Enforce erli18n-first publish order") that fails fast if the plugin's
+# required erli18n minor is not yet live on Hex. Operators publish erli18n's tag,
+# confirm it is live, then publish the plugin's tag — the ordered gate the OTel
+# exemplars do NOT encode (our deliberate improvement).
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'erli18n-v*'
+      - 'rebar3_erli18n-v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to publish (e.g. v0.2.0). Must match src/erli18n.app.src vsn.'
+        description: 'Existing prefixed tag to publish (e.g. erli18n-v0.5.0 or rebar3_erli18n-v0.1.0). Must match that app.src vsn.'
         required: true
 
 concurrency:
   # Never cancel an in-flight publish — a half-published release is worse than
-  # a queued one. Serialize per ref.
+  # a queued one. Serialize per ref (the prefixed tag identifies the package).
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
@@ -52,67 +105,181 @@ jobs:
           otp-version: '28'
           rebar3-version: '3.24'
 
-      - name: Validate tag matches src/erli18n.app.src vsn
+      # Derive APP, the package version, and the per-app .app.src / CHANGELOG
+      # paths from the PREFIXED tag. The longest matching prefix wins, so
+      # `rebar3_erli18n-v*` is tested before `erli18n-v*` (the plugin tag also
+      # ends in `...erli18n-v*`). Everything downstream reads these outputs, so
+      # the publish body is identical for both packages.
+      - name: Resolve package from tag prefix
+        id: pkg
         env:
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG:-$REF_NAME}"
-          TAG_VSN="${TAG#v}"
-          APP_VSN=$(sed -n 's/.*{[[:space:]]*vsn[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p' src/erli18n.app.src | head -1)
-          echo "tag=$TAG  tag_vsn=$TAG_VSN  app_vsn=$APP_VSN"
+          case "$TAG" in
+            rebar3_erli18n-v*)
+              APP=rebar3_erli18n
+              VSN="${TAG#rebar3_erli18n-v}"
+              ;;
+            erli18n-v*)
+              APP=erli18n
+              VSN="${TAG#erli18n-v}"
+              ;;
+            *)
+              echo "::error::Tag '$TAG' has no recognized package prefix. Use 'erli18n-vX.Y.Z' or 'rebar3_erli18n-vX.Y.Z'."
+              exit 1
+              ;;
+          esac
+          APP_DIR="apps/${APP}"
+          {
+            echo "tag=$TAG"
+            echo "app=$APP"
+            echo "vsn=$VSN"
+            echo "app_dir=$APP_DIR"
+            echo "app_src=${APP_DIR}/src/${APP}.app.src"
+            echo "changelog=${APP_DIR}/CHANGELOG.md"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved tag '$TAG' -> APP=$APP VSN=$VSN (dir $APP_DIR)"
+
+      # The tag's version must equal the vsn in THAT package's .app.src, so the
+      # git tag and the Hex version can never drift (generalized from the old
+      # single-package check to the tag-derived app.src path).
+      - name: Validate tag matches app.src vsn
+        env:
+          TAG: ${{ steps.pkg.outputs.tag }}
+          TAG_VSN: ${{ steps.pkg.outputs.vsn }}
+          APP_SRC: ${{ steps.pkg.outputs.app_src }}
+          APP: ${{ steps.pkg.outputs.app }}
+        run: |
+          set -euo pipefail
+          APP_VSN=$(sed -n 's/.*{[[:space:]]*vsn[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p' "$APP_SRC" | head -1)
+          echo "tag=$TAG  tag_vsn=$TAG_VSN  app_src=$APP_SRC  app_vsn=$APP_VSN"
           if [ "$TAG_VSN" != "$APP_VSN" ]; then
-            echo "::error::Tag '$TAG' (version '$TAG_VSN') does not match src/erli18n.app.src vsn '$APP_VSN'. Bump the .app.src vsn and re-tag."
+            echo "::error::Tag '$TAG' (version '$TAG_VSN') does not match ${APP_SRC} vsn '$APP_VSN'. Bump the .app.src vsn and re-tag."
             exit 1
           fi
-          echo "Publishing erli18n $APP_VSN"
+          echo "Publishing ${APP} ${APP_VSN}"
 
+      # STRICT, MANUALLY-GATED PUBLISH ORDER — erli18n FIRST, then the plugin.
+      # When publishing the plugin, its required erli18n minor (the `~> X.Y`
+      # constraint in apps/rebar3_erli18n/rebar.config {deps}) MUST already be
+      # live on Hex. The reason is twofold: (1) the per-app build below resolves
+      # `erli18n` from Hex into the plugin's lock, which is what lands it in the
+      # published `requirements` (update_versions/2 keys on that lock entry —
+      # rebar3_hex_build.erl:424-442) — if the required minor is not on Hex the
+      # build cannot resolve it; and (2) a consumer installing the plugin against
+      # an older erli18n would hit `undef` on erli18n_po:escape_string/1 (the
+      # 0.5.0 export the plugin calls). We read the constraint from the plugin's
+      # own rebar.config {deps} and query the Hex API for a matching erli18n
+      # release, failing fast on out-of-order publishing — the ordered gate the
+      # OTel exemplars do not encode. (erli18n's own tag skips this.)
+      - name: Enforce erli18n-first publish order
+        if: steps.pkg.outputs.app == 'rebar3_erli18n'
+        run: |
+          set -euo pipefail
+          # Extract the erli18n requirement string, e.g. "~> 0.5", from the
+          # plugin's rebar.config {deps}.
+          REQ=$(sed -n 's/.*{[[:space:]]*erli18n[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p' \
+                  apps/rebar3_erli18n/rebar.config | head -1)
+          if [ -z "$REQ" ]; then
+            echo "::error::Could not find an {erli18n, \"...\"} dep in apps/rebar3_erli18n/rebar.config."
+            exit 1
+          fi
+          # The `~> X.Y` minor the plugin needs live on Hex (strip the operator).
+          NEED_MINOR=$(printf '%s' "$REQ" | sed 's/[~>= ]//g')
+          echo "Plugin requires erli18n '$REQ' (minor series '$NEED_MINOR') to be published first."
+          # Ask Hex which erli18n versions exist. A matching X.Y.* release must be
+          # present before the plugin may publish.
+          RELEASES=$(curl -fsSL https://hex.pm/api/packages/erli18n \
+                       | grep -o '"version":"[0-9][^"]*"' | sed 's/"version":"//;s/"//' || true)
+          echo "Published erli18n versions on Hex:"
+          echo "$RELEASES" | sed 's/^/  - /'
+          if echo "$RELEASES" | grep -qE "^${NEED_MINOR//./\\.}\\."; then
+            echo "erli18n ${NEED_MINOR}.x is live on Hex — safe to publish the plugin."
+          else
+            echo "::error::erli18n ${NEED_MINOR}.x is NOT yet published on Hex. Publish erli18n FIRST (push its erli18n-v${NEED_MINOR}.* tag, confirm it is live), then re-run this plugin publish."
+            exit 1
+          fi
+
+      # Dry-run / build BEFORE publishing. Run FROM the app dir so the build
+      # resolves the package's deps into a per-app lock — this is what lands the
+      # sibling `erli18n` in the plugin's published `requirements` (see the header
+      # comment). `rebar3 hex build package` writes the package tarball locally
+      # and uploads NOTHING, catching metadata/file/requirement errors without
+      # burning an immutable Hex version. In a single-app context `--app` is
+      # unnecessary.
+      #
+      # `package` (not bare `build`) on purpose: bare `rebar3 hex build` also
+      # builds the DOCS tarball, which runs EDoc and crashes on a Markdown
+      # backtick in a `%%` comment (the same upstream bug gen_docs.sh routes
+      # around) — exit 1 even though the package tarball is fine. Docs are built
+      # and published separately below via gen_docs.sh + `--doc-dir`, so the dry
+      # run validates only the package.
+      - name: Build package tarball (dry-run, no upload)
+        working-directory: apps/${{ steps.pkg.outputs.app }}
+        run: rebar3 hex build package
+
+      # Publish FROM the app dir, for the same lock-resolution reason as the build
+      # above. This is the structural fix: an `--app NAME` publish from the
+      # umbrella root would omit `erli18n` from the plugin's `requirements`
+      # (the root lock has no sibling app).
       - name: Publish package to Hex.pm
+        working-directory: apps/${{ steps.pkg.outputs.app }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: rebar3 hex publish package --repo hexpm --yes
 
-      # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh
-      # calls the ex_doc escript directly, skipping the vestigial EDoc step
-      # that crashes `rebar3 ex_doc`/`rebar3 hex publish docs` on a Markdown
-      # backtick in a `%%` comment.
+      # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh is
+      # app-parameterized: it reads apps/$APP/rebar.config for the package's own
+      # {ex_doc,...} block, resolves extras against apps/$APP/, and writes the
+      # site to apps/$APP/doc. It calls the ex_doc escript directly, skipping the
+      # vestigial EDoc step that crashes `rebar3 ex_doc` / `rebar3 hex publish
+      # docs` on a Markdown backtick in a `%%` comment. (Run from the repo root;
+      # the script takes the app name as its argument.)
       - name: Build docs (bypassing the EDoc bug)
-        run: scripts/gen_docs.sh
+        run: scripts/gen_docs.sh ${{ steps.pkg.outputs.app }}
 
       # Publish the pre-built doc/ directory directly. `--doc-dir` makes
       # rebar3_hex upload the given directory as-is instead of invoking a doc
-      # provider, so the EDoc crash is never hit here either.
+      # provider, so the EDoc crash is never hit here either. Run FROM the app dir
+      # (where gen_docs.sh wrote `doc/`); a single-app context needs no `--app`.
       - name: Publish docs to HexDocs
+        working-directory: apps/${{ steps.pkg.outputs.app }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
 
       # Create the visible GitHub Release LAST — only after Hex publishing has
       # succeeded, so a failed publish never leaves a release for a version that
-      # isn't on Hex. The body is the matching CHANGELOG.md section (the curated
-      # "what changed" summary); if that version has no section yet, fall back to
-      # GitHub's auto-generated notes so the release is never empty.
+      # isn't on Hex. The body is the matching section of THAT package's own
+      # CHANGELOG (apps/$APP/CHANGELOG.md, not the umbrella root CHANGELOG); if
+      # that version has no section yet, fall back to GitHub's auto-generated
+      # notes so the release is never empty.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ steps.pkg.outputs.tag }}
+          APP_VSN: ${{ steps.pkg.outputs.vsn }}
+          CHANGELOG: ${{ steps.pkg.outputs.changelog }}
+          APP: ${{ steps.pkg.outputs.app }}
         run: |
           set -euo pipefail
-          APP_VSN="${TAG#v}"
           NOTES_FILE="$(mktemp)"
           awk -v ver="$APP_VSN" '
             $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
             flag && /^## \[/        { flag = 0 }
             flag                    { print }
-          ' CHANGELOG.md > "$NOTES_FILE"
-          # Mark as prerelease when the tag carries a pre-release suffix (v1.2.0-rc1).
+          ' "$CHANGELOG" > "$NOTES_FILE"
+          # Mark as prerelease when the tag carries a pre-release suffix
+          # (e.g. erli18n-v1.2.0-rc1 -> version 1.2.0-rc1).
           PRERELEASE=""
-          case "$TAG" in *-*) PRERELEASE="--prerelease" ;; esac
+          case "$APP_VSN" in *-*) PRERELEASE="--prerelease" ;; esac
           if grep -q '[^[:space:]]' "$NOTES_FILE"; then
-            echo "Using CHANGELOG section for $APP_VSN as release notes."
+            echo "Using ${CHANGELOG} section for ${APP} ${APP_VSN} as release notes."
             gh release create "$TAG" --title "Release $TAG" --notes-file "$NOTES_FILE" --verify-tag $PRERELEASE
           else
-            echo "No CHANGELOG section for $APP_VSN — using auto-generated notes."
+            echo "No ${CHANGELOG} section for ${APP_VSN} — using auto-generated notes."
             gh release create "$TAG" --title "Release $TAG" --generate-notes --verify-tag $PRERELEASE
           fi

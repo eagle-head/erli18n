@@ -16,7 +16,27 @@ logs/
 # Generated API documentation (scripts/gen_docs.sh -> ex_doc; published to HexDocs)
 doc/
 
+# Per-app rebar.lock files. Each package is published from its own directory
+# (`cd apps/<app> && rebar3 hex publish ...`); that build resolves the package's
+# deps from Hex and writes a transient `apps/<app>/rebar.lock` whose pinned
+# versions reflect whatever was live on Hex at publish time. It is a publish-time
+# artifact, not source — the umbrella's own dev/test lock is the tracked root
+# `rebar.lock`. (The exemplar open-telemetry/opentelemetry-erlang likewise tracks
+# only the root lock and no per-app locks.) The leading slash keeps the root
+# `rebar.lock` tracked.
+apps/*/rebar.lock
+
 # Benchmark harness — archived on the experiment/persistent-term-benchmark branch
 # only, never on main. This ignores leftover working-tree scratch from branch
 # switches so it is never accidentally tracked here.
 bench/
+
+# The downstream consumer example surfaces the two unpublished in-repo apps via
+# rebar3's native `_checkouts/` override. Those symlinks (and the example's
+# `_build/`) are recreatable build artifacts, not source — recreate them with:
+#   ln -s ../../../apps/erli18n        examples/erli18n_demo/_checkouts/erli18n
+#   ln -s ../../../apps/rebar3_erli18n examples/erli18n_demo/_checkouts/rebar3_erli18n
+# The committed baseline `.pot`/`.po` under priv/gettext/ are NOT ignored: they
+# are the reference the `rebar3 erli18n check` gate compares against.
+examples/erli18n_demo/_checkouts/
+examples/erli18n_demo/_build/

@@ -19,10 +19,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."   # repo root
 
-APP_SRC=$(ls src/*.app.src | head -1)
-APP=$(basename "$APP_SRC" .app.src)
+# Which package to document. The umbrella publishes `erli18n` (runtime lib) and
+# `rebar3_erli18n` (plugin) as separate Hex packages, each fully self-contained
+# under apps/<app>/ with its own README/CHANGELOG/LICENSE and {ex_doc,...} block.
+# Default to the runtime lib; override with the first argument, e.g.
+#   scripts/gen_docs.sh rebar3_erli18n
+APP="${1:-erli18n}"
+APP_DIR="apps/${APP}"
+APP_SRC="${APP_DIR}/src/${APP}.app.src"
+[ -f "$APP_SRC" ] || { echo "error: no app.src for '${APP}' at ${APP_SRC}" >&2; exit 1; }
 VSN=$(sed -n 's/.*{[[:space:]]*vsn[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p' "$APP_SRC" | head -1)
-OUT="doc"
+# Write the rendered site INSIDE the package's own app dir (apps/<app>/doc), so
+# the per-app publish step finds it as a relative `doc/` after `cd apps/<app>`
+# (`rebar3 hex publish docs --doc-dir doc`). Each `apps/<app>/doc/` is gitignored
+# via the `doc/` rule and is a regenerated artifact.
+OUT="${APP_DIR}/doc"
 
 echo "==> compiling ${APP} ${VSN} (native Docs chunks land in the BEAM)"
 rebar3 compile
@@ -46,12 +57,16 @@ else
     EXDOC=("$ESCRIPT")
 fi
 
-# ex_doc config — generated from the {ex_doc,...} block in rebar.config (single
-# source of truth) by scripts/ex_doc_config.escript.
+# ex_doc config — generated from the {ex_doc,...} block in the PACKAGE's own
+# rebar.config (apps/<app>/rebar.config is the single source of truth, owned by
+# the published package) via scripts/ex_doc_config.escript. The {extras} entries
+# are bare, app-relative filenames (README.md/CHANGELOG.md/LICENSE) so the same
+# list also satisfies the Hex tarball globbing; we run ex_doc from the repo root,
+# so we pass APP_DIR as the extras-base to resolve them to the app's own copies.
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 CFG="${TMP}/docs.config"   # ex_doc requires a .config/.exs extension
-escript scripts/ex_doc_config.escript rebar.config "$CFG"
+escript scripts/ex_doc_config.escript "${APP_DIR}/rebar.config" "$CFG" "$APP_DIR"
 
 echo "==> running ex_doc (${EXDOC[*]})"
 "${EXDOC[@]}" "$APP" "$VSN" "$EBIN" \
