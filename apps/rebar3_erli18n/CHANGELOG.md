@@ -15,85 +15,7 @@ the norm.
 
 ## [Unreleased]
 
-### Pre-release review pass
-
-Before the first (`0.1.0`) publish, a correctness and documentation review of
-the plugin landed the fixes detailed in the sections below. In brief: the
-extractor no longer crashes on a surrogate-code-point binary `msgid` (it is
-skipped like any other non-literal key); `check` now detects a domain whose
-call sites have all vanished by comparing the union of freshly-extracted
-domains and on-disk `<Domain>.pot` files, so a stale template no longer passes
-silently; `merge`'s white-box-only `previous_of/1` now carries a real `-doc`
-attribute so it renders in the published docs; and the `console` output of
-`report` is now asserted byte-for-byte, with adversarial `.po` fixtures
-(invalid UTF-8, line-wrapped msgids, a 60-entry catalog) pinning the fail-soft
-and wrapping-insensitive contracts. No CLI or on-disk-layout change.
-
-### Tests
-
-- **`report`'s console output is now asserted, not just `{ok, _}`.** The four
-  `report_*` provider cases previously asserted only that `do/1` returned
-  `{ok, _}`, never inspecting the printed table — so a format regression would
-  pass silently. They now capture the real per-`(Domain, Locale)` text the
-  command prints (by swapping the test process's group leader for a capturing
-  I/O server, exercising `do/1` -> `rebar3_erli18n_host:console/2`, not a
-  private builder) and assert it byte-for-byte, including the `(no catalog)`
-  line, an explicit-`--domain` report, and a fully-translated plural counting
-  as `1/1`.
-- **Adversarial `.po` coverage for `merge`/`check`/`report`.** Beyond the lone
-  truncated-`msgstr` parse error, three committed fixtures under
-  `providers_SUITE_data/` now drive the documented fail-soft behavior: an
-  **invalid-UTF-8** body (raw `0xFF 0xFE` under a `charset=UTF-8` header) makes
-  `merge` and `report` return a structured `{error, _}` naming the file and the
-  `charset_conversion` reason — and makes `check` report drift in both the
-  default and `--names-only` modes — never a crash; a **line-wrapped** old
-  msgid (`"Sign in " "to your account"`) is decoded to the same key as the
-  unwrapped fresh `.pot` msgid, so its translation carries over with no fuzzy
-  and no obsolete (pinning the wrapping-insensitive equality contract); and a
-  **larger** 60-entry old `.po` exercises the `read_old` parse path at scale,
-  carrying the one surviving key and demoting the other 59 to `#~` obsolete.
-
-### Fixed
-
-- **`merge`'s `previous_of/1` now renders in the generated docs.** The
-  white-box-only export carried its rationale only in a plain `%%` comment,
-  which ex_doc does not read, so the function surfaced on the published doc
-  page as undocumented. Its explanation is now a real `-doc` attribute (a
-  native EEP-48 Docs chunk), stating that it is a build-tool internal exported
-  solely for white-box testing and not part of any published (Hex) API
-  surface. No behavior change.
-- **`check` now detects a domain whose call sites have all vanished.** The
-  freshness check folded only over the freshly-extracted domains, so a domain
-  whose every call site was deleted dropped out of extraction entirely and its
-  now-orphaned committed `.pot` was never compared — drift was missed and
-  `check` wrongly passed. `check` now compares the **union** of the
-  freshly-extracted domains and the domains with a committed `<Domain>.pot` on
-  disk; a domain present on disk but absent from fresh extraction is compared
-  against an empty catalog, so its stale `.pot` correctly reports drift (it
-  should be regenerated to empty or removed). The dynamic-key guarantee is
-  unaffected — a legitimately dynamic key is never extracted, so it never
-  appears in a committed `.pot` and never produces a phantom domain.
-- **Extractor no longer crashes on a surrogate-code-point binary msgid.** A
-  literal binary msgid whose integer segment is a UTF-16 surrogate
-  (`16#D800..16#DFFF`, e.g. `erli18n:gettext(<<16#D800>>)`) passed the
-  integer-segment guard but then failed to encode as `<<Int/utf8>>`, raising
-  `badarg` and aborting the whole `extract`/`check`/`merge`/`report` run on a
-  stacktrace. The integer-segment guard now excludes the surrogate range, so
-  such a segment is non-resolvable and the call site is **skipped** exactly like
-  any other non-compile-time-literal msgid (the documented dynamic-key-skip
-  contract), never crashing.
-
-### Changed
-
-- **Form walk is now O(nodes).** The abstract-form walk called `lists:flatten`
-  at every recursion level (O(extractions × ast-depth)); it now threads a single
-  accumulator and reverses once at the top. Behavior is identical.
-- **Keyword spec is a compile-time constant.** `rebar3_erli18n_keywords:spec/0`
-  built the ~48-entry `{Name, Arity} => slots()` table with `maps:merge/2` on
-  **every** call (and `lookup/2` calls it per look-up). It is now a single
-  literal map, so the compiler builds it once and every call returns the same
-  shared constant; `lookup/2` is a single `maps:find` over that constant. The
-  table contents are unchanged.
+## [0.1.0] — 2026-06-23
 
 Initial release of the `rebar3_erli18n` catalog-tooling plugin as its own Hex
 package. It depends on the runtime library `erli18n` (`{deps, [{erli18n, "~>
@@ -150,6 +72,45 @@ matching `erli18n` minor is live on Hex, which is why the publish order is
   `rebar3_gpb_plugin` → `gpb`). This dependency is also what binds an
   unpublished consumer's `_checkouts/erli18n` onto the plugin's runtime path at
   provider-run time.
+- **Form walk is now O(nodes).** The abstract-form walk called `lists:flatten`
+  at every recursion level (O(extractions × ast-depth)); it now threads a single
+  accumulator and reverses once at the top. Behavior is identical.
+- **Keyword spec is a compile-time constant.** `rebar3_erli18n_keywords:spec/0`
+  built the ~48-entry `{Name, Arity} => slots()` table with `maps:merge/2` on
+  **every** call (and `lookup/2` calls it per look-up). It is now a single
+  literal map, so the compiler builds it once and every call returns the same
+  shared constant; `lookup/2` is a single `maps:find` over that constant. The
+  table contents are unchanged.
+
+### Fixed
+
+- **`merge`'s `previous_of/1` now renders in the generated docs.** The
+  white-box-only export carried its rationale only in a plain `%%` comment,
+  which ex_doc does not read, so the function surfaced on the published doc
+  page as undocumented. Its explanation is now a real `-doc` attribute (a
+  native EEP-48 Docs chunk), stating that it is a build-tool internal exported
+  solely for white-box testing and not part of any published (Hex) API
+  surface. No behavior change.
+- **`check` now detects a domain whose call sites have all vanished.** The
+  freshness check folded only over the freshly-extracted domains, so a domain
+  whose every call site was deleted dropped out of extraction entirely and its
+  now-orphaned committed `.pot` was never compared — drift was missed and
+  `check` wrongly passed. `check` now compares the **union** of the
+  freshly-extracted domains and the domains with a committed `<Domain>.pot` on
+  disk; a domain present on disk but absent from fresh extraction is compared
+  against an empty catalog, so its stale `.pot` correctly reports drift (it
+  should be regenerated to empty or removed). The dynamic-key guarantee is
+  unaffected — a legitimately dynamic key is never extracted, so it never
+  appears in a committed `.pot` and never produces a phantom domain.
+- **Extractor no longer crashes on a surrogate-code-point binary msgid.** A
+  literal binary msgid whose integer segment is a UTF-16 surrogate
+  (`16#D800..16#DFFF`, e.g. `erli18n:gettext(<<16#D800>>)`) passed the
+  integer-segment guard but then failed to encode as `<<Int/utf8>>`, raising
+  `badarg` and aborting the whole `extract`/`check`/`merge`/`report` run on a
+  stacktrace. The integer-segment guard now excludes the surrogate range, so
+  such a segment is non-resolvable and the call site is **skipped** exactly like
+  any other non-compile-time-literal msgid (the documented dynamic-key-skip
+  contract), never crashing.
 
 ### Removed
 
@@ -162,6 +123,30 @@ matching `erli18n` minor is live on Hex, which is why the publish order is
   `{xref_ignores, [...]}` in `rebar.config`, confined to the eight host
   `{M, F, A}` edges — every other module stays under active
   `undefined_function_calls` checking.
+
+### Tests
+
+- **`report`'s console output is now asserted, not just `{ok, _}`.** The four
+  `report_*` provider cases previously asserted only that `do/1` returned
+  `{ok, _}`, never inspecting the printed table — so a format regression would
+  pass silently. They now capture the real per-`(Domain, Locale)` text the
+  command prints (by swapping the test process's group leader for a capturing
+  I/O server, exercising `do/1` -> `rebar3_erli18n_host:console/2`, not a
+  private builder) and assert it byte-for-byte, including the `(no catalog)`
+  line, an explicit-`--domain` report, and a fully-translated plural counting
+  as `1/1`.
+- **Adversarial `.po` coverage for `merge`/`check`/`report`.** Beyond the lone
+  truncated-`msgstr` parse error, three committed fixtures under
+  `providers_SUITE_data/` now drive the documented fail-soft behavior: an
+  **invalid-UTF-8** body (raw `0xFF 0xFE` under a `charset=UTF-8` header) makes
+  `merge` and `report` return a structured `{error, _}` naming the file and the
+  `charset_conversion` reason — and makes `check` report drift in both the
+  default and `--names-only` modes — never a crash; a **line-wrapped** old
+  msgid (`"Sign in " "to your account"`) is decoded to the same key as the
+  unwrapped fresh `.pot` msgid, so its translation carries over with no fuzzy
+  and no obsolete (pinning the wrapping-insensitive equality contract); and a
+  **larger** 60-entry old `.po` exercises the `read_old` parse path at scale,
+  carrying the one surviving key and demoting the other 59 to `#~` obsolete.
 
 <!--
 Per-package release links. The umbrella publishes each package from its own
