@@ -36,6 +36,20 @@
 %% Generators
 -export([msgstr_bytes/0, bindings_map/0, binding_value/0, name_atom/0]).
 
+%% PropEr `?FORALL`/`?LET` generators are statically typed as `term()` by
+%% eqwalizer, so every function that binds a generated value to a documented
+%% shape (a `binary()` msgstr, a `#{atom() => term()}` bindings map, a token
+%% byte, …) carries a static `-eqwalizer({nowarn_function, F/A}).` annotation —
+%% the same zero-runtime-dep pattern used in the runtime modules
+%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
+%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, prop_format_is_total/0}).
+-eqwalizer({nowarn_function, prop_double_percent_roundtrip/0}).
+-eqwalizer({nowarn_function, prop_malformed_reference_is_total/0}).
+-eqwalizer({nowarn_function, msgstr_bytes/0}).
+-eqwalizer({nowarn_function, msgstr_token/0}).
+-eqwalizer({nowarn_function, bindings_map/0}).
+
 %% =========================
 %% Properties
 %% =========================
@@ -53,11 +67,13 @@ prop_format_is_total() ->
         {msgstr_bytes(), bindings_map()},
         begin
             %% PropEr generators are statically typed as `term()` by
-            %% eqwalizer; cast at the property boundary to the documented
-            %% generator contracts (`msgstr_bytes/0` yields a binary,
-            %% `bindings_map/0` yields a `#{atom() => term()}`).
-            Msgstr = eqwalizer:dynamic_cast(MsgstrGen),
-            Bindings = eqwalizer:dynamic_cast(BindingsGen),
+            %% eqwalizer; this property carries a static
+            %% `-eqwalizer({nowarn_function, ...})` (top of module) so the
+            %% generator values are used at their documented contracts
+            %% (`msgstr_bytes/0` yields a binary, `bindings_map/0` yields a
+            %% `#{atom() => term()}`).
+            Msgstr = MsgstrGen,
+            Bindings = BindingsGen,
             try erli18n_interp:format(Msgstr, Bindings) of
                 Out when is_binary(Out) ->
                     true;
@@ -90,7 +106,7 @@ prop_double_percent_roundtrip() ->
         SegmentsGen,
         list(escape_segment()),
         begin
-            Segments = eqwalizer:dynamic_cast(SegmentsGen),
+            Segments = SegmentsGen,
             Input = iolist_to_binary([seg_input(S) || S <- Segments]),
             Expected = iolist_to_binary([seg_expected(S) || S <- Segments]),
             try erli18n_interp:format(Input, #{}) of
@@ -124,8 +140,8 @@ prop_malformed_reference_is_total() ->
         {TailGen, BindingsGen},
         {msgstr_bytes(), bindings_map()},
         begin
-            Tail = eqwalizer:dynamic_cast(TailGen),
-            Bindings = eqwalizer:dynamic_cast(BindingsGen),
+            Tail = TailGen,
+            Bindings = BindingsGen,
             Input = <<"%{", Tail/binary>>,
             LenientOk =
                 try erli18n_interp:format(Input, Bindings) of
@@ -166,7 +182,7 @@ msgstr_bytes() ->
     ?LET(
         Tokens,
         list(msgstr_token()),
-        iolist_to_binary(eqwalizer:dynamic_cast(Tokens))
+        iolist_to_binary(Tokens)
     ).
 
 %% Each token is already a binary chunk: single metacharacters, raw bytes
@@ -178,9 +194,9 @@ msgstr_token() ->
         {6, <<$%>>},
         {4, <<${>>},
         {3, <<$}>>},
-        {3, ?LET(C, oneof([$a, $b, $_, $0, $9, $z, $A, $Z]), <<(eqwalizer:dynamic_cast(C))>>)},
-        {2, ?LET(Byte, range(0, 255), <<(eqwalizer:dynamic_cast(Byte))>>)},
-        {1, ?LET(Cp, range(16#80, 16#10FFFF), utf8_codepoint(eqwalizer:dynamic_cast(Cp)))}
+        {3, ?LET(C, oneof([$a, $b, $_, $0, $9, $z, $A, $Z]), <<C>>)},
+        {2, ?LET(Byte, range(0, 255), <<Byte>>)},
+        {1, ?LET(Cp, range(16#80, 16#10FFFF), utf8_codepoint(Cp))}
     ]).
 
 %% Encode a code point as UTF-8, skipping the surrogate range (which is
@@ -198,7 +214,7 @@ bindings_map() ->
     ?LET(
         Pairs,
         list({name_atom(), binding_value()}),
-        maps:from_list(eqwalizer:dynamic_cast(Pairs))
+        maps:from_list(Pairs)
     ).
 
 %% A pool of already-interned atoms usable as placeholder names. These are

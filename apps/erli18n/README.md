@@ -1,0 +1,278 @@
+# erli18n
+
+[![Hex.pm](https://img.shields.io/hexpm/v/erli18n.svg)](https://hex.pm/packages/erli18n)
+[![HexDocs](https://img.shields.io/badge/hex-docs-8e44ad.svg)](https://hexdocs.pm/erli18n/)
+[![CI](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml/badge.svg)](https://github.com/eagle-head/erli18n/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![OTP 27+](https://img.shields.io/badge/OTP-27%2B-a90533)](https://www.erlang.org/downloads)
+
+Modern, GNU `gettext`–compatible internationalization (i18n) for Erlang/OTP — in pure Erlang.
+
+> ### Why erli18n?
+>
+> It's first-class `gettext` i18n for Erlang/OTP, **natively** — no polyglot build, no routing through Elixir, no stalled dependency.
+>
+> - 📦 **Drop-in `.po` / `.pot`** — load the exact files your translators already produce in Poedit, Crowdin, Transifex, Weblate, or `xgettext`.
+> - 🌍 **Real CLDR pluralization** — a true `Plural-Forms` evaluator, with CLDR rules inlined for **49 locales**.
+> - ⚡ **Copy-free lookups** — reads run straight from `persistent_term` in your own process, with no copy onto the caller heap and no lock; only writes go through a `gen_server`. No bottleneck on the hot path.
+
+## Quickstart
+
+Add the dependency to `rebar.config`:
+
+```erlang
+{deps, [{erli18n, "~> 0.5"}]}.
+```
+
+Then load a catalog and translate:
+
+```erlang
+application:ensure_all_started(erli18n).
+
+%% Load a `.po` catalog for a (domain, locale). Parse -> compile plural rule ->
+%% validate against CLDR -> insert: one atomic step. Returns {ok, NewlyLoaded}
+%% (or {ok, already} if it was already loaded).
+{ok, _Loaded} = erli18n_server:ensure_loaded(my_domain, <<"pt_BR">>,
+    <<"priv/locale/pt_BR/LC_MESSAGES/my_domain.po">>).
+
+%% Singular.
+<<"Olá, mundo">> = erli18n:gettext(my_domain, <<"Hello, world">>, <<"pt_BR">>).
+
+%% Plural. ngettext returns the correct plural FORM for N (it selects the
+%% form; the `f` family below splices the number in — see "Interpolation").
+<<"arquivo">>  = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, 1,  <<"pt_BR">>).
+<<"arquivos">> = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, 42, <<"pt_BR">>).
+
+%% Contextual. The same source word, disambiguated by a msgctxt.
+<<"Maio">> = erli18n:pgettext(my_domain, <<"month">>, <<"May">>, <<"pt_BR">>).
+<<"pode">> = erli18n:pgettext(my_domain, <<"verb">>,  <<"May">>, <<"pt_BR">>).
+
+%% Interpolating. The `f`-suffix family resolves the translation, then
+%% splices named `%{var}` placeholders from a Bindings map (see below).
+<<"3 arquivos">> = erli18n:ngettextf(my_domain, <<"%{count} file">>,
+    <<"%{count} files">>, 3, <<"pt_BR">>, #{}).   %% count => 3 auto-bound
+```
+
+That is the whole surface: `gettext` (singular), `ngettext` (plural), `pgettext` (contextual), and `npgettext` (contextual + plural), each with `d` / `dc` domain-explicit variants — the full GNU gettext C-macro family, as Erlang functions. Each also has an interpolating `f`-suffix sibling (`gettextf`, `ngettextf`, `pgettextf`, `npgettextf`) that splices named `%{var}` values into the resolved string.
+
+## Common patterns
+
+**Set the locale once per process** (e.g. one web request) — then every lookup in that process uses it, with no locale argument to thread around. App-wide, `set_default_locale/1` does the same for processes that never call `setlocale/1`:
+
+```erlang
+erli18n:setlocale(<<"pt_BR">>),                                  %% this process
+%% erli18n:set_default_locale(<<"pt_BR">>),                      %% (or: app-wide default)
+
+<<"Olá, mundo">> = erli18n:gettext(my_domain, <<"Hello, world">>),
+<<"arquivos">>   = erli18n:ngettext(my_domain, <<"file">>, <<"files">>, 42).
+```
+
+**Set a default domain** so the shortest forms work without naming it each time:
+
+```erlang
+erli18n:textdomain(my_domain),
+<<"Olá, mundo">> = erli18n:gettext(<<"Hello, world">>).   %% default domain + resolved locale
+```
+
+**Format a pluralized count** — use the `f`-suffix `ngettextf`: it selects the plural form *and* splices the number in. The count is auto-bound as `%{count}`, so the translator controls where the number lands in each language:
+
+```erlang
+%% Source: msgid "%{count} file" / msgid_plural "%{count} files"
+%% pt_BR:  msgstr[0] "%{count} arquivo" / msgstr[1] "%{count} arquivos"
+<<"3 arquivos">> = erli18n:ngettextf(my_domain,
+    <<"%{count} file">>, <<"%{count} files">>, 3, <<"pt_BR">>, #{}).
+```
+
+**Context + plural together** (`npgettext` — domain, context, singular, plural, N, locale):
+
+```erlang
+<<"comentários">> = erli18n:npgettext(my_domain, <<"ui">>,
+    <<"comment">>, <<"comments">>, 5, <<"pt_BR">>).
+```
+
+**Load several catalogs at startup** in one batch:
+
+```erlang
+%% Each entry is {Domain, Locale, PoPath, Opts}; the result is one
+%% {Domain, Locale, {ok, NewlyLoaded} | {ok, already} | {error, _}} per entry.
+Results = erli18n_server:ensure_loaded_many([
+    {my_domain, <<"pt_BR">>, <<"priv/locale/pt_BR/LC_MESSAGES/my_domain.po">>, #{}},
+    {my_domain, <<"en_US">>, <<"priv/locale/en_US/LC_MESSAGES/my_domain.po">>, #{}}
+]).
+```
+
+**Observe at runtime with telemetry** (optional) — for example, get notified whenever a lookup falls through to the source string:
+
+```erlang
+telemetry:attach(<<"erli18n-misses">>, [erli18n, lookup, miss],
+    fun(_Event, _Measurements, Metadata, _Config) ->
+        logger:info("i18n miss: ~p", [Metadata])
+    end, undefined).
+```
+
+## Interpolation
+
+Every lookup family has an interpolating `f`-suffix sibling — `gettextf`, `ngettextf`, `pgettextf`, `npgettextf` (plus the `d` / `dc` aliases) — that takes a trailing `Bindings :: map()`. Each `f` function resolves the translation exactly like its non-`f` sibling, then substitutes **named `%{var}` placeholders** in the result:
+
+```erlang
+erli18n:setlocale(<<"pt_BR">>),
+
+%% Source msgid "Hello, %{name}!" with pt_BR msgstr "Olá, %{name}!"
+<<"Olá, Ada!">> = erli18n:gettextf(my_domain, <<"Hello, %{name}!">>,
+    #{name => <<"Ada">>}).
+```
+
+Named placeholders (rather than positional `~s`) decouple the wording from argument order: a translator can move `%{name}` anywhere in the sentence — or repeat it — and the binding still resolves by name. Binding keys are atoms; values may be a binary, an iolist/string, an integer, a float, or an atom, and are coerced to UTF-8 text. **Plural members auto-bind `count => N`**, so `%{count}` is always available without passing it yourself (a caller-supplied `count` wins):
+
+```erlang
+%% pt_BR msgstr[1] "%{count} arquivos" — count auto-bound to 42
+<<"42 arquivos">> = erli18n:ngettextf(my_domain,
+    <<"%{count} file">>, <<"%{count} files">>, 42, <<"pt_BR">>, #{}).
+```
+
+**Escaping.** A literal percent is `%%`; to emit a literal `%{name}` un-substituted, write `%%{name}` (the `%%` collapses to `%`, leaving `{name}` untouched):
+
+```erlang
+<<"100% sure">>   = erli18n:gettextf(<<"100%% sure">>, #{}).
+<<"use %{name}">> = erli18n:gettextf(<<"use %%{name}">>, #{name => <<"X">>}).
+```
+
+**Missing bindings — `lenient` vs `strict`.** The `f` functions on `erli18n` are **lenient**: an unbound `%{name}` is left in place literally and nothing crashes. Interpolation is total and fail-soft — for any input and any bindings it returns a binary and never raises. When you want an unbound placeholder to be a hard error instead, call `erli18n_interp:format/3` directly with the `strict` policy:
+
+```erlang
+%% Lenient (the f-family default): unknown placeholder stays literal.
+<<"Hi %{who}">> = erli18n:gettextf(<<"Hi %{who}">>, #{}).
+
+%% Strict: opt in via erli18n_interp:format/3 — raises on a missing binding.
+erli18n_interp:format(<<"Hi %{who}">>, #{}, #{on_missing => strict}).
+%% ** exception error: {erli18n_interp, {missing_binding, who}}
+```
+
+> ### Bidi / RTL caveat
+>
+> Interpolation does **not** auto-insert Unicode bidi isolation marks (U+2066–U+2069) around spliced values. Placing an RTL value (Arabic, Hebrew) into an LTR sentence — or the reverse — can reorder neighboring punctuation under the Unicode Bidirectional Algorithm. If you mix directions, isolate the values yourself until a future version offers opt-in isolation.
+
+## Locale negotiation & fallback (opt-in)
+
+Catalogs are keyed by exact binary, so by default a `pt_BR` request only matches a `pt_BR` catalog. Phase 2 adds two **opt-in** pieces that close the common gaps — without changing the default exact-match behavior or touching the copy-free hot path.
+
+**1. Request-time negotiation** (`erli18n_negotiate`, exposed on the facade). Pick the best locale a client supports from those you have loaded. `parse_accept_language/1` turns an HTTP header into a priority-ordered list; `negotiate/2` resolves it (with BCP-47 canonicalization and base-language fallback) against your available set, always returning a usable locale:
+
+```erlang
+Available = [<<"en">>, <<"pt">>, <<"de">>],
+
+%% Hyphenated, mixed-case, and legacy tags all canonicalize to match.
+{ok, <<"pt">>} = erli18n:negotiate([<<"pt-BR">>], Available),
+
+%% Straight from an Accept-Language header (q-values honored, q=0 dropped).
+{ok, <<"de">>} = erli18n:negotiate(
+    erli18n:parse_accept_language(<<"fr-CH, de;q=0.9, en;q=0.5">>),
+    Available),
+
+%% One-off tag canonicalization to the catalog-key shape.
+<<"pt_BR">> = erli18n:canonicalize_locale(<<"PT-br.UTF-8">>).
+```
+
+A typical web handler negotiates once per request and calls `setlocale/1`:
+
+```erlang
+Prefs = erli18n:parse_accept_language(AcceptLanguageHeader),
+{ok, Locale} = erli18n:negotiate(Prefs, my_supported_locales()),
+erli18n:setlocale(Locale).
+```
+
+**2. Lookup-time fallback chain** (`erli18n.locale_fallback`, default `off`). When enabled, a lookup that misses the exact locale walks a canonicalization-aware BCP-47 chain before falling back to the `msgid`, so a `pt_BR` user reads a loaded `pt` catalog:
+
+```erlang
+%% Only a "pt" catalog is loaded.
+<<"Hello">> = erli18n:gettext(my_domain, <<"Hello">>, <<"pt_BR">>),  %% off: raw msgid
+
+erli18n:set_locale_fallback(base_language),
+<<"Olá"/utf8>> = erli18n:gettext(my_domain, <<"Hello">>, <<"pt_BR">>).  %% pt_BR -> pt
+```
+
+`locale_fallback` accepts `off` (default), `base_language` (`pt_BR` → `pt` → `default_locale`), or `{explicit, Map}` where `Map :: #{locale() => [locale()]}` overrides specific locales (unlisted ones fall through to `base_language`). The chain runs **only on a miss** and **only** when enabled, so an exact hit stays a single copy-free `persistent_term:get` with zero added cost. Canonicalization covers separator (`pt-BR`/`pt_BR`) and case normalization plus a closed legacy-alias set (`iw`→`he`, `in`→`id`, `ji`→`yi`, `jw`→`jv`, `mo`→`ro`). Script⇄region *Likely Subtags* inference (`zh_Hans` ⇄ `zh_CN`) is an explicit non-goal — load catalogs under the keys your clients send, or use an `{explicit, Map}`.
+
+## Core concepts
+
+A few things worth knowing before you reach for the API:
+
+- **Locale is per-process.** `erli18n:setlocale(<<"pt_BR">>)` sets the locale for the *calling* process (stored in its process dictionary); `which_locale/0` reads it back. It is **not** inherited by processes you `spawn`. When a process hasn't set one, lookups fall back to the application-wide default. Passing the locale explicitly always wins.
+- **Catalogs are keyed by domain + locale.** A *domain* is a gettext text domain (e.g. `my_domain`) — your way of grouping translations. You load each `(domain, locale)` catalog once; lookups then target a domain explicitly or use the default.
+- **The `.po` header drives pluralization.** Each catalog's `Plural-Forms` header is the runtime source of truth for plural selection. CLDR rules (inlined for **49 locales**) are consulted only at load time — to emit a telemetry warning when a header diverges from CLDR, never to override it.
+- **Misses degrade gracefully.** A lookup with no catalog, no entry, or an empty translation returns the original `msgid` (or `msgid_plural`), so your UI never shows a blank. And a crash of the catalog server does **not** wipe loaded translations: catalogs live in `persistent_term`, which is owned by the runtime (not by the server process), so they survive a server crash untouched — no dedicated table owner or heir is needed.
+
+## Why erli18n
+
+Most Erlang projects today either reach for the venerable but [largely-stalled `gettexter`](https://github.com/seriyps/gettexter), or route strings through Elixir's `gettext` (which forces a polyglot build). `erli18n` is for projects that want **first-class i18n in pure Erlang/OTP** without giving up compatibility with the standard `gettext` translation tooling.
+
+- **Drop-in `.po` / `.pot` compatibility** — a hand-written parser that handles real-world catalogs: contexts, plurals, fuzzy entries, charsets, BOMs, and obsolete entries. Works with Poedit, Crowdin, Transifex, Weblate, and `msgfmt` out of the box. (The exact `.po`-semantics decisions are documented in [`CHANGELOG.md`](CHANGELOG.md).) The `erli18n_po` module exposes this read/serialize surface as public API — `parse/1,2`, `parse_file/1,2`, `dump/1`, and `escape_string/1` (the five GNU gettext PO escapes — backslash, double-quote, newline, tab, carriage return — applied exactly as `dump/1` does). `escape_string/1` is published so the separate [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) plugin can serialize the PO metadata it owns byte-identically to `dump/1` across the `{deps, [erli18n]}` boundary, instead of vendoring a duplicate escaper.
+- **CLDR-backed pluralization** — a real evaluator for the `Plural-Forms` C-expression, with CLDR plural rules inlined for **49 locales**.
+- **The full gettext API** — `gettext` / `ngettext` / `pgettext` / `npgettext`, plus the `d` / `dc` domain-explicit variants, and an interpolating `f`-suffix family (`gettextf`, …) for named `%{var}` substitution.
+- **Optional, first-class observability** — **8** [`telemetry`](https://github.com/beam-telemetry/telemetry) events (catalog load/reload/unload spans, lookup misses, fuzzy-entry skips, locale fallback, plural divergence, rate-limited memory warnings). `telemetry` is an *optional* dependency: events fire only when your app ships it.
+- **A copy-free hot path** — `lookup_*` reads run directly from `persistent_term` in the *calling* process, with no copy onto the caller heap and no lock; only writes (loading and reloading catalogs) go through the owning `gen_server`. No process bottleneck on the read side. A reload or unload defers a one-time, node-wide `persistent_term` literal-area GC, paid once per write and negligible for the load-once workload.
+- **Heavily tested** — Common Test suites, PropEr property-based tests, fuzzing, and a parity suite that checks output byte-for-byte against GNU `msgfmt` as a ground-truth oracle. 100% behavioral coverage.
+
+String **extraction** is handled by the companion rebar3 plugin, [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) — an Erlang-native extractor that walks your source's abstract forms and recognizes the full facade family by name and arity, producing `.pot` templates (the `mix gettext.extract` experience for Erlang). It is shipped as a **separate** Hex package that depends on this library (`{deps, [{erli18n, "~> 0.5"}]}`); consumers opt in with `{plugins, [rebar3_erli18n]}` and gain `rebar3 erli18n {extract,merge,check,report}`. Only **compile-time-literal** msgids are extracted (runtime-computed keys still translate, they just aren't discovered statically) — the same model and the same caveat as Elixir's Gettext. Compile-time key checking is intentionally out of scope; runtime lookup plus the `check` freshness gate is the mainstream pattern. (The plugin is published as its own Hex package, after this library; see [`apps/rebar3_erli18n/README.md`](https://github.com/eagle-head/erli18n/blob/main/apps/rebar3_erli18n/README.md).)
+
+## Installation
+
+```erlang
+{deps, [
+    {erli18n, "~> 0.5"}
+]}.
+```
+
+For [`telemetry`](https://github.com/beam-telemetry/telemetry) observability (optional — `erli18n` runs fine without it), add it too:
+
+```erlang
+{deps, [
+    {erli18n, "~> 0.5"},
+    {telemetry, "~> 1.3"}
+]}.
+```
+
+## Compatibility
+
+|                      | OTP 27 (minimum) | OTP 28 |
+| -------------------- | :--------------: | :----: |
+| Tier-1 (CI)          |        ✅        |   ✅   |
+
+OTP 27 is the floor because the public modules use the native `-doc` / `-moduledoc` documentation attributes (EEP-59), which only compile on OTP 27+; on OTP 25.3 / 26 the compiler rejects them with `attribute doc after function definitions`. CI exercises OTP 27 and 28 on every push.
+
+## Status
+
+**Initial development (`0.5.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.5.0` → `0.6.0`); patch bumps (`0.5.0` → `0.5.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Documentation
+
+- **API reference** — published on [HexDocs](https://hexdocs.pm/erli18n/), generated from the native `-doc` / `-moduledoc` attributes (OTP 27+ documentation). Every public module and function is documented there.
+- **Changelog & design decisions** — [`CHANGELOG.md`](CHANGELOG.md) records each release, the versioning policy, and the `.po`-semantics and pluralization decisions behind the implementation.
+- **Examples** — the `.po` fixtures under [`apps/erli18n/test/`](https://github.com/eagle-head/erli18n/tree/main/apps/erli18n/test) cover plural forms, contexts, fuzzy entries, encodings, and edge cases — a practical reference for what `erli18n` accepts. A runnable downstream consumer lives under [`examples/erli18n_demo/`](https://github.com/eagle-head/erli18n/tree/main/examples/erli18n_demo), with real `gettext` call sites and committed catalogs.
+
+## Development
+
+```sh
+git clone git@github.com:eagle-head/erli18n.git
+cd erli18n
+rebar3 compile
+bin/quality-gate.sh --fast    # ~30s:  compile + xref + erlfmt + elvis + hank + elp lint
+bin/quality-gate.sh --full    # ~5min: + dialyzer + eqwalize-all + Common Test (+ coverage)
+```
+
+See [`CONTRIBUTING.md`](https://github.com/eagle-head/erli18n/blob/main/CONTRIBUTING.md) for the full setup: toolchain pinning with `mise`, git hooks, local CI emulation with `act`, and the contribution workflow.
+
+## Security
+
+To report a vulnerability, see [`SECURITY.md`](https://github.com/eagle-head/erli18n/blob/main/SECURITY.md) — please do **not** open a public GitHub issue for security reports.
+
+## License
+
+[Apache License 2.0](LICENSE) (SPDX: `Apache-2.0`).
+
+## References
+
+- [GNU gettext manual](https://www.gnu.org/software/gettext/manual/gettext.html) — `.po` format and runtime semantics.
+- [Unicode CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules) — pluralization data source.
+- [`telemetry`](https://github.com/beam-telemetry/telemetry) — the observability framework.
+- [`gettexter`](https://github.com/seriyps/gettexter) — historical Erlang gettext library whose API surface `erli18n` mirrors for easy migration.

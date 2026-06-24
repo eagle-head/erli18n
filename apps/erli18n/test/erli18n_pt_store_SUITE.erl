@@ -28,6 +28,15 @@
 -define(D, erli18n_pt_test).
 -define(L, <<"fr">>).
 
+%% `guards_reject_bad_args/1` deliberately passes WRONG-typed arguments (a
+%% binary where a domain atom is required, an atom where a locale binary is
+%% required) to assert the store's guards reject them with `function_clause`.
+%% eqwalizer cannot see that this is intentional, so re-announce the boundary
+%% with a static annotation — the same zero-runtime-dep pattern used in the
+%% runtime modules `erli18n_server`/`erli18n_pt_store`, replacing the former
+%% runtime `eqwalizer` cast-helper call (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, guards_reject_bad_args/1}).
+
 all() ->
     [
         singular_hit,
@@ -319,8 +328,8 @@ erase_all_clears_namespace(_Config) ->
 guards_reject_bad_args(_Config) ->
     %% The read/write primitives keep loud guards: a contract violation is a
     %% `function_clause` crash, never a silent wrong answer.
-    BadDomain = eqwalizer:dynamic_cast(<<"not_an_atom">>),
-    BadLocale = eqwalizer:dynamic_cast(fr),
+    BadDomain = <<"not_an_atom">>,
+    BadLocale = fr,
     ?assertError(
         function_clause, erli18n_pt_store:get_singular(BadDomain, ?L, undefined, <<"x">>)
     ),

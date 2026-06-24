@@ -34,6 +34,18 @@
 
 -define(FUZZ_DOMAIN, fuzz_test_dom).
 
+%% PropEr `?FORALL` generators are statically typed as `term()` by eqwalizer,
+%% so each property body that binds a generated value to a documented shape
+%% (`binary()`, a percentage `integer()`, …) carries a static
+%% `-eqwalizer({nowarn_function, F/0}).` annotation — the same zero-runtime-dep
+%% pattern used in the runtime modules `erli18n_server`/`erli18n_pt_store`. This
+%% replaces the former runtime `eqwalizer` cast-helper calls (and the
+%% `eqwalizer_support` dep). Only the properties that actually narrow a
+%% generator value are listed.
+-eqwalizer({nowarn_function, prop_random_bytes/0}).
+-eqwalizer({nowarn_function, prop_truncated_po/0}).
+-eqwalizer({nowarn_function, prop_end_to_end_no_supervisor_restart/0}).
+
 %% F6 `giant_msgid` size. 400KB is well past the point where the old
 %% Θ(n²) right-append fold cost multiple seconds per parse but trivial
 %% (low single-digit ms) for the linear `iolist_to_binary/1` path.
@@ -59,9 +71,10 @@ prop_random_bytes() ->
         binary(),
         begin
             %% PropEr generators are statically typed as `term()` by
-            %% eqwalizer; cast at the property boundary to the documented
-            %% shape (`binary()` here, the generator's contract).
-            Bytes = eqwalizer:dynamic_cast(BytesGen),
+            %% eqwalizer; this property carries a static
+            %% `-eqwalizer({nowarn_function, ...})` annotation (top of module)
+            %% so `BytesGen` is used at its documented `binary()` shape.
+            Bytes = BytesGen,
             no_crash(fun() -> erli18n_po:parse(Bytes) end)
         end
     ).
@@ -94,9 +107,10 @@ prop_truncated_po() ->
         {PoGen, TruncPctGen},
         {valid_po_text(), choose(0, 100)},
         begin
-            %% Generator-boundary cast — see `prop_random_bytes/0`.
-            Po = eqwalizer:dynamic_cast(PoGen),
-            TruncPct = eqwalizer:dynamic_cast(TruncPctGen),
+            %% Generator boundary — see `prop_random_bytes/0`; this property
+            %% carries its own static `-eqwalizer({nowarn_function, ...})`.
+            Po = PoGen,
+            TruncPct = TruncPctGen,
             Sz = byte_size(Po),
             KeepBytes =
                 case Sz of
@@ -307,8 +321,9 @@ prop_end_to_end_no_supervisor_restart() ->
         BytesGen,
         binary(),
         begin
-            %% Generator-boundary cast — see `prop_random_bytes/0`.
-            Bytes = eqwalizer:dynamic_cast(BytesGen),
+            %% Generator boundary — see `prop_random_bytes/0`; this property
+            %% carries its own static `-eqwalizer({nowarn_function, ...})`.
+            Bytes = BytesGen,
             ok = ensure_app_started(),
             ServerPidBefore = whereis(erli18n_server),
             BeforeChildren = active_child_count(),

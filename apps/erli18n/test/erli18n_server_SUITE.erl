@@ -3,6 +3,15 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
+%% `read_api_guards_reject_bad_args/1` deliberately passes WRONG-typed arguments
+%% to exercise the public read API's runtime guards (a contract break must be a
+%% loud `function_clause`, never a silent miss). eqwalizer would correctly
+%% reject those ill-typed literals statically, so re-announce the boundary with
+%% a static annotation — the same zero-runtime-dep pattern used in the runtime
+%% modules `erli18n_server`/`erli18n_pt_store`, replacing the former runtime
+%% `eqwalizer` cast-helper call (and the `eqwalizer_support` dep).
+-eqwalizer({nowarn_function, read_api_guards_reject_bad_args/1}).
+
 -export([
     all/0,
     init_per_suite/1,
@@ -649,14 +658,14 @@ lookup_plural_5_not_exported(_Config) ->
 read_api_guards_reject_bad_args(_Config) ->
     %% The arguments below intentionally violate the published spec to
     %% exercise the runtime guards. eqwalizer would (correctly) reject them
-    %% statically, so we cast each ill-typed value at the boundary — the
-    %% same pattern used by `ensure_loaded_accepts_binary_path/1`. At
-    %% runtime `eqwalizer:dynamic_cast/1` is the identity, so the guard is
-    %% still hit with the original bad value.
-    BadDomain = eqwalizer:dynamic_cast(~"not_an_atom"),
-    BadLocale = eqwalizer:dynamic_cast(fr),
-    BadContext = eqwalizer:dynamic_cast(menu),
-    BadMsgid = eqwalizer:dynamic_cast(hello),
+    %% statically, so the whole function carries a static
+    %% `-eqwalizer({nowarn_function, ...})` annotation (declared at the top of
+    %% this module) instead of a runtime `eqwalizer` cast-helper call — the
+    %% original bad value reaches the guard unchanged.
+    BadDomain = ~"not_an_atom",
+    BadLocale = fr,
+    BadContext = menu,
+    BadMsgid = hello,
     %% Non-atom domain.
     ?assertError(
         function_clause,

@@ -1,6 +1,6 @@
 {application, erli18n, [
     {description, "Modern internationalization (i18n) library for Erlang, GNU gettext compatible"},
-    {vsn, "0.4.0"},
+    {vsn, "0.5.0"},
     {registered, [erli18n_sup, erli18n_server]},
     {mod, {erli18n_app, []}},
     {applications, [
@@ -49,7 +49,7 @@
     {licenses, ["Apache-2.0"]},
     {links, [
         {"GitHub", "https://github.com/eagle-head/erli18n"},
-        {"Changelog", "https://github.com/eagle-head/erli18n/blob/main/CHANGELOG.md"},
+        {"Changelog", "https://github.com/eagle-head/erli18n/blob/main/apps/erli18n/CHANGELOG.md"},
         {"Issues", "https://github.com/eagle-head/erli18n/issues"}
     ]}
 ]}.
