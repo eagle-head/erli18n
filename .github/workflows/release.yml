@@ -1,5 +1,9 @@
 name: Release
 
+# Title each run with the prefixed tag being published (e.g. "Release ·
+# erli18n-v0.5.0") instead of a bare "Release". (GitHub Actions "run-name".)
+run-name: Release · ${{ inputs.tag || github.ref_name }}
+
 # Tag-triggered publish to Hex.pm for the erli18n umbrella, which ships TWO
 # packages from this one repo:
 #
