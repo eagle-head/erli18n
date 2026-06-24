@@ -40,11 +40,13 @@ rebar3 do ct, cover    # full suite, ~30s on a recent laptop
 
 | Mode | Steps | Wall time |
 |---|---|---|
-| `--fast` (or `--pre-commit`) | compile, xref, erlfmt --check, elvis, hank, elp lint | ~30s |
-| `--full` (or `--pre-push`, default) | + dialyzer, eqwalize-all, ct --cover | ~5min |
+| `--fast` (or `--pre-commit`) | compile, xref, erlfmt --check, elvis, hank, elp lint, the translation-freshness check | ~30s |
+| `--full` (or `--pre-push`, default) | + `require_elp`, dialyzer, eqwalize-all, ct --cover, the translation-freshness check | ~5min |
 | `--fix` | erlfmt --write (auto-format only; runs no checks) | ~5s |
 
-`elp lint` and `eqwalize-all` are gracefully skipped when `elp` is not on `PATH` or available via VS Code / Cursor extension. Real CI (GitHub-hosted) does not preinstall ELP, so those steps run only locally — see the local-runner section below for end-to-end parity.
+`elp` is **required** for `--full`: a dedicated `require_elp` step records a hard FAIL (non-zero gate exit) when `elp` is not found, and the `elp lint` and `eqwalize-all` steps run strictly (a missing `elp` is a FAIL there too). This closes the "SKIP-passes" hole — a machine without `elp` can no longer pass the strict gate by silently skipping the type/diagnostic checks. Only the cheap `--fast` lane keeps the soft-skip (with an install hint) so a fast pre-commit pass is still possible without `elp`. Real CI (GitHub-hosted) does not preinstall ELP, so the strict `--full` gate is a local pre-push responsibility — see the local-runner section below for end-to-end parity.
+
+The **translation-freshness check** runs `rebar3 erli18n check` from inside `examples/erli18n_demo/` (the downstream consumer), not in the library repo itself. The library is the facade and never calls its own `gettext`, so extraction there finds zero call sites and the check would protect nothing; the example has real `erli18n:gettext`/`ngettext`/`pgettext` call sites and committed `.pot`/`.po` baselines, so the check FAILS on drift and PASSES in sync — a genuinely non-vacuous gate. The gate's `ensure_demo_checkouts` step recreates the example's `_checkouts/erli18n` and `_checkouts/rebar3_erli18n` links (git-ignored, recreatable) before running it.
 
 ### Git hooks
 
@@ -69,17 +71,73 @@ The custom `erli18n/act-runner:24.04` image extends `ghcr.io/catthehacker/ubuntu
 
 ## Project layout
 
+The repository is a **rebar3 umbrella** with two independently publishable apps
+plus a downstream-consumer example:
+
 ```text
-src/                 erli18n implementation (façade + server + persistent_term store + po parser + plural + telemetry)
-test/                Common Test suites + PropEr properties + fuzz harness + parity oracle
-bin/quality-gate.sh  canonical check runner
-hooks/               git pre-commit / pre-push wrappers
-.github/workflows/   GitHub Actions CI definition
-compose.yml          local act-runner infrastructure
-Dockerfile.act-runner  local-only runner image with ELP baked in
-elvis.config         style rules
-rebar.config         build configuration + project plugins (erlfmt / hank / lint)
+apps/erli18n/            the runtime library (a published Hex package)
+  src/                   implementation (facade + server + persistent_term store + po parser + plural + telemetry)
+  include/erli18n.hrl    public include (the ?GETTEXT_DOMAIN extraction contract)
+  test/                  Common Test suites + PropEr properties + fuzz harness + parity oracle
+  rebar.config           the lib's own deps (telemetry) + compile options + per-app hex/ex_doc plugins + this package's doc/hex config
+  README / CHANGELOG / LICENSE   the lib's own publish-ready package docs
+apps/rebar3_erli18n/     the catalog-tooling rebar3 plugin (a separate published Hex package)
+  src/                   the four providers (extract / merge / check / report) + PO serializer + host seam
+  test/                  the plugin's Common Test suites
+  rebar.config           the plugin's {deps,[erli18n]} + per-app hex/ex_doc plugins + this package's doc/hex config
+  README / CHANGELOG / LICENSE   the plugin's own publish-ready package docs
+examples/erli18n_demo/   a real downstream consumer ({deps,[erli18n]} + {plugins,[rebar3_erli18n]})
+  src/                   production modules with literal-msgid gettext call sites
+  priv/gettext/          committed .pot/.po baselines the translation-freshness check compares against
+README.md                the umbrella landing page → links into each package's README
+CHANGELOG.md             umbrella-level repo history → links to each package's changelog
+bin/quality-gate.sh      canonical check runner
+hooks/                   git pre-commit / pre-push wrappers
+.github/workflows/       GitHub Actions CI + Release definitions
+compose.yml              local act-runner infrastructure
+Dockerfile.act-runner    local-only runner image with ELP baked in
+elvis.config             style rules
+rebar.config             umbrella-wide tooling (project plugins, the test profile, dialyzer/xref/hank/erlfmt policy)
 ```
+
+Each published app is self-contained: it physically carries its own
+`README.md`, `CHANGELOG.md`, `LICENSE`, its `{deps, ...}`, its `{ex_doc, ...}` /
+`{hex, ...}` doc config, and its own `{project_plugins, [rebar3_hex,
+rebar3_ex_doc]}` — everything a per-app `cd apps/<app> && rebar3 hex publish`
+needs. The Hex tarball ships the README/CHANGELOG/LICENSE because `rebar3_hex`
+globs a package's files relative to the app directory. The `erli18n` library
+README under `apps/erli18n/README.md` is what the package ships and what HexDocs
+renders as its landing page; the plugin documents itself under
+`apps/rebar3_erli18n/`. The repository-root `README.md` and `CHANGELOG.md` are
+umbrella-level docs (a landing page and repo history) that link into the
+per-package files and are **not** shipped inside either tarball. The umbrella
+root `rebar.config` keeps only umbrella-wide dev tooling (the quality-gate
+plugins, the `test` profile, and the dialyzer/xref/hank/erlfmt policy).
+
+### Consuming the plugin downstream (and locally)
+
+A downstream app opts into the catalog tooling with `{plugins, [rebar3_erli18n]}`
+in its own `rebar.config` (alongside its normal `{deps, [{erli18n, "~> 0.5"}]}`),
+which surfaces `rebar3 erli18n {extract,merge,check,report}`.
+
+The plugin declares `{deps, [{erli18n, "~> 0.5"}]}` (the **plugin → lib**
+direction — the gpb / `rebar3_gpb_plugin` idiom). That declaration is
+load-bearing: it is what pulls the runtime library onto the plugin's code path
+at provider-run time so the providers can call `erli18n_po:parse/1`,
+`erli18n_po:dump/1`, and `erli18n_po:escape_string/1` across the published
+package boundary.
+
+For **local development against the unpublished in-repo apps**, rebar3 has no
+native `{path, ...}` resource, so the consumer surfaces both apps through
+rebar3's documented `_checkouts/` override. `examples/erli18n_demo/` does exactly
+this — it provides **both** `_checkouts/erli18n` and `_checkouts/rebar3_erli18n`
+links. Both are required (verified against rebar3 3.24 / OTP 28): the plugin
+checkout takes precedence over a Hex fetch for the plugin name, and the lib
+checkout is what the plugin's `{deps, [erli18n]}` resolves to. After publish, a
+consumer drops the checkouts and resolves both packages from Hex normally. The
+quality gate recreates these links via `ensure_demo_checkouts` before running the
+translation-freshness check. See `apps/rebar3_erli18n/README.md` for the full
+cross-package load-path proof and the xref host-seam ignore rationale.
 
 ## Pull request workflow
 
@@ -90,7 +148,7 @@ rebar.config         build configuration + project plugins (erlfmt / hank / lint
    ```
 3. **Make your change** — keep the diff small and focused. One logical concern per PR.
 4. **Add or update tests** — every behavioral change needs a test. Bug fixes need a regression test that fails on the old code and passes on the new.
-5. **Update `CHANGELOG.md`** under `[Unreleased]` — describe the change from the user's perspective, not the implementation detail.
+5. **Update the affected package's `CHANGELOG.md`** under `[Unreleased]` — `apps/erli18n/CHANGELOG.md` for a library change, `apps/rebar3_erli18n/CHANGELOG.md` for a plugin change. Describe the change from the user's perspective, not the implementation detail.
 6. **Run the full quality gate**:
    ```sh
    bin/quality-gate.sh --full
@@ -101,19 +159,52 @@ rebar.config         build configuration + project plugins (erlfmt / hank / lint
 
 ## Telemetry / public API changes
 
-If your PR changes a function exported from `erli18n`, the structure of a `:telemetry` event, or the schema of an application env key, it is **public API** and triggers a minor bump on the next release (per the `0.x` SemVer policy in `CHANGELOG.md`).
+If your PR changes a function exported from `erli18n`, the structure of a `:telemetry` event, or the schema of an application env key, it is **public API** and triggers a minor bump on the next release (per the `0.x` SemVer policy in `apps/erli18n/CHANGELOG.md`).
 
 For telemetry events, follow the `@stable` / `@unstable` annotation policy documented in the `erli18n_telemetry` module `-moduledoc` — events marked `@stable` cannot change schema within the `0.x` series.
 
 ## Release process
 
-Releases are tag-driven. Maintainers cut a release by:
+The umbrella ships **two independently versioned Hex packages** — the runtime
+library `erli18n` and the rebar3 plugin `rebar3_erli18n` — each cut from its
+own **per-package prefixed tag**:
 
-1. Merging the relevant PRs to `main`.
-2. Updating `CHANGELOG.md`: move `[Unreleased]` content under a new `[X.Y.Z] — YYYY-MM-DD` heading.
-3. Bumping `vsn` in `src/erli18n.app.src`.
-4. Tagging: `git tag -a vX.Y.Z -m "..."` and pushing the tag.
-5. CI publishes to Hex.pm on tag push via the `release.yml` workflow (pushing a `vX.Y.Z` tag publishes the package to Hex.pm, the docs to HexDocs, and creates a GitHub Release).
+| Package | Publish dir | Tag scheme | `vsn` source | Changelog |
+| ------- | ----------- | ---------- | ------------ | --------- |
+| `erli18n` | `apps/erli18n` | `erli18n-vX.Y.Z` | `apps/erli18n/src/erli18n.app.src` | `apps/erli18n/CHANGELOG.md` |
+| `rebar3_erli18n` | `apps/rebar3_erli18n` | `rebar3_erli18n-vX.Y.Z` | `apps/rebar3_erli18n/src/rebar3_erli18n.app.src` | `apps/rebar3_erli18n/CHANGELOG.md` |
+
+Releases are tag-driven. To cut one for a package, a maintainer:
+
+1. Merges the relevant PRs to `main`.
+2. Updates that package's `CHANGELOG.md`: moves `[Unreleased]` content under a
+   new `[X.Y.Z] — YYYY-MM-DD` heading.
+3. Bumps `vsn` in that package's `.app.src`.
+4. Tags with the package-prefixed scheme — e.g.
+   `git tag -a erli18n-vX.Y.Z -m "..."` or `git tag -a rebar3_erli18n-vX.Y.Z` —
+   and pushes the tag.
+5. The `release.yml` workflow derives the app from the tag prefix, validates the
+   tag version against that package's `.app.src` `vsn`, then publishes the
+   package to Hex.pm, the docs to HexDocs, and creates a GitHub Release from the
+   per-package changelog. It publishes each package **from its own app
+   directory** (`cd apps/<app> && rebar3 hex publish package`, and
+   `rebar3 hex publish docs --doc-dir doc`). Publishing from the app dir — rather
+   than `--app <app>` from the umbrella root — is what resolves the package's
+   deps into a per-app lock; for the plugin that lock is what carries `erli18n`
+   into the published `requirements` (see below).
+
+The two publishes are **independently versioned but coupled by the plugin's
+`{deps, [{erli18n, "~> X.Y"}]}` constraint**, so the publish order is strict:
+release **`erli18n` first**, confirm it is live on Hex, then release
+`rebar3_erli18n`. Because the plugin is published from its own app directory,
+the build resolves `erli18n` from Hex into the plugin's lock as a level-0
+`{pkg,...}` entry, and that entry is what `rebar3_hex`'s `create_package` carries
+into the published `requirements`. So the plugin's `requirements` can only be
+populated once the matching `erli18n` minor is on Hex; the workflow enforces the
+order with an `erli18n`-first guard on the `rebar3_erli18n-v*` path (it fails
+fast if the required `erli18n` minor is not yet published). When `erli18n`'s
+minor advances, bump the `~>` constraint in `apps/rebar3_erli18n/rebar.config` in
+the same release that depends on the new minor.
 
 ## Questions
 
