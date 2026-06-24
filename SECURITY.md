@@ -2,14 +2,16 @@
 
 ## Supported versions
 
-Only the **latest minor release** of `erli18n` receives security updates. While the project is in the `0.x.y` initial-development phase, this means the most recent `0.x` line is supported; older `0.x` lines are not.
+This umbrella publishes two Hex packages: the `erli18n` runtime library and the `rebar3_erli18n` build-time rebar3 plugin. Only the **latest minor release** of each receives security updates. While the project is in the `0.x.y` initial-development phase, this means the most recent `0.x` line of each package is supported; older `0.x` lines are not.
 
-| Version | Supported |
-|---|---|
-| `0.4.x` (latest) | ✅ |
-| `< 0.4.0` | ❌ |
+| Package | Version | Supported |
+|---|---|---|
+| `erli18n` | `0.5.x` (latest) | ✅ |
+| `erli18n` | `< 0.5.0` | ❌ |
+| `rebar3_erli18n` | `0.1.x` (latest) | ✅ |
+| `rebar3_erli18n` | `< 0.1.0` | ❌ |
 
-Once the project reaches `1.0.0`, the support window will be re-evaluated and documented here.
+Once a package reaches `1.0.0`, its support window will be re-evaluated and documented here.
 
 ## Reporting a vulnerability
 
@@ -40,6 +42,7 @@ We will keep you informed throughout the process.
 - **Plural expression evaluator** (`erli18n_plural`) — evaluates the `Plural-Forms` header expression at lookup time. Denial-of-service via deeply nested or pathological expressions is in scope.
 - **CLDR data** — inlined for 49 locales; not loaded from disk at runtime.
 - **Telemetry events** (`erli18n_telemetry`) — event payloads must not leak msgid contents that could be sensitive in a multi-tenant context. The default `emit_lookup_telemetry => false` minimizes this surface.
+- **`rebar3_erli18n`** — a **build-time** rebar3 plugin, not a runtime component: its extractor parses project-local Erlang source (via `epp`, reading only compile-time-constant operands) and merges `.po` catalogs during the build. It does not handle untrusted runtime input. Report plugin vulnerabilities to the same contact above (**eduardokohn15@gmail.com**).
 
 Out of scope:
 
