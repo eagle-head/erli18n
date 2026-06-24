@@ -19,7 +19,11 @@
 #   * keeps its rebar3 build artifacts in a NAMED VOLUME via REBAR_BASE_DIR, so
 #     the host's `_build` is never touched and the two OTP builds never collide;
 #   * bind-mounts the project read-write at /work;
-#   * compiles, then runs `rebar3 do ct --cover`.
+#   * best-effort installs ELP (matching the container's OTP major) so the
+#     gradual-typing / IDE-diagnostic steps run, then executes the FULL quality
+#     gate `bin/quality-gate.sh --full` (compile, xref, erlfmt, elvis, hank, elp
+#     lint, dialyzer, eqwalize-all, ct --cover/cover, catalog freshness) — the
+#     maximum runnable in-container, not just compile + ct.
 #
 # The project is mounted (not copied), so REBAR_BASE_DIR must point OUTSIDE the
 # mount — otherwise the two containers would clobber each other's _build under
@@ -40,16 +44,31 @@ x-otp-test: &otp-test
     - |
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y --no-install-recommends gettext locales
-      # Generate the UTF-8 locales the suites depend on. Edit /etc/locale.gen
-      # then run locale-gen (the canonical Debian path); localedef is the
-      # fallback if the locales package layout ever changes.
+      apt-get install -y --no-install-recommends gettext locales curl ca-certificates tar
+      # Generate the UTF-8 locales the parity/plural suites depend on.
       sed -i 's/^# *\(pt_BR.UTF-8 UTF-8\)/\1/; s/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen
       locale-gen pt_BR.UTF-8 ru_RU.UTF-8
       locale -a | grep -E 'pt_BR|ru_RU'
       msgfmt --version | head -1
-      rebar3 compile
-      rebar3 do ct --cover
+      # Install ELP matching THIS container's OTP major (OTP_MAJOR is set per
+      # service in `environment:` below — NOT detected at runtime, which proved
+      # unreliable). The full gate REQUIRES elp, so a missing/failed install must
+      # fail loudly. Real asset names: elp-linux-x86_64-unknown-linux-gnu-otp-<major>[.minor].tar.gz
+      # `$$` keeps these expansions for the CONTAINER's bash: docker compose
+      # interpolates a single `$` from the HOST env at parse time (-> empty),
+      # which is exactly why OTP_MAJOR came out blank in earlier runs.
+      ELP_URL=$$(curl -fsSL https://api.github.com/repos/WhatsApp/erlang-language-platform/releases/latest \
+        | grep -oE '"browser_download_url": *"[^"]+"' | cut -d'"' -f4 \
+        | grep -E "x86_64-unknown-linux-gnu-otp-$${OTP_MAJOR}[.0-9]*\.tar\.gz$$" | head -1)
+      echo "ELP asset for OTP $${OTP_MAJOR}: $${ELP_URL:-<none found>}"
+      curl -fsSL "$${ELP_URL}" -o /tmp/elp.tar.gz
+      tar -xzf /tmp/elp.tar.gz -C /usr/local/bin
+      chmod +x /usr/local/bin/elp
+      elp version
+      # Run the FULL quality gate inside the container — the maximum runnable
+      # here (compile, xref, erlfmt, elvis, hank, elp lint, dialyzer,
+      # eqwalize-all, ct --cover/cover, catalog freshness), not just compile+ct.
+      bash bin/quality-gate.sh --full
 
 services:
   otp27:
@@ -59,6 +78,8 @@ services:
     environment:
       # Isolated build dir per service, on a named volume — host _build untouched.
       REBAR_BASE_DIR: /rebar/otp27
+      # Drives the ELP asset selection in the shared command (otp-27.x build).
+      OTP_MAJOR: '27'
     volumes:
       - .:/work
       - rebar-otp27:/rebar/otp27
@@ -69,6 +90,8 @@ services:
     container_name: erli18n-otp28
     environment:
       REBAR_BASE_DIR: /rebar/otp28
+      # Drives the ELP asset selection in the shared command (otp-28 build).
+      OTP_MAJOR: '28'
     volumes:
       - .:/work
       - rebar-otp28:/rebar/otp28
