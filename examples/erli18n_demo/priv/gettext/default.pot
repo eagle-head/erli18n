@@ -1,0 +1,25 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: src/erli18n_demo_greeting.erl:29
+msgid "Goodbye, see you next time"
+msgstr ""
+
+#: src/erli18n_demo_greeting.erl:45
+msgid "Hello, %{name}!"
+msgstr ""
+
+#: src/erli18n_demo_greeting.erl:25
+msgid "Welcome to the demo application"
+msgstr ""
+
+#: src/erli18n_demo_greeting.erl:35
+msgid "You have one unread message"
+msgid_plural "You have %{count} unread messages"
+msgstr[0] ""
+msgstr[1] ""
+

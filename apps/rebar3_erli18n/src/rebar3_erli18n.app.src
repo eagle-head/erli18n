@@ -1,0 +1,11 @@
+{application, rebar3_erli18n, [
+    {description,
+        "rebar3 plugin: extract/merge/check/report gettext catalogs from Erlang abstract forms"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, erli18n]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/eagle-head/erli18n"}]}
+]}.

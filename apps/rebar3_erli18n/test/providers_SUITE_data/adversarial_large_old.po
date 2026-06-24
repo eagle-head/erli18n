@@ -1,0 +1,187 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+# A larger old .po (60 translated entries) so the merge read-old/parse
+# path is exercised at scale. Only "key_0" survives into the fresh .pot;
+# the other 59 keys are demoted to #~ obsolete (no crash, no data loss).
+msgid "key_0"
+msgstr "val_0"
+
+msgid "key_1"
+msgstr "val_1"
+
+msgid "key_2"
+msgstr "val_2"
+
+msgid "key_3"
+msgstr "val_3"
+
+msgid "key_4"
+msgstr "val_4"
+
+msgid "key_5"
+msgstr "val_5"
+
+msgid "key_6"
+msgstr "val_6"
+
+msgid "key_7"
+msgstr "val_7"
+
+msgid "key_8"
+msgstr "val_8"
+
+msgid "key_9"
+msgstr "val_9"
+
+msgid "key_10"
+msgstr "val_10"
+
+msgid "key_11"
+msgstr "val_11"
+
+msgid "key_12"
+msgstr "val_12"
+
+msgid "key_13"
+msgstr "val_13"
+
+msgid "key_14"
+msgstr "val_14"
+
+msgid "key_15"
+msgstr "val_15"
+
+msgid "key_16"
+msgstr "val_16"
+
+msgid "key_17"
+msgstr "val_17"
+
+msgid "key_18"
+msgstr "val_18"
+
+msgid "key_19"
+msgstr "val_19"
+
+msgid "key_20"
+msgstr "val_20"
+
+msgid "key_21"
+msgstr "val_21"
+
+msgid "key_22"
+msgstr "val_22"
+
+msgid "key_23"
+msgstr "val_23"
+
+msgid "key_24"
+msgstr "val_24"
+
+msgid "key_25"
+msgstr "val_25"
+
+msgid "key_26"
+msgstr "val_26"
+
+msgid "key_27"
+msgstr "val_27"
+
+msgid "key_28"
+msgstr "val_28"
+
+msgid "key_29"
+msgstr "val_29"
+
+msgid "key_30"
+msgstr "val_30"
+
+msgid "key_31"
+msgstr "val_31"
+
+msgid "key_32"
+msgstr "val_32"
+
+msgid "key_33"
+msgstr "val_33"
+
+msgid "key_34"
+msgstr "val_34"
+
+msgid "key_35"
+msgstr "val_35"
+
+msgid "key_36"
+msgstr "val_36"
+
+msgid "key_37"
+msgstr "val_37"
+
+msgid "key_38"
+msgstr "val_38"
+
+msgid "key_39"
+msgstr "val_39"
+
+msgid "key_40"
+msgstr "val_40"
+
+msgid "key_41"
+msgstr "val_41"
+
+msgid "key_42"
+msgstr "val_42"
+
+msgid "key_43"
+msgstr "val_43"
+
+msgid "key_44"
+msgstr "val_44"
+
+msgid "key_45"
+msgstr "val_45"
+
+msgid "key_46"
+msgstr "val_46"
+
+msgid "key_47"
+msgstr "val_47"
+
+msgid "key_48"
+msgstr "val_48"
+
+msgid "key_49"
+msgstr "val_49"
+
+msgid "key_50"
+msgstr "val_50"
+
+msgid "key_51"
+msgstr "val_51"
+
+msgid "key_52"
+msgstr "val_52"
+
+msgid "key_53"
+msgstr "val_53"
+
+msgid "key_54"
+msgstr "val_54"
+
+msgid "key_55"
+msgstr "val_55"
+
+msgid "key_56"
+msgstr "val_56"
+
+msgid "key_57"
+msgstr "val_57"
+
+msgid "key_58"
+msgstr "val_58"
+
+msgid "key_59"
+msgstr "val_59"
+
