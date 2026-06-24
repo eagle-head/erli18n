@@ -243,6 +243,18 @@ run_elp_lint() {
         printf '    %s[SKIP]%s elp not found\n\n' "$YELLOW$BOLD" "$RESET"
         return 0
     fi
+    # ELP's `--include-erlc-diagnostics` parses the test suites too, and several
+    # of them apply PropEr's `proper_transformer` parse_transform. Compile the
+    # test profile first so ELP can resolve it; on a cold build (e.g. CI's first
+    # run) it would otherwise report spurious
+    # `Could not parse ... proper_transformer:parse_transform/2` [Error]s.
+    if ! rebar3 as test compile >/dev/null 2>&1; then
+        printf '    %s[FAIL]%s  test-profile compile failed (prerequisite for ELP diagnostics)\n\n' \
+            "$RED$BOLD" "$RESET"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        FAILED_STEPS+=("elp lint (IDE-equivalent diagnostics)")
+        return 0
+    fi
     printf '    %s$ %s lint --include-erlc-diagnostics%s\n' \
         "$YELLOW" "$elp_bin" "$RESET"
     local start=$SECONDS
