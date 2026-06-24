@@ -39,15 +39,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install GNU gettext (msgfmt for the parity oracle)
+      # gettext (msgfmt) drives the parity oracle; the pt_BR / ru_RU UTF-8
+      # locales drive the plural/parity suites. apt-get on hosted runners flakes
+      # transiently (mirror/network), so wrap the network-touching calls in a
+      # small retry — a single hiccup must not redden the gate.
+      - name: Install system dependencies (gettext + UTF-8 locales)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gettext
+          retry() {
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge 3 ]; then
+                echo "::error::'$*' failed after $n attempts"
+                return 1
+              fi
+              echo "attempt $n for '$*' failed; retrying in 5s..."
+              sleep 5
+              n=$((n + 1))
+            done
+          }
+          retry sudo apt-get update
+          retry sudo apt-get install -y gettext locales
           msgfmt --version | head -1
-
-      - name: Generate UTF-8 locales (pt_BR, ru_RU) for the plural/parity suites
-        run: |
-          sudo apt-get install -y locales
           sudo sed -i 's/^# *\(pt_BR.UTF-8 UTF-8\)/\1/; s/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen
           sudo locale-gen pt_BR.UTF-8 ru_RU.UTF-8
           locale -a | grep -E 'pt_BR|ru_RU'
