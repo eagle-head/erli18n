@@ -1,0 +1,24 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: src/erli18n_demo_greeting.erl:29
+msgid "Goodbye, see you next time"
+msgstr "Tchau, até a próxima"
+
+#: src/erli18n_demo_greeting.erl:45
+msgid "Hello, %{name}!"
+msgstr "Olá, %{name}!"
+
+#: src/erli18n_demo_greeting.erl:25
+msgid "Welcome to the demo application"
+msgstr "Bem-vindo à aplicação de demonstração"
+
+#: src/erli18n_demo_greeting.erl:35
+msgid "You have one unread message"
+msgid_plural "You have %{count} unread messages"
+msgstr[0] "Você tem uma mensagem não lida"
+msgstr[1] "Você tem %{count} mensagens não lidas"
+

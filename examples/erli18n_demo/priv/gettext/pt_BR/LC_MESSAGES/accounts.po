@@ -1,0 +1,24 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: src/erli18n_demo_accounts.erl:32
+msgid "Goodbye, %{name} — you are signed out"
+msgstr "Até logo, %{name} — sua sessão foi encerrada"
+
+#: src/erli18n_demo_accounts.erl:42
+msgid "One seat left on your plan"
+msgid_plural "%{count} seats left on your plan"
+msgstr[0] "Uma vaga restante no seu plano"
+msgstr[1] "%{count} vagas restantes no seu plano"
+
+#: src/erli18n_demo_accounts.erl:27
+msgid "Sign in to your account"
+msgstr "Entre na sua conta"
+
+#: src/erli18n_demo_accounts.erl:37
+msgid "We sent a password reset link to your email"
+msgstr "Enviamos um link de redefinição de senha para o seu e-mail"
+

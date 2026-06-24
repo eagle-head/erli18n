@@ -1,0 +1,26 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: src/erli18n_demo_errors.erl:28
+msgid "The requested resource was not found"
+msgstr "O recurso solicitado não foi encontrado"
+
+#: src/erli18n_demo_errors.erl:32
+msgid "You do not have permission to perform this action"
+msgstr "Você não tem permissão para executar esta ação"
+
+#: src/erli18n_demo_errors.erl:47
+msgctxt "security"
+msgid "One attempt remaining"
+msgid_plural "%{count} attempts remaining"
+msgstr[0] "Uma tentativa restante"
+msgstr[1] "%{count} tentativas restantes"
+
+#: src/erli18n_demo_errors.erl:38
+msgctxt "validation"
+msgid "The %{field} field is required"
+msgstr "O campo %{field} é obrigatório"
+

@@ -1,0 +1,27 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: src/erli18n_demo_errors.erl:28
+msgid "The requested resource was not found"
+msgstr ""
+
+#: src/erli18n_demo_errors.erl:32
+msgid "You do not have permission to perform this action"
+msgstr ""
+
+#: src/erli18n_demo_errors.erl:49
+msgctxt "security"
+msgid "One attempt remaining"
+msgid_plural "%{count} attempts remaining"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/erli18n_demo_errors.erl:40
+msgctxt "validation"
+msgid "The %{field} field is required"
+msgstr ""
+

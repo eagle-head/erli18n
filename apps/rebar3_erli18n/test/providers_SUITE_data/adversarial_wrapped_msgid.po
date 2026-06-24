@@ -1,0 +1,12 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+# A line-wrapped (--no-wrap-violating) msgid: the single logical key
+# "Sign in to your account" is split across two quoted continuation lines.
+# erli18n_po:parse decodes both sides to the same binary, so the merge must
+# treat this old entry as the EXACT same key as the unwrapped fresh .pot
+# msgid and carry its translation over (no fuzzy, no obsolete).
+msgid "Sign in "
+"to your account"
+msgstr "Entrar na sua conta"

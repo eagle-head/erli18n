@@ -1,0 +1,31 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: myapp 1.0\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# A translator note about greetings.
+#. Shown on the home page header.
+#: src/myapp_home.erl:12 src/myapp_home.erl:48
+msgid "Hello"
+msgstr "Ola"
+
+#: src/myapp_cart.erl:30
+msgid "one item"
+msgid_plural "many items"
+msgstr[0] "um item"
+msgstr[1] "muitos itens"
+
+#: src/myapp_auth.erl:5
+#, fuzzy
+#| msgid "Sign in"
+msgid "Sign in now"
+msgstr "Entrar"
+
+#: src/myapp_form.erl:22
+msgctxt "button"
+msgid "Save"
+msgstr "Salvar"
