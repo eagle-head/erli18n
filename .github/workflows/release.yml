@@ -271,10 +271,13 @@ jobs:
         run: |
           set -euo pipefail
           NOTES_FILE="$(mktemp)"
+          # End the section at the next version heading, or — for the last/only
+          # version in the file — at the trailing link-reference comment or the
+          # `[x]: url` link definitions, so those never leak into the notes.
           awk -v ver="$APP_VSN" '
-            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
-            flag && /^## \[/        { flag = 0 }
-            flag                    { print }
+            $0 ~ "^## \\[" ver "\\]"     { flag = 1; next }
+            flag && /^(## \[|<!--|\[)/   { flag = 0 }
+            flag                         { print }
           ' "$CHANGELOG" > "$NOTES_FILE"
           # Mark as prerelease when the tag carries a pre-release suffix
           # (e.g. erli18n-v1.2.0-rc1 -> version 1.2.0-rc1).
