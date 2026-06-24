@@ -4,6 +4,8 @@ Thanks for your interest in contributing. All contributions are welcome — bug 
 
 Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) in all interactions.
 
+> **The full workflow — branching, commit rules, the CI gate, merge strategy, and the per-package release process — is documented in [`docs/WORKFLOW.md`](docs/WORKFLOW.md).** This file covers setup and the day-to-day essentials; `docs/WORKFLOW.md` is the authoritative playbook.
+
 ## Ways to contribute
 
 - **Report bugs** via GitHub Issues. Include OTP version, `erli18n` version, a minimal reproducer (ideally a Common Test case or `.po` fixture), and the actual vs expected behavior.
