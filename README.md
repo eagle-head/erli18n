@@ -12,7 +12,7 @@ This repository is a **rebar3 umbrella** that ships **two separately-published H
 
 | Package | Path | What it is |
 | ------- | ---- | ---------- |
-| [`erli18n`](apps/erli18n/) | [`apps/erli18n/`](apps/erli18n/) | The runtime i18n library — `.po`/`.pot` loading, CLDR pluralization, copy-free `persistent_term` lookups, and the full GNU gettext facade family (`gettext`, `ngettext`, `pgettext`, `npgettext`, plus interpolating `f`-suffix siblings). |
+| [`erli18n`](apps/erli18n/) | [`apps/erli18n/`](apps/erli18n/) | The runtime i18n library — `.po`/`.pot` loading, CLDR pluralization, copy-free `persistent_term` lookups, and the full GNU gettext facade family (`gettext`, `ngettext`, `pgettext`, `npgettext`, plus interpolating `f`-suffix siblings), and optional per-request localization middleware for Cowboy & Elli. |
 | [`rebar3_erli18n`](apps/rebar3_erli18n/) | [`apps/rebar3_erli18n/`](apps/rebar3_erli18n/) | The companion rebar3 plugin — an Erlang-native string extractor that walks your source's abstract forms and produces `.pot` templates, giving you `rebar3 erli18n {extract,merge,check,report}`. It is a separate Hex package that depends on `erli18n`. |
 
 The two packages have **independent versions**, coupled only by the plugin's `~>` dependency constraint on the library (the plugin reuses `erli18n`'s public PO read/serialize API across the package boundary). The umbrella co-locates them for atomic cross-package changes and shared tooling; each is published to Hex on its own.
@@ -23,7 +23,7 @@ To consume both packages from a downstream project, add the runtime library as a
 
 ```erlang
 %% rebar.config of a downstream consumer
-{deps, [{erli18n, "~> 0.5"}]}.
+{deps, [{erli18n, "~> 0.6"}]}.
 {plugins, [rebar3_erli18n]}.
 ```
 
@@ -35,7 +35,7 @@ For the string-extraction plugin — installation as a `{plugins, [...]}` entry 
 
 ➡️ **[`apps/rebar3_erli18n/README.md`](apps/rebar3_erli18n/README.md)**
 
-A runnable downstream consumer that wires up both — real `gettext` call sites and committed catalogs — lives under [`examples/erli18n_demo/`](examples/erli18n_demo).
+A runnable downstream consumer that wires up both — real `gettext` call sites and committed catalogs — lives under [`examples/erli18n_demo/`](examples/erli18n_demo). Two runnable middleware examples show per-request locale negotiation in a web server: [`examples/erli18n_cowboy_demo/`](examples/erli18n_cowboy_demo) (Cowboy) and [`examples/erli18n_elli_demo/`](examples/erli18n_elli_demo) (Elli).
 
 ## Repository layout
 
@@ -53,7 +53,10 @@ A runnable downstream consumer that wires up both — real `gettext` call sites 
 │   └── rebar3_erli18n/   # the rebar3 plugin (Hex package)
 │       ├── README.md  CHANGELOG.md  LICENSE  rebar.config
 │       └── src/ test/
-├── examples/erli18n_demo/  # runnable downstream consumer of both packages
+├── examples/                 # runnable standalone example apps:
+│   ├── erli18n_demo/         #   downstream consumer of both packages
+│   ├── erli18n_cowboy_demo/  #   per-request localization middleware (Cowboy)
+│   └── erli18n_elli_demo/    #   per-request localization middleware (Elli)
 ├── scripts/                # gen_docs.sh + ex_doc_config.escript (doc helpers)
 ├── rebar.config            # umbrella-wide settings only (plugins, profiles,
 │                           #   dialyzer/xref/hank/erlfmt policy) — no

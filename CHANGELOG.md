@@ -14,6 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Two runnable middleware example apps under `examples/`.**
+  `examples/erli18n_cowboy_demo/` and `examples/erli18n_elli_demo/` are standalone
+  rebar3 projects that demonstrate the optional `erli18n_cowboy` / `erli18n_elli`
+  per-request localization middleware end to end — a web server that negotiates
+  the request locale (query → cookie → `Accept-Language`) and translates in the
+  handler with no locale argument, with committed `pt_BR` / `es` catalogs and a
+  `curl` matrix proving each negotiation source. Like `examples/erli18n_demo`,
+  each lives outside `apps/` and surfaces the unpublished in-repo `erli18n`
+  through a gitignored `_checkouts/` symlink.
+
 ### Changed
 
 - **Restructured the repository into a self-contained two-package umbrella.**
