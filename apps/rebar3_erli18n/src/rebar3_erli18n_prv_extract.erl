@@ -56,8 +56,10 @@ init(State) ->
 do(State) ->
     case rebar3_erli18n_common:extract_project(State) of
         {ok, ByDomain} ->
-            ok = write_pots(State, ByDomain),
-            {ok, State};
+            case write_pots(State, ByDomain) of
+                ok -> {ok, State};
+                {error, Reason} -> {error, format_error(Reason)}
+            end;
         {error, Reason} ->
             {error, format_error(Reason)}
     end.
@@ -73,18 +75,32 @@ format_error(Reason) ->
 
 -spec write_pots(
     rebar3_erli18n_host:state(), #{atom() => [rebar3_erli18n_common:dedup_entry()]}
-) -> ok.
+) -> ok | {error, {write_failed, file:filename_all(), term()}}.
 write_pots(State, ByDomain) ->
     PotDir = rebar3_erli18n_common:pot_dir(State),
-    ok = filelib:ensure_path(PotDir),
-    maps:foreach(
-        fun(Domain, Entries) ->
-            Catalog = rebar3_erli18n_common:entries_to_pot(Entries),
-            Bytes = rebar3_erli18n_po_meta:dump(Catalog),
-            Path = filename:join(PotDir, atom_to_list(Domain) ++ ".pot"),
-            ok = file:write_file(Path, Bytes),
-            rebar3_erli18n_host:info("erli18n: wrote ~ts (~b entries)", [Path, length(Entries)])
-        end,
-        ByDomain
-    ),
-    ok.
+    case filelib:ensure_path(PotDir) of
+        ok ->
+            write_each_pot(maps:to_list(ByDomain), PotDir);
+        {error, Reason} ->
+            {error, {write_failed, PotDir, Reason}}
+    end.
+
+%% Write each domain's `.pot`, short-circuiting to `{error, {write_failed, ...}}`
+%% on the first filesystem failure so `do/1` surfaces a clean provider error
+%% instead of a `badmatch` crash on the `file:write_file/2` return.
+-spec write_each_pot(
+    [{atom(), [rebar3_erli18n_common:dedup_entry()]}], file:filename_all()
+) -> ok | {error, {write_failed, file:filename_all(), term()}}.
+write_each_pot([], _PotDir) ->
+    ok;
+write_each_pot([{Domain, Entries} | Rest], PotDir) ->
+    Catalog = rebar3_erli18n_common:entries_to_pot(Entries),
+    Bytes = rebar3_erli18n_po_meta:dump(Catalog),
+    Path = filename:join(PotDir, atom_to_list(Domain) ++ ".pot"),
+    case file:write_file(Path, Bytes) of
+        ok ->
+            rebar3_erli18n_host:info("erli18n: wrote ~ts (~b entries)", [Path, length(Entries)]),
+            write_each_pot(Rest, PotDir);
+        {error, Reason} ->
+            {error, {write_failed, Path, Reason}}
+    end.

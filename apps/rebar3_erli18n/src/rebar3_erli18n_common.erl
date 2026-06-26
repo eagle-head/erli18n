@@ -371,5 +371,7 @@ format_error({drift, Summary}) ->
     lists:flatten(io_lib:format("erli18n: catalog drift detected~n~ts", [Summary]));
 format_error({po_parse_failed, Path, Reason}) ->
     lists:flatten(io_lib:format("erli18n: failed to parse ~ts: ~p", [Path, Reason]));
+format_error({write_failed, Path, Reason}) ->
+    lists:flatten(io_lib:format("erli18n: cannot write ~ts: ~p", [Path, Reason]));
 format_error(Reason) ->
     lists:flatten(io_lib:format("erli18n: ~p", [Reason])).

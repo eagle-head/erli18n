@@ -126,12 +126,28 @@ merge_one(State, Domain, PotEntries, Locale) ->
         {ok, OldHeader, OldEntries} ->
             Merged = merge_entries(PotEntries, OldEntries),
             Catalog = #{header => OldHeader, entries => Merged},
-            ok = filelib:ensure_dir(Path),
-            ok = file:write_file(Path, rebar3_erli18n_po_meta:dump(Catalog)),
-            rebar3_erli18n_host:info("erli18n: merged ~ts", [Path]),
-            ok;
+            write_po(Path, rebar3_erli18n_po_meta:dump(Catalog));
         {error, Reason} ->
             {error, {po_parse_failed, Path, Reason}}
+    end.
+
+%% Write the merged `.po`, returning a structured `{error, {write_failed, ...}}`
+%% (not a `badmatch` crash) when the destination dir cannot be created or the
+%% file cannot be written — so `do/1` reports a clean provider error.
+-spec write_po(file:filename(), binary()) ->
+    ok | {error, {write_failed, file:filename(), term()}}.
+write_po(Path, Bytes) ->
+    case filelib:ensure_dir(Path) of
+        ok ->
+            case file:write_file(Path, Bytes) of
+                ok ->
+                    rebar3_erli18n_host:info("erli18n: merged ~ts", [Path]),
+                    ok;
+                {error, Reason} ->
+                    {error, {write_failed, Path, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {write_failed, Path, Reason}}
     end.
 
 %% Read an existing `.po`. A missing file means a brand-new locale: treat it
