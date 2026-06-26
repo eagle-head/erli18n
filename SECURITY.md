@@ -6,8 +6,8 @@ This umbrella publishes two Hex packages: the `erli18n` runtime library and the 
 
 | Package | Version | Supported |
 |---|---|---|
-| `erli18n` | `0.5.x` (latest) | ✅ |
-| `erli18n` | `< 0.5.0` | ❌ |
+| `erli18n` | `0.6.x` (latest) | ✅ |
+| `erli18n` | `< 0.6.0` | ❌ |
 | `rebar3_erli18n` | `0.1.x` (latest) | ✅ |
 | `rebar3_erli18n` | `< 0.1.0` | ❌ |
 
@@ -40,6 +40,7 @@ We will keep you informed throughout the process.
 
 - **`.po` / `.pot` parser** (`erli18n_po`) — handles untrusted input. Parsing errors must surface as structured errors, never as silent crashes or arbitrary memory growth. Fuzz scenarios F1–F7 exercise malformed inputs (atomic bombs, oversized strings, integer overflow in plural expressions, etc.); regressions in this surface are top-priority.
 - **Plural expression evaluator** (`erli18n_plural`) — evaluates the `Plural-Forms` header expression at lookup time. Denial-of-service via deeply nested or pathological expressions is in scope.
+- **HTTP request parsing** (`erli18n_http`, used by the optional `erli18n_cowboy` / `erli18n_elli` adapters) — handles untrusted `Cookie` headers, raw query strings, and `Accept-Language` values. Parsing is total and fail-soft (malformed cookies, percent-escapes, and headers are skipped, never raised) and bounded against abuse (byte caps and capped `;` / `&` splits); denial-of-service via pathological request inputs is in scope. The adapters parse request data only — `erli18n` itself still opens no sockets.
 - **CLDR data** — inlined for 49 locales; not loaded from disk at runtime.
 - **Telemetry events** (`erli18n_telemetry`) — event payloads must not leak msgid contents that could be sensitive in a multi-tenant context. The default `emit_lookup_telemetry => false` minimizes this surface.
 - **`rebar3_erli18n`** — a **build-time** rebar3 plugin, not a runtime component: its extractor parses project-local Erlang source (via `epp`, reading only compile-time-constant operands) and merges `.po` catalogs during the build. It does not handle untrusted runtime input. Report plugin vulnerabilities to the same contact above (**eduardokohn15@gmail.com**).

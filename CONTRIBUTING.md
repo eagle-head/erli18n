@@ -119,10 +119,10 @@ plugins, the `test` profile, and the dialyzer/xref/hank/erlfmt policy).
 ### Consuming the plugin downstream (and locally)
 
 A downstream app opts into the catalog tooling with `{plugins, [rebar3_erli18n]}`
-in its own `rebar.config` (alongside its normal `{deps, [{erli18n, "~> 0.5"}]}`),
+in its own `rebar.config` (alongside its normal `{deps, [{erli18n, "~> 0.6"}]}`),
 which surfaces `rebar3 erli18n {extract,merge,check,report}`.
 
-The plugin declares `{deps, [{erli18n, "~> 0.5"}]}` (the **plugin → lib**
+The plugin declares `{deps, [{erli18n, "~> 0.6"}]}` (the **plugin → lib**
 direction — the gpb / `rebar3_gpb_plugin` idiom). That declaration is
 load-bearing: it is what pulls the runtime library onto the plugin's code path
 at provider-run time so the providers can call `erli18n_po:parse/1`,
