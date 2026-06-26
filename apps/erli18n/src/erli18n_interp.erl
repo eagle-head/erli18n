@@ -438,11 +438,12 @@ append_and_check(Bin, OutSize) ->
             RoomLeft = ?MAX_OUTPUT_BYTES - OutSize,
             case RoomLeft > 0 of
                 true ->
-                    %% Truncate the chunk to fit; extract the part and make a copy
-                    %% to avoid pinning the original when we only use a small part.
-                    TruncSize = min(byte_size(Bin), RoomLeft),
-                    Part = binary:part(Bin, 0, TruncSize),
-                    TruncBin = binary:copy(Part),
+                    %% Truncate the chunk to fit, on a UTF-8 codepoint boundary so
+                    %% the capped output never ends in a dangling partial codepoint
+                    %% (invalid UTF-8); copy it so the small kept slice does not pin
+                    %% the original. `byte_size(Bin) > RoomLeft` here, so this always
+                    %% trims (never returns `Bin` whole).
+                    TruncBin = binary:copy(truncate_utf8(Bin, RoomLeft)),
                     {truncate, TruncBin};
                 false ->
                     %% No room left, don't add anything.
@@ -528,4 +529,51 @@ safe_inspect(Term) ->
 clamp_value(Bin) when byte_size(Bin) =< ?MAX_VALUE_BYTES ->
     Bin;
 clamp_value(Bin) ->
-    binary:copy(binary:part(Bin, 0, ?MAX_VALUE_BYTES)).
+    %% `binary:copy/1` so the clamped value does not pin the (much larger)
+    %% original binary. Truncation is codepoint-aware (see `truncate_utf8/2`) so
+    %% a multibyte value is never cut mid-codepoint into invalid UTF-8.
+    binary:copy(truncate_utf8(Bin, ?MAX_VALUE_BYTES)).
+
+%% Largest prefix of `Bin` of at most `Max` bytes that does NOT end inside a
+%% UTF-8 multibyte sequence. Total for ANY binary: a raw `binary:part(Bin, 0,
+%% Max)` cut at a fixed offset would split a 3- or 4-byte codepoint (neither
+%% `?MAX_VALUE_BYTES` nor `?MAX_OUTPUT_BYTES` is codepoint-aligned) and leave a
+%% dangling lead/continuation byte — invalid UTF-8. When the cut lands inside a
+%% codepoint (the first dropped byte is a continuation byte) the trailing partial
+%% codepoint is removed, so a value that was valid UTF-8 stays valid; arbitrary
+%% (already-invalid) bytes are otherwise preserved verbatim, never mangled. This
+%% is what upholds the module's "result is always valid UTF-8" invariant across
+%% both the per-value clamp and the output cap.
+-spec truncate_utf8(binary(), non_neg_integer()) -> binary().
+%% PRECONDITION: `Max < byte_size(Bin)`. Both callers only truncate when the
+%% binary exceeds the cap — `clamp_value/1`'s small-value clause and
+%% `append_and_check/2`'s size check own the within-cap case — so there is no
+%% dead "already within Max" clause here; this function always trims.
+truncate_utf8(Bin, Max) ->
+    %% `Max < byte_size(Bin)`, so `binary:at(Bin, Max)` is the first DROPPED byte.
+    case is_utf8_continuation(binary:at(Bin, Max)) of
+        false ->
+            %% The cut already falls on a codepoint boundary.
+            binary:part(Bin, 0, Max);
+        true ->
+            %% The cut split a codepoint: back off to that codepoint's lead byte.
+            binary:part(Bin, 0, codepoint_start(Bin, Max))
+    end.
+
+%% Index of the lead byte of the codepoint the byte at `Pos` belongs to, found by
+%% walking back over UTF-8 continuation bytes (10xxxxxx). Bounded: a well-formed
+%% sequence is at most 4 bytes and the walk stops at the first non-continuation
+%% byte (or the start of the binary).
+-spec codepoint_start(binary(), non_neg_integer()) -> non_neg_integer().
+codepoint_start(_Bin, 0) ->
+    0;
+codepoint_start(Bin, Pos) ->
+    case is_utf8_continuation(binary:at(Bin, Pos - 1)) of
+        true -> codepoint_start(Bin, Pos - 1);
+        false -> Pos - 1
+    end.
+
+%% A UTF-8 continuation byte is `2#10xxxxxx` (0x80..0xBF).
+-spec is_utf8_continuation(byte()) -> boolean().
+is_utf8_continuation(B) ->
+    B >= 16#80 andalso B =< 16#BF.
