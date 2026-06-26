@@ -1,0 +1,18 @@
+{application, erli18n_elli_demo, [
+    {description, "Example: per-request locale negotiation with the erli18n_elli middleware."},
+    {vsn, "0.1.0"},
+    {registered, [erli18n_elli_demo_sup]},
+    {mod, {erli18n_elli_demo_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        erli18n,
+        elli
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"GitHub", "https://github.com/eagle-head/erli18n"}
+    ]}
+]}.

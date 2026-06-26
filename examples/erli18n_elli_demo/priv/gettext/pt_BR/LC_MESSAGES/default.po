@@ -1,0 +1,19 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: src/erli18n_elli_demo_handler.erl
+msgid "Welcome to erli18n"
+msgstr "Bem-vindo ao erli18n"
+
+#: src/erli18n_elli_demo_handler.erl
+msgid "Hello, %{name}!"
+msgstr "Olá, %{name}!"
+
+#: src/erli18n_elli_demo_handler.erl
+msgid "You have one unread message"
+msgid_plural "You have %{count} unread messages"
+msgstr[0] "Você tem uma mensagem não lida"
+msgstr[1] "Você tem %{count} mensagens não lidas"

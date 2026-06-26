@@ -1,0 +1,18 @@
+{application, erli18n_cowboy_demo, [
+    {description, "Example: per-request locale negotiation with the erli18n_cowboy middleware."},
+    {vsn, "0.1.0"},
+    {registered, [erli18n_cowboy_demo_sup]},
+    {mod, {erli18n_cowboy_demo_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        erli18n,
+        cowboy
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"GitHub", "https://github.com/eagle-head/erli18n"}
+    ]}
+]}.

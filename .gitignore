@@ -7,6 +7,7 @@ erl_crash.dump
 rebar3.crashdump
 .erlang.cookie
 ebin/
+.claude/
 log/
 logs/
 *.swp
@@ -31,12 +32,19 @@ apps/*/rebar.lock
 # switches so it is never accidentally tracked here.
 bench/
 
-# The downstream consumer example surfaces the two unpublished in-repo apps via
-# rebar3's native `_checkouts/` override. Those symlinks (and the example's
-# `_build/`) are recreatable build artifacts, not source — recreate them with:
+# The example apps surface the unpublished in-repo apps via rebar3's native
+# `_checkouts/` override. Those symlinks (and each example's `_build/`) are
+# recreatable build artifacts, not source — recreate them with:
 #   ln -s ../../../apps/erli18n        examples/erli18n_demo/_checkouts/erli18n
 #   ln -s ../../../apps/rebar3_erli18n examples/erli18n_demo/_checkouts/rebar3_erli18n
-# The committed baseline `.pot`/`.po` under priv/gettext/ are NOT ignored: they
-# are the reference the `rebar3 erli18n check` gate compares against.
+#   ln -s ../../../apps/erli18n        examples/erli18n_cowboy_demo/_checkouts/erli18n
+#   ln -s ../../../apps/erli18n        examples/erli18n_elli_demo/_checkouts/erli18n
+# The committed baseline `.pot`/`.po` under priv/gettext/ are NOT ignored: for
+# erli18n_demo they are the reference the `rebar3 erli18n check` gate compares
+# against; for the middleware examples they are the catalogs loaded at runtime.
 examples/erli18n_demo/_checkouts/
 examples/erli18n_demo/_build/
+examples/erli18n_cowboy_demo/_checkouts/
+examples/erli18n_cowboy_demo/_build/
+examples/erli18n_elli_demo/_checkouts/
+examples/erli18n_elli_demo/_build/
