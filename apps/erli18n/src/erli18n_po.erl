@@ -1768,4 +1768,13 @@ escape_string(<<$\t, Rest/binary>>, Acc) ->
 escape_string(<<$\r, Rest/binary>>, Acc) ->
     escape_string(Rest, [<<$\\, $r>> | Acc]);
 escape_string(<<C/utf8, Rest/binary>>, Acc) ->
-    escape_string(Rest, [<<C/utf8>> | Acc]).
+    escape_string(Rest, [<<C/utf8>> | Acc]);
+%% A byte that is not part of a valid UTF-8 sequence (e.g. a lone `0xFF` from a
+%% `<<255>>` literal that the extractor pulled from consumer source): pass it
+%% through verbatim. This keeps the serializer TOTAL over any `binary()`, as its
+%% `-spec binary() -> binary()` promises — without it a non-UTF-8 byte matches no
+%% clause and raises `function_clause`. The byte is emitted raw, the same way the
+%% PO reader tolerates raw bytes on parse, so `dump/1` never crashes on a catalog
+%% value carrying arbitrary bytes.
+escape_string(<<Byte, Rest/binary>>, Acc) ->
+    escape_string(Rest, [<<Byte>> | Acc]).
