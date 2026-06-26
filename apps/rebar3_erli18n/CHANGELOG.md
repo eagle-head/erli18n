@@ -15,6 +15,34 @@ the norm.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-06-25
+
+### Changed
+
+- **Raised the `erli18n` dependency from `~> 0.5` to `~> 0.6`,** in lockstep with
+  the co-released `erli18n` 0.6.0. The plugin still calls only the long-stable
+  `erli18n_po:parse/1` / `dump/1` / `escape_string/1` API, so the bump pins the
+  exact library line this release is built and tested against rather than
+  requiring new API. The publish order is unchanged — `erli18n` 0.6.0 must be
+  live on Hex before this plugin, since the published `requirements` resolve
+  `~> 0.6`.
+
+### Fixed
+
+- **`extract` and `merge` no longer crash with a `badmatch` when a catalog file
+  cannot be written.** Both providers matched `file:write_file/2` (and
+  `filelib:ensure_path/1` / `ensure_dir/1`) against a bare `ok =`, so any
+  filesystem failure — a read-only `priv/gettext`, an uncreatable parent,
+  `enospc` — aborted the whole `extract`/`merge` run on a `{badmatch, {error, _}}`
+  stacktrace. `extract`'s `write_pots`/`write_each_pot` and `merge`'s `write_po/2`
+  now short-circuit to `{error, {write_failed, Path, Reason}}` on the first
+  failure, which `do/1` surfaces as a normal `{error, _}` provider result. No CLI,
+  flag, or on-disk-layout change.
+- **`rebar3_erli18n_common:format_error/1` renders the new `{write_failed, Path,
+  Reason}` reason** as `erli18n: cannot write <path>: <reason>`, so a write
+  failure prints a clean human-readable message instead of the raw `~p`
+  catch-all.
+
 ## [0.1.0] — 2026-06-23
 
 Initial release of the `rebar3_erli18n` catalog-tooling plugin as its own Hex
@@ -155,5 +183,6 @@ prefixed tag (`rebar3_erli18n-vX.Y.Z`), so these point at the
 `.github/workflows/release.yml`.
 -->
 
-[Unreleased]: https://github.com/eagle-head/erli18n/compare/rebar3_erli18n-v0.1.0...HEAD
+[Unreleased]: https://github.com/eagle-head/erli18n/compare/rebar3_erli18n-v0.1.1...HEAD
+[0.1.1]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.1.1
 [0.1.0]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.1.0
