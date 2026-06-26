@@ -47,7 +47,7 @@ itself as a normal runtime dependency, since your code calls
 `erli18n:gettext/1` and friends:
 
 ```erlang
-{deps, [{erli18n, "~> 0.5"}]}.
+{deps, [{erli18n, "~> 0.6"}]}.
 {plugins, [rebar3_erli18n]}.
 ```
 
@@ -179,7 +179,7 @@ Both are load-bearing (empirically verified against rebar3 3.24 / OTP 28):
 - The consumer's `{plugins, [rebar3_erli18n]}` entry by name must still be
   present; `_checkouts/rebar3_erli18n` only takes precedence over a Hex fetch
   for that name.
-- The plugin's own `{deps, [{erli18n, "~> 0.5"}]}` declaration is what pulls
+- The plugin's own `{deps, [{erli18n, "~> 0.6"}]}` declaration is what pulls
   the consumer's `_checkouts/erli18n` onto the plugin's runtime code path at
   provider-run time. **Without** the plugin declaring the `erli18n` dep, the
   consumer's `erli18n` checkout does not land on the plugin path and
