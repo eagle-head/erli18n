@@ -25,6 +25,125 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-25
+
+Phase 5: **per-request localization middleware for Cowboy and Elli**, plus the
+pure negotiation core, structural performance/correctness fixes on the new
+per-request path, and two general latent-bug fixes surfaced by a test-adequacy
+audit (UTF-8 truncation in the interpolator, non-UTF-8 byte escaping in the PO
+serializer). Additive under the `0.x` SemVer policy — new optional adapter
+modules, a new public core module, and one new facade function; the default
+`kernel` + `stdlib` build is unchanged.
+
+### Added
+
+- **Per-request localization middleware for Cowboy and Elli** (roadmap Phase 5).
+  Two new **optional** adapter modules make per-request locale negotiation
+  turnkey:
+  - `erli18n_cowboy` — a `cowboy_middleware` that negotiates the request locale
+    and calls `erli18n:setlocale/1` before the handler runs.
+  - `erli18n_elli` — the Elli `elli_middleware` counterpart (`preprocess/2`).
+
+  Both delegate to the existing `erli18n_negotiate` engine via a new pure,
+  framework-agnostic core, `erli18n_http`, which resolves the locale from an
+  ordered set of sources — default precedence **query > cookie > `Accept-Language`
+  header > default** (configurable), with cookie/query overrides canonicalized
+  and the header parsed by the fail-soft RFC 9110 parser. The chosen locale is
+  also placed in the Cowboy `Env` (`erli18n_locale`) and, by default, in `logger`
+  process metadata.
+
+  Per-request resolution is **lazy and short-circuiting**: each source is
+  extracted only when it is reached, and negotiation stops at the first source
+  that yields a supported locale — so a request answered by an earlier-precedence
+  source never pays for the cookie split or header parse of the later ones. The
+  adapters resolve `available` / `default` lazily too: `erli18n:loaded_locales/0`
+  is forced only once a source actually yields a value, `erli18n:default_locale/0`
+  only on a total miss, and an explicitly-supplied `available` / `default` is
+  zero-cost. Both the Cowboy and Elli query seams are **total and fail-soft**:
+  each adapter feeds the **raw** query binary (from the framework's own total
+  accessor — `cowboy_req:qs/1`, `elli_request:query_str/1`) to a single pure-core
+  parser, `erli18n_http:query_value/2`, instead of the framework's raising query
+  decoder. A value-less `?locale` and a malformed percent-escape (`?locale=%ZZ`,
+  a bare `?%`, a truncated `?locale=%E0%`) are skipped rather than crashing the
+  request. Per-request option **values** are validated at the `run/2` boundary:
+  a malformed `default` (non-binary) or `available` (not a list, or a list with
+  bad elements) is dropped so the documented default applies
+  (`erli18n:default_locale/0` / `erli18n:loaded_locales/0`), emitting a one-time
+  `logger:warning` — operator misconfiguration is **fail-soft-and-observable**,
+  never request-fatal.
+
+  `cowboy` and `elli` are optional in the same way as `telemetry`: they are
+  declared in `optional_applications` and are **not** runtime dependencies of the
+  published package, which still builds and runs on `kernel` + `stdlib` alone.
+  The module docs document the per-process / not-inherited-across-spawn locale
+  model and the broader cross-process handoff hazard (pooled workers, shared
+  `gen_server`s, `Task`-style spawns, Cowboy stream handlers that offload), the
+  mitigations, and a Phoenix interop note (no Elixir dependency).
+- **`erli18n:loaded_locales/0`** — returns the distinct, sorted locales that have
+  at least one catalog loaded: the authoritative *available* set for negotiation
+  (the default `available` set the new adapters use). It is backed by a dedicated
+  loaded-locale index kept as its own keyed `persistent_term` and maintained on
+  every catalog add/remove path (load/reload/put/merge-that-creates/unload/
+  erase_all), so the read is a single copy-free keyed lookup plus a `usort` rather
+  than a scan of every term on the node. Index writes are **compare-before-put**:
+  reloading an already-indexed catalog (or unloading an absent pair) leaves the
+  index term untouched and skips the node-wide literal-area GC that a
+  `persistent_term:put` would otherwise trigger.
+- **`erli18n_http` — public framework-agnostic negotiation core.** Exposes
+  `negotiate_locale/3` (resolve the request locale from an ordered candidate
+  list against an available set, with a `default` fall-through),
+  `negotiate_locale_lazy/4` (the lazy, short-circuiting engine the adapters drive,
+  taking an on-demand extraction callback and `available` / `default` thunks),
+  `cookie_value/2` (total, fail-soft single-cookie extraction from a raw
+  `Cookie` header, bounded against abuse), and `query_value/2` (total, fail-soft
+  single-parameter extraction from a raw query binary, percent-decoding the
+  matched value fail-soft and bounded against abuse). It is pure (no `setlocale`,
+  no logger, no I/O) and is the supported entry point for wiring frameworks the
+  bundled adapters do not cover. The canonical available-locale index is built
+  **once per negotiation call** and reused across every candidate; the cookie
+  parser bounds the split **itself** (peeling at most `MAX_COOKIE_PAIRS`
+  `;`-segments and dropping the tail unscanned, O(cap) rather than O(header
+  length)); and a `locale="pt_BR"` cookie in RFC 6265 quoted-string form is
+  unquoted byte-level and total.
+
+### Added (negotiation core)
+
+- **`erli18n_negotiate:available_index/1` + `negotiate_with_index/2`** — the
+  canonical available-locale index (`#{canonicalize(Original) => Original}`) is
+  now a public, reusable value: build it once with `available_index/1` and
+  negotiate many preference lists against it with `negotiate_with_index/2`,
+  instead of rebuilding the index per call. `negotiate/2` is exactly
+  `negotiate_with_index(Preferred, available_index(Available))`; its semantics are
+  unchanged.
+- **The `?MAX_RANGES` anti-DoS cap on `to_locale_list/2` is now honest on every
+  consumed cell.** The budget is a **per-consumed-cell** cap (at most 32 input
+  cells inspected) rather than a per-accepted-entry one: the wildcard-skip and
+  oversized-tag-skip branches now also decrement the budget, so a skip-heavy
+  adversarial preference list stops at 32 cells instead of walking the whole list.
+  Now reachable through the newly-public `negotiate/2` / `negotiate_with_index/2`.
+  Output is byte-identical for any input whose first 32 consumed cells are all
+  acceptable; it differs only when acceptable entries appear *after* 32 consumed
+  (including skipped) cells — which is exactly the documented anti-DoS contract.
+
+### Fixed
+
+- **`erli18n_interp` truncation now cuts on a UTF-8 codepoint boundary.** Both the
+  per-value clamp (`clamp_value/1`, at `?MAX_VALUE_BYTES`) and the output cap
+  (`append_and_check/2`, at `?MAX_OUTPUT_BYTES`) previously truncated with a
+  fixed-offset `binary:part/3`; because neither cap is codepoint-aligned, a cut
+  could split a multi-byte codepoint and leave a dangling partial sequence —
+  invalid UTF-8. A new total `truncate_utf8/2` (with `codepoint_start/2` /
+  `is_utf8_continuation/1`) backs off to the codepoint's lead byte when the cut
+  lands inside a multi-byte sequence, so a value that was valid UTF-8 stays valid
+  after clamping or truncation. Output for any value within the cap is unchanged.
+- **`erli18n_po:escape_string/1` is now total over any `binary()`.** A byte that is
+  not part of a valid UTF-8 sequence (e.g. a lone `0xFF`) matched no clause and
+  raised `function_clause`, crashing `dump/1` on a catalog value carrying arbitrary
+  bytes. A final byte-wise clause now passes such a byte through verbatim — the same
+  way the PO reader tolerates raw bytes on parse — honoring the
+  `-spec binary() -> binary()` totality contract. The five GNU gettext escapes and
+  all valid-UTF-8 output are byte-for-byte unchanged.
+
 ## [0.5.0] — 2026-06-22
 
 Packaging and public-API minor. Two coupled changes drive the minor bump under
@@ -491,7 +610,8 @@ prefixed tag (`erli18n-vX.Y.Z`), so these point at the `erli18n`-scoped tags
 rather than the legacy single `vX.Y.Z` tags. See `.github/workflows/release.yml`.
 -->
 
-[Unreleased]: https://github.com/eagle-head/erli18n/compare/erli18n-v0.5.0...HEAD
+[Unreleased]: https://github.com/eagle-head/erli18n/compare/erli18n-v0.6.0...HEAD
+[0.6.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.6.0
 [0.5.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.5.0
 [0.4.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.4.0
 [0.3.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.3.0
