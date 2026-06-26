@@ -50,7 +50,10 @@
     negotiate_canonicalize_idempotent/1,
     negotiate_separator_equivalence/1,
     negotiate_parse_accept_language_is_total/1,
-    negotiate_best_match_is_member/1
+    negotiate_best_match_is_member/1,
+    http_negotiate_locale_is_total/1,
+    http_cookie_value_is_total/1,
+    http_query_value_is_total/1
 ]).
 
 %% Number of QuickCheck runs per property. 200 = release-blocking floor
@@ -80,7 +83,10 @@ all() ->
         negotiate_canonicalize_idempotent,
         negotiate_separator_equivalence,
         negotiate_parse_accept_language_is_total,
-        negotiate_best_match_is_member
+        negotiate_best_match_is_member,
+        http_negotiate_locale_is_total,
+        http_cookie_value_is_total,
+        http_query_value_is_total
     ].
 
 init_per_suite(Config) ->
@@ -172,6 +178,15 @@ negotiate_parse_accept_language_is_total(_Config) ->
 
 negotiate_best_match_is_member(_Config) ->
     run_property(erli18n_negotiate_props:prop_best_match_is_member()).
+
+http_negotiate_locale_is_total(_Config) ->
+    run_property(erli18n_http_props:prop_negotiate_locale_is_total()).
+
+http_cookie_value_is_total(_Config) ->
+    run_property(erli18n_http_props:prop_cookie_value_is_total()).
+
+http_query_value_is_total(_Config) ->
+    run_property(erli18n_http_props:prop_query_value_is_total()).
 
 %% =========================
 %% Helpers

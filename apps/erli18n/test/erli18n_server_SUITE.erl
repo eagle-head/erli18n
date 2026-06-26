@@ -41,7 +41,8 @@
     commit_honours_tunable_timeout/1,
     lookup_plural_5_not_exported/1,
     header_absent_plural_form_is_a_miss/1,
-    read_api_guards_reject_bad_args/1
+    read_api_guards_reject_bad_args/1,
+    loaded_locales_empty_when_nothing_loaded/1
 ]).
 
 all() ->
@@ -66,7 +67,8 @@ all() ->
         commit_honours_tunable_timeout,
         lookup_plural_5_not_exported,
         header_absent_plural_form_is_a_miss,
-        read_api_guards_reject_bad_args
+        read_api_guards_reject_bad_args,
+        loaded_locales_empty_when_nothing_loaded
     ].
 
 init_per_suite(Config) ->
@@ -696,6 +698,15 @@ read_api_guards_reject_bad_args(_Config) ->
             default, ~"pt_BR", undefined, ~"Missing"
         )
     ).
+
+%% loaded_locales/0 returns the empty list when no catalog is loaded.
+%% init_per_testcase/2 unloads every catalog before each case, so the
+%% available set starts empty here.
+loaded_locales_empty_when_nothing_loaded(_Config) ->
+    ?assertEqual([], erli18n_server:loaded_catalogs()),
+    ?assertEqual([], erli18n:loaded_locales()),
+    ?assertEqual([], erli18n_server:loaded_locales()),
+    ok.
 
 %% Header-absent plural miss contract. A catalog populated ONLY via the
 %% low-level insert API (`insert_plural`/`insert_catalog`) has data rows but NO

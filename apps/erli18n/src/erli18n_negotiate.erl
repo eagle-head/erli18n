@@ -101,7 +101,8 @@ fail-closed and never interns untrusted text into atoms:
 - `?MAX_CHAIN` (8) — fallback chain length cap.
 - `?MAX_HEADER_BYTES` (4096) — a longer `Accept-Language` header → `[]`.
 - `?MAX_RAW_ELEMS` (64) — comma-split element cap (RFC 9110 §5.6.1) → `[]`.
-- `?MAX_RANGES` (32) — accepted-range budget.
+- `?MAX_RANGES` (32) — accepted-range budget in `parse_accept_language/1`;
+  per-consumed-cell budget (32 cells inspected max) in `to_locale_list/2`.
 
 No `binary_to_atom`/`list_to_atom` is used anywhere; locales stay binaries,
 so a stream of distinct hostile tags cannot exhaust the atom table.
@@ -129,10 +130,12 @@ so a stream of distinct hostile tags cannot exhaust the atom table.
     parse_accept_language/1,
     negotiate/2,
     negotiate/3,
+    negotiate_with_index/2,
+    available_index/1,
     best_match/3
 ]).
 
--export_type([locale/0, language_range/0, qvalue/0]).
+-export_type([locale/0, language_range/0, qvalue/0, available_index/0]).
 
 %% ===================================================================
 %% Types
@@ -157,6 +160,15 @@ A quality value as an integer in milli-units, `0..1000` (`q=1` → `1000`,
 `q=0.8` → `800`). Integer arithmetic avoids float parsing of untrusted text.
 """.
 -type qvalue() :: 0..1000.
+
+-doc """
+A prebuilt canonical→original index of an available-locale set: maps
+`canonicalize(Original)` to the original `Available` casing, first occurrence
+winning. Produced by `available_index/1` and consumed by
+`negotiate_with_index/2`, so a caller negotiating many preference lists against
+ONE available set builds the index once and reuses it.
+""".
+-type available_index() :: #{locale() => locale()}.
 
 %% ===================================================================
 %% Anti-DoS caps. Bound the work fail-closed, mirroring the caps in
@@ -183,8 +195,14 @@ A quality value as an integer in milli-units, `0..1000` (`q=1` → `1000`,
 %% (RFC 9110 §5.6.1 list-DoS bound); more → `[]`.
 -define(MAX_RAW_ELEMS, 64).
 
-%% Maximum accepted (post-filter) ranges kept from one header; skipped or
-%% empty elements do not consume this budget.
+%% Two distinct per-budget uses, both fail-closed at 32:
+%%  - `parse_accept_language/1`: maximum ACCEPTED (post-filter) ranges kept
+%%    from one header; there a skipped/empty element does NOT consume the
+%%    budget (the budget counts outputs).
+%%  - `to_locale_list/2` (raw negotiation input): a per-CONSUMED-cell budget —
+%%    EVERY inspected cell (accepted, wildcard-skipped, or oversized-skipped)
+%%    consumes one unit, so at most 32 cells are ever inspected regardless of
+%%    how many are skipped (O(1) in input length on skip-heavy hostile input).
 -define(MAX_RANGES, 32).
 
 %% ===================================================================
@@ -629,7 +647,34 @@ See `negotiate/3` (default instead of `error`) and `best_match/3`.
 """.
 -spec negotiate([locale()] | [{locale(), qvalue()}], [locale()]) -> {ok, locale()} | error.
 negotiate(Preferred, Available) ->
-    case match_preferred(to_locale_list(Preferred), available_index(Available)) of
+    negotiate_with_index(Preferred, available_index(Available)).
+
+-doc """
+Like `negotiate/2`, but against a PREBUILT `available_index/1` instead of a raw
+`Available` list — so the canonical index is built once and reused across many
+preference lists (e.g. one per request source).
+
+`negotiate(Preferred, Available)` is exactly
+`negotiate_with_index(Preferred, available_index(Available))`; this arity lets a
+caller hoist the `available_index/1` out of a per-candidate loop. Semantics are
+otherwise identical: each `Preferred` entry is canonicalized and resolved through
+its `fallback_chain/2` against the index, first hit winning, returning the
+original `Available` casing. Total.
+
+```erlang
+1> Ix = erli18n_negotiate:available_index([<<"pt">>, <<"en">>]).
+2> erli18n_negotiate:negotiate_with_index([<<"pt-BR">>], Ix).
+{ok,<<"pt">>}
+3> erli18n_negotiate:negotiate_with_index([<<"zh_Hant">>], Ix).
+error
+```
+
+See `negotiate/2` (raw-list form) and `available_index/1`.
+""".
+-spec negotiate_with_index([locale()] | [{locale(), qvalue()}], available_index()) ->
+    {ok, locale()} | error.
+negotiate_with_index(Preferred, Index) when is_map(Index) ->
+    case match_preferred(to_locale_list(Preferred), Index) of
         {ok, _Original} = Found -> Found;
         nomatch -> error
     end.
@@ -668,9 +713,14 @@ best_match(Preferred, Available, Default) ->
 %% Normalize a preference list to plain locale binaries: strip q tuples and
 %% wildcard ranges, preserving order. Each entry is bounded — an entry over
 %% `?MAX_TAG_BYTES` is skipped (it can never match a canonical catalog key, and
-%% leaving it in would feed the truncation path an oversized tag) — and at most
-%% `?MAX_RANGES` accepted entries are kept, so a hostile preference list cannot
-%% drive unbounded negotiation work even when supplied raw (not via the parser).
+%% leaving it in would feed the truncation path an oversized tag). The
+%% `?MAX_RANGES` budget here is a per-CONSUMED-cell budget: every inspected cell
+%% (accepted, wildcard-skipped, or oversized-skipped) decrements it, so at most
+%% 32 input cells are ever inspected. This is stricter than (and distinct from)
+%% `parse_accept_language/1`'s pre-split `?MAX_RAW_ELEMS` cap and its
+%% accepted-output `?MAX_RANGES` budget — so a hostile preference list cannot
+%% drive unbounded negotiation work even when supplied raw (not via the parser),
+%% including a list that is overwhelmingly wildcards or oversized tags.
 -spec to_locale_list([locale()] | [{locale(), qvalue()}]) -> [locale()].
 to_locale_list(List) ->
     to_locale_list(List, ?MAX_RANGES).
@@ -683,12 +733,12 @@ to_locale_list([], _Budget) ->
 to_locale_list([X | Rest], Budget) ->
     case is_wildcard(X) of
         true ->
-            to_locale_list(Rest, Budget);
+            to_locale_list(Rest, Budget - 1);
         false ->
             L = strip_q(X),
             case byte_size(L) =< ?MAX_TAG_BYTES of
                 true -> [L | to_locale_list(Rest, Budget - 1)];
-                false -> to_locale_list(Rest, Budget)
+                false -> to_locale_list(Rest, Budget - 1)
             end
     end.
 
@@ -701,9 +751,23 @@ is_wildcard({~"*", _}) -> true;
 is_wildcard(~"*") -> true;
 is_wildcard(_) -> false.
 
-%% Build #{canonicalize(Available) => OriginalAvailable}, first occurrence
-%% winning so the original catalog casing of the earliest entry is preserved.
--spec available_index([locale()]) -> #{locale() => locale()}.
+-doc """
+Builds the canonical→original index for an available-locale set, for reuse
+across many `negotiate_with_index/2` calls.
+
+Maps `canonicalize(A)` to the original `A` for each `A` in `Available`, first
+occurrence winning (so the earliest entry's original catalog casing is the one
+returned by a later match). This is the per-`Available` work `negotiate/2`
+otherwise repeats on every call; build it once when negotiating multiple
+preference lists against the same set. Total.
+
+```erlang
+1> Ix = erli18n_negotiate:available_index([<<"pt_BR">>, <<"fr">>]).
+2> erli18n_negotiate:negotiate_with_index([<<"pt-BR">>], Ix).
+{ok,<<"pt_BR">>}
+```
+""".
+-spec available_index([locale()]) -> available_index().
 available_index(Available) ->
     lists:foldl(
         fun(A, Acc) ->
@@ -717,7 +781,7 @@ available_index(Available) ->
         Available
     ).
 
--spec match_preferred([locale()], #{locale() => locale()}) -> {ok, locale()} | nomatch.
+-spec match_preferred([locale()], available_index()) -> {ok, locale()} | nomatch.
 match_preferred([], _Index) ->
     nomatch;
 match_preferred([P | Rest], Index) ->
@@ -726,7 +790,7 @@ match_preferred([P | Rest], Index) ->
         nomatch -> match_preferred(Rest, Index)
     end.
 
--spec match_chain([locale()], #{locale() => locale()}) -> {ok, locale()} | nomatch.
+-spec match_chain([locale()], available_index()) -> {ok, locale()} | nomatch.
 match_chain([], _Index) ->
     nomatch;
 match_chain([C | Rest], Index) ->

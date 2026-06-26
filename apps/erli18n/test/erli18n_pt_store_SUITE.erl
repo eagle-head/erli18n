@@ -22,7 +22,13 @@
     introspection_counts_and_keys/1,
     all_lists_loaded_catalogs/1,
     erase_all_clears_namespace/1,
-    guards_reject_bad_args/1
+    guards_reject_bad_args/1,
+    index_tracks_catalog_set/1,
+    index_created_by_merge/1,
+    index_cleared_after_erase_all/1,
+    index_empty_when_nothing_loaded/1,
+    put_map_header_only_excluded_from_index/1,
+    index_unchanged_on_reload_is_noop/1
 ]).
 
 -define(D, erli18n_pt_test).
@@ -57,7 +63,13 @@ all() ->
         introspection_counts_and_keys,
         all_lists_loaded_catalogs,
         erase_all_clears_namespace,
-        guards_reject_bad_args
+        guards_reject_bad_args,
+        index_tracks_catalog_set,
+        index_created_by_merge,
+        index_cleared_after_erase_all,
+        index_empty_when_nothing_loaded,
+        put_map_header_only_excluded_from_index,
+        index_unchanged_on_reload_is_noop
     ].
 
 init_per_testcase(_Case, Config) ->
@@ -344,7 +356,122 @@ guards_reject_bad_args(_Config) ->
     ?assertError(function_clause, erli18n_pt_store:unload(BadDomain, ?L)),
     ?assertError(function_clause, erli18n_pt_store:merge_entries(BadDomain, ?L, [])).
 
+index_tracks_catalog_set(_Config) ->
+    %% Empty to start (erase_all in setup).
+    ?assertEqual([], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([], loaded_index()),
+    %% load adds the {Domain, Locale} pair.
+    ok = erli18n_pt_store:load(
+        ?D, ?L, [{singular, undefined, <<"Hi">>, <<"Salut">>}], fallback_header()
+    ),
+    ?assertEqual([?L], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([{?D, ?L}], loaded_index()),
+    %% reload does NOT duplicate (the index is a set).
+    ok = erli18n_pt_store:reload(
+        ?D, ?L, [{singular, undefined, <<"Hi">>, <<"New">>}], fallback_header()
+    ),
+    ?assertEqual([?L], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([{?D, ?L}], loaded_index()),
+    %% A second locale in the same domain extends the set.
+    ok = erli18n_pt_store:load(
+        ?D, <<"es">>, [{singular, undefined, <<"Hi">>, <<"Hola">>}], fallback_header()
+    ),
+    ?assertEqual([<<"es">>, ?L], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([{?D, <<"es">>}, {?D, ?L}], loaded_index()),
+    %% A second domain SHARING the ?L locale: the locale projection still lists
+    %% ?L once, but the index carries the distinct pair.
+    ok = erli18n_pt_store:load(
+        other_dom, ?L, [{singular, undefined, <<"Hi">>, <<"Ciao">>}], fallback_header()
+    ),
+    ?assertEqual([<<"es">>, ?L], erli18n_pt_store:loaded_locales()),
+    ?assertEqual(
+        [{?D, <<"es">>}, {?D, ?L}, {other_dom, ?L}], loaded_index()
+    ),
+    %% unload of {?D, ?L} removes only that pair; ?L survives via {other_dom, ?L}.
+    ok = erli18n_pt_store:unload(?D, ?L),
+    ?assertEqual([<<"es">>, ?L], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([{?D, <<"es">>}, {other_dom, ?L}], loaded_index()),
+    %% Clean up the extra domain/locale (erase_all in teardown also covers it).
+    ok = erli18n_pt_store:unload(?D, <<"es">>),
+    ok = erli18n_pt_store:unload(other_dom, ?L).
+
+index_created_by_merge(_Config) ->
+    %% An empty merge against an absent catalog creates nothing -> no index entry.
+    ok = erli18n_pt_store:merge_entries(?D, ?L, []),
+    ?assertEqual([], loaded_index()),
+    ?assertEqual([], erli18n_pt_store:loaded_locales()),
+    %% A non-empty merge creates the catalog -> the index gains the pair.
+    ok = erli18n_pt_store:merge_entries(?D, ?L, [
+        {singular, undefined, <<"Hi">>, <<"Salut">>}
+    ]),
+    ?assertEqual([{?D, ?L}], loaded_index()),
+    ?assertEqual([?L], erli18n_pt_store:loaded_locales()),
+    %% Extending the existing catalog keeps a single pair (set, no dup).
+    ok = erli18n_pt_store:merge_entries(?D, ?L, [
+        {singular, undefined, <<"Bye">>, <<"Ciao">>}
+    ]),
+    ?assertEqual([{?D, ?L}], loaded_index()),
+    ?assertEqual([?L], erli18n_pt_store:loaded_locales()).
+
+index_cleared_after_erase_all(_Config) ->
+    %% Load several catalogs, then erase_all/0 clears the index term too.
+    ok = erli18n_pt_store:load(
+        ?D, ?L, [{singular, undefined, <<"Hi">>, <<"Salut">>}], fallback_header()
+    ),
+    ok = erli18n_pt_store:load(
+        ?D, <<"es">>, [{singular, undefined, <<"Hi">>, <<"Hola">>}], fallback_header()
+    ),
+    ?assertEqual([<<"es">>, ?L], erli18n_pt_store:loaded_locales()),
+    %% erase_all reports the catalog count only (the index term is not counted).
+    ?assertEqual(2, erli18n_pt_store:erase_all()),
+    ?assertEqual([], erli18n_pt_store:loaded_locales()),
+    %% The index term itself is gone (default `[]` on a keyed read).
+    ?assertEqual([], loaded_index()).
+
+index_empty_when_nothing_loaded(_Config) ->
+    %% Fresh (post-erase) state: the loaded set is empty.
+    ?assertEqual([], erli18n_pt_store:loaded_locales()),
+    ?assertEqual([], loaded_index()).
+
+put_map_header_only_excluded_from_index(_Config) ->
+    %% Installing a header-only map (data_count == 0) takes put_map/3's
+    %% `false -> index_del` arm: the catalog term IS stored, but the pair is
+    %% NOT in the loaded-catalog index, so loaded_locales/0 excludes it.
+    HeaderOnly = #{'$header' => fallback_header()},
+    ?assertEqual(0, erli18n_pt_store:data_count(HeaderOnly)),
+    ok = erli18n_pt_store:put_map(?D, ?L, HeaderOnly),
+    ?assertEqual({ok, fallback_header()}, erli18n_pt_store:lookup_header(?D, ?L)),
+    ?assertEqual([], loaded_index()),
+    ?assertEqual([], erli18n_pt_store:loaded_locales()),
+    %% Re-putting the same header-only map keeps the index empty (del is a no-op).
+    ok = erli18n_pt_store:put_map(?D, ?L, HeaderOnly),
+    ?assertEqual([], loaded_index()).
+
+index_unchanged_on_reload_is_noop(_Config) ->
+    ok = erli18n_pt_store:load(
+        ?D, ?L, [{singular, undefined, <<"Hi">>, <<"Salut">>}], fallback_header()
+    ),
+    ?assertEqual([{?D, ?L}], loaded_index()),
+    Before = loaded_index(),
+    %% Reload the SAME {Domain, Locale}: index_add is a no-op (pair present),
+    %% so the index term is unchanged.
+    ok = erli18n_pt_store:reload(
+        ?D, ?L, [{singular, undefined, <<"Hi">>, <<"New">>}], fallback_header()
+    ),
+    ?assertEqual(Before, loaded_index()),
+    %% Unloading an ABSENT pair is likewise a no-op on the set.
+    BeforeDel = loaded_index(),
+    ok = erli18n_pt_store:unload(?D, <<"never_loaded">>),
+    ?assertEqual(BeforeDel, loaded_index()).
+
 %% --- helpers ---
+
+%% Read the raw loaded-catalog index ordset directly, so pair-level membership
+%% (not just the locale projection) can be asserted. The index lives under the
+%% fixed 1-tuple key `{erli18n_catalog_index}`, distinct from the 3-tuple catalog
+%% keys; an absent term reads as the empty set.
+loaded_index() ->
+    persistent_term:get({erli18n_catalog_index}, []).
 
 fallback_header() ->
     #{plural => fallback, source => test}.
