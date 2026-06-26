@@ -15,13 +15,14 @@ Modern, GNU `gettext`–compatible internationalization (i18n) for Erlang/OTP �
 > - 📦 **Drop-in `.po` / `.pot`** — load the exact files your translators already produce in Poedit, Crowdin, Transifex, Weblate, or `xgettext`.
 > - 🌍 **Real CLDR pluralization** — a true `Plural-Forms` evaluator, with CLDR rules inlined for **49 locales**.
 > - ⚡ **Copy-free lookups** — reads run straight from `persistent_term` in your own process, with no copy onto the caller heap and no lock; only writes go through a `gen_server`. No bottleneck on the hot path.
+> - 🌐 **Per-request localization for Cowboy & Elli** — optional `erli18n_cowboy` / `erli18n_elli` middleware negotiate the request locale (query → cookie → `Accept-Language`) and set it before your handler, so handlers translate with no locale argument. Both are optional like `telemetry`: not pulled into the published `kernel` + `stdlib` build.
 
 ## Quickstart
 
 Add the dependency to `rebar.config`:
 
 ```erlang
-{deps, [{erli18n, "~> 0.5"}]}.
+{deps, [{erli18n, "~> 0.6"}]}.
 ```
 
 Then load a catalog and translate:
@@ -193,6 +194,25 @@ erli18n:set_locale_fallback(base_language),
 
 `locale_fallback` accepts `off` (default), `base_language` (`pt_BR` → `pt` → `default_locale`), or `{explicit, Map}` where `Map :: #{locale() => [locale()]}` overrides specific locales (unlisted ones fall through to `base_language`). The chain runs **only on a miss** and **only** when enabled, so an exact hit stays a single copy-free `persistent_term:get` with zero added cost. Canonicalization covers separator (`pt-BR`/`pt_BR`) and case normalization plus a closed legacy-alias set (`iw`→`he`, `in`→`id`, `ji`→`yi`, `jw`→`jv`, `mo`→`ro`). Script⇄region *Likely Subtags* inference (`zh_Hans` ⇄ `zh_CN`) is an explicit non-goal — load catalogs under the keys your clients send, or use an `{explicit, Map}`.
 
+## Per-request localization (Cowboy / Elli)
+
+Two **optional** adapters wire that per-request negotiation into a web framework so you stop hand-rolling it: [`erli18n_cowboy`](https://hexdocs.pm/erli18n/erli18n_cowboy.html) (a `cowboy_middleware`) and [`erli18n_elli`](https://hexdocs.pm/erli18n/erli18n_elli.html) (an `elli_middleware`), both built on the pure, framework-agnostic core [`erli18n_http`](https://hexdocs.pm/erli18n/erli18n_http.html) (`negotiate_locale/3`, `negotiate_locale_lazy/4`, `cookie_value/2`, and `query_value/2`), which you can also call directly when wiring a framework the adapters don't cover. Both negotiate the locale from the request and call `setlocale/1` before your handler runs, so handlers translate with no locale argument. `cowboy`/`elli` are optional **like `telemetry`** — neither is a dependency of the published package, which still runs on `kernel` + `stdlib` alone; you add whichever framework you already use.
+
+```erlang
+%% Cowboy: install the middleware ahead of the handler.
+Dispatch = cowboy_router:compile([{'_', [{"/[...]", my_handler, []}]}]),
+cowboy:start_clear(http, [{port, 8080}], #{
+    env => #{dispatch => Dispatch, erli18n => #{cookie_name => <<"locale">>}},
+    middlewares => [erli18n_cowboy, cowboy_router, cowboy_handler]
+}).
+```
+
+The default precedence is **query string > cookie > `Accept-Language` header > default** (i18next's order; Django's "explicit beats persisted beats browser-preferred" spirit), configurable per request. The available set defaults to `erli18n:loaded_locales/0` — the distinct locales you have actually loaded, the authoritative thing to negotiate against — and the default to `default_locale/0`.
+
+The query seam is **total and fail-soft on both adapters**: each adapter feeds the raw query binary (Cowboy's `cowboy_req:qs/1`, Elli's `elli_request:query_str/1` — both total, never raising) to the single core extractor `erli18n_http:query_value/2`, which percent-decodes the matched value itself. A value-less key (`?locale`) and a malformed percent-escape (`?locale=%ZZ`, bare `?%`, `?locale=%E0%`) are simply skipped, never crashing the request. Per-request option **values** are equally fail-soft: a malformed `default` or `available` falls back to the documented default (`default_locale/0` / `loaded_locales/0`) with a one-time `logger:warning`, so an operator misconfiguration is observable rather than request-fatal.
+
+**Mind the spawn boundary.** As above, the locale is per-process and is **not** inherited across a spawn. Cowboy and Elli run the middleware and handler in one request process, so the handler sees it — but any cross-process handoff (a pooled worker, a shared `gen_server`, a `Task`-style spawn, a Cowboy stream handler that offloads) starts at `which_locale() = undefined`. Capture `Locale = erli18n:which_locale()` and re-`setlocale/1` it in the worker, or pass it explicitly. The adapters also set `logger` process metadata `#{locale => L}` by default so request logs carry it. The `erli18n_cowboy` module docs cover the full hazard, the mitigations, and a Phoenix interop note (no Elixir dependency).
+
 ## Core concepts
 
 A few things worth knowing before you reach for the API:
@@ -213,13 +233,13 @@ Most Erlang projects today either reach for the venerable but [largely-stalled `
 - **A copy-free hot path** — `lookup_*` reads run directly from `persistent_term` in the *calling* process, with no copy onto the caller heap and no lock; only writes (loading and reloading catalogs) go through the owning `gen_server`. No process bottleneck on the read side. A reload or unload defers a one-time, node-wide `persistent_term` literal-area GC, paid once per write and negligible for the load-once workload.
 - **Heavily tested** — Common Test suites, PropEr property-based tests, fuzzing, and a parity suite that checks output byte-for-byte against GNU `msgfmt` as a ground-truth oracle. 100% behavioral coverage.
 
-String **extraction** is handled by the companion rebar3 plugin, [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) — an Erlang-native extractor that walks your source's abstract forms and recognizes the full facade family by name and arity, producing `.pot` templates (the `mix gettext.extract` experience for Erlang). It is shipped as a **separate** Hex package that depends on this library (`{deps, [{erli18n, "~> 0.5"}]}`); consumers opt in with `{plugins, [rebar3_erli18n]}` and gain `rebar3 erli18n {extract,merge,check,report}`. Only **compile-time-literal** msgids are extracted (runtime-computed keys still translate, they just aren't discovered statically) — the same model and the same caveat as Elixir's Gettext. Compile-time key checking is intentionally out of scope; runtime lookup plus the `check` freshness gate is the mainstream pattern. (The plugin is published as its own Hex package, after this library; see [`apps/rebar3_erli18n/README.md`](https://github.com/eagle-head/erli18n/blob/main/apps/rebar3_erli18n/README.md).)
+String **extraction** is handled by the companion rebar3 plugin, [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) — an Erlang-native extractor that walks your source's abstract forms and recognizes the full facade family by name and arity, producing `.pot` templates (the `mix gettext.extract` experience for Erlang). It is shipped as a **separate** Hex package that depends on this library (`{deps, [{erli18n, "~> 0.6"}]}`); consumers opt in with `{plugins, [rebar3_erli18n]}` and gain `rebar3 erli18n {extract,merge,check,report}`. Only **compile-time-literal** msgids are extracted (runtime-computed keys still translate, they just aren't discovered statically) — the same model and the same caveat as Elixir's Gettext. Compile-time key checking is intentionally out of scope; runtime lookup plus the `check` freshness gate is the mainstream pattern. (The plugin is published as its own Hex package, after this library; see [`apps/rebar3_erli18n/README.md`](https://github.com/eagle-head/erli18n/blob/main/apps/rebar3_erli18n/README.md).)
 
 ## Installation
 
 ```erlang
 {deps, [
-    {erli18n, "~> 0.5"}
+    {erli18n, "~> 0.6"}
 ]}.
 ```
 
@@ -227,8 +247,17 @@ For [`telemetry`](https://github.com/beam-telemetry/telemetry) observability (op
 
 ```erlang
 {deps, [
-    {erli18n, "~> 0.5"},
+    {erli18n, "~> 0.6"},
     {telemetry, "~> 1.3"}
+]}.
+```
+
+For the optional per-request adapters, add the web framework you already use to **your** application's `{deps}` — `erli18n` does not pull `cowboy` or `elli` in (they are optional like `telemetry`), so the published library keeps building on `kernel` + `stdlib` alone:
+
+```erlang
+{deps, [
+    {erli18n, "~> 0.6"},
+    {cowboy, "~> 2.13"}    %% or: {elli, "~> 3.3"}
 ]}.
 ```
 
@@ -242,13 +271,13 @@ OTP 27 is the floor because the public modules use the native `-doc` / `-moduled
 
 ## Status
 
-**Initial development (`0.5.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.5.0` → `0.6.0`); patch bumps (`0.5.0` → `0.5.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
+**Initial development (`0.6.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.6.0` → `0.7.0`); patch bumps (`0.6.0` → `0.6.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Documentation
 
 - **API reference** — published on [HexDocs](https://hexdocs.pm/erli18n/), generated from the native `-doc` / `-moduledoc` attributes (OTP 27+ documentation). Every public module and function is documented there.
 - **Changelog & design decisions** — [`CHANGELOG.md`](CHANGELOG.md) records each release, the versioning policy, and the `.po`-semantics and pluralization decisions behind the implementation.
-- **Examples** — the `.po` fixtures under [`apps/erli18n/test/`](https://github.com/eagle-head/erli18n/tree/main/apps/erli18n/test) cover plural forms, contexts, fuzzy entries, encodings, and edge cases — a practical reference for what `erli18n` accepts. A runnable downstream consumer lives under [`examples/erli18n_demo/`](https://github.com/eagle-head/erli18n/tree/main/examples/erli18n_demo), with real `gettext` call sites and committed catalogs.
+- **Examples** — the `.po` fixtures under [`apps/erli18n/test/`](https://github.com/eagle-head/erli18n/tree/main/apps/erli18n/test) cover plural forms, contexts, fuzzy entries, encodings, and edge cases — a practical reference for what `erli18n` accepts. A runnable downstream consumer lives under [`examples/erli18n_demo/`](https://github.com/eagle-head/erli18n/tree/main/examples/erli18n_demo), with real `gettext` call sites and committed catalogs. Two runnable middleware examples show per-request locale negotiation end to end: [`examples/erli18n_cowboy_demo/`](https://github.com/eagle-head/erli18n/tree/main/examples/erli18n_cowboy_demo) (Cowboy) and [`examples/erli18n_elli_demo/`](https://github.com/eagle-head/erli18n/tree/main/examples/erli18n_elli_demo) (Elli).
 
 ## Development
 
