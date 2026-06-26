@@ -115,7 +115,8 @@ ok
 - App defaults: `default_locale/0`, `textdomain/0`.
 - Catalog lifecycle: `ensure_loaded/3`, `reload/3`, `unload/2`,
   `default_po_path/3`.
-- Observability: `loaded_catalogs/0`, `memory_info/0`, `which_keys/2`.
+- Observability: `loaded_catalogs/0`, `loaded_locales/0`, `memory_info/0`,
+  `which_keys/2`.
 - Locale negotiation & fallback (Phase 2, opt-in): `negotiate/2`,
   `parse_accept_language/1`, `canonicalize_locale/1`, `set_locale_fallback/1`
   (and the `locale_fallback` app env). See `erli18n_negotiate`.
@@ -251,6 +252,7 @@ who has never seen the project:
 -export([
     memory_info/0,
     loaded_catalogs/0,
+    loaded_locales/0,
     which_keys/2
 ]).
 
@@ -1893,6 +1895,32 @@ specific catalog) and `memory_info/0`.
     [{domain(), locale(), non_neg_integer()}].
 loaded_catalogs() ->
     erli18n_server:loaded_catalogs().
+
+-doc """
+Lists the distinct locales that currently have at least one catalog loaded, in
+sorted order — the authoritative *available* set for locale negotiation.
+
+This is the locale projection of `loaded_catalogs/0`, deduplicated across
+domains: you can only serve a locale you have actually loaded, so this — not a
+side configuration list — is what a request middleware negotiates against. Pass
+it as the `Available` argument to `negotiate/2`. Returns an empty list when
+nothing is loaded.
+
+```erlang
+1> erli18n:loaded_locales().
+[<<"de">>, <<"fr">>, <<"pt_BR">>]
+2> erli18n:negotiate(erli18n:parse_accept_language(<<"fr;q=0.9, de">>),
+..                   erli18n:loaded_locales()).
+{ok, <<"de">>}
+```
+
+See `loaded_catalogs/0` (the full per-catalog list) and the optional
+`erli18n_cowboy` / `erli18n_elli` request adapters, which default their available
+set to this function.
+""".
+-spec loaded_locales() -> [locale()].
+loaded_locales() ->
+    erli18n_server:loaded_locales().
 
 -doc """
 Lists the keys (entries) of the `(Domain, Locale)` catalog, useful for

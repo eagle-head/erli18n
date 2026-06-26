@@ -1,18 +1,28 @@
 {application, erli18n, [
     {description, "Modern internationalization (i18n) library for Erlang, GNU gettext compatible"},
-    {vsn, "0.5.0"},
+    {vsn, "0.6.0"},
     {registered, [erli18n_sup, erli18n_server]},
     {mod, {erli18n_app, []}},
     {applications, [
         kernel,
         stdlib
     ]},
-    %% `telemetry` is declared in `optional_applications` per OTP 24+ so
-    %% the release tool will pick it up if present without forcing the
-    %% consumer to start it. The runtime guard in `erli18n_telemetry`
-    %% covers the case where the module is genuinely absent. See
-    %% the `erli18n_telemetry` module docs.
-    {optional_applications, [telemetry]},
+    %% Optional applications (OTP 24+): the release tool picks each up if
+    %% present without forcing the consumer to start it, and the published
+    %% package keeps requiring only `kernel` + `stdlib`.
+    %%
+    %%   * `telemetry` — the observability surface; the runtime guard in
+    %%     `erli18n_telemetry` covers the case where the module is absent.
+    %%   * `cowboy` / `elli` — the optional per-request localization adapters
+    %%     (`erli18n_cowboy`, `erli18n_elli`). They are NOT runtime deps of
+    %%     this package (absent from `applications` and from
+    %%     `apps/erli18n/rebar.config` `{deps}`); the adapter modules only run
+    %%     when the consumer's own framework invokes them, so `cowboy_req` /
+    %%     `elli_request` are externally-provided runtime modules. Each adapter
+    %%     confines those calls to a small seam with scoped xref/dialyzer/
+    %%     eqwalizer suppressions (the `rebar3_erli18n_host` idiom). See the
+    %%     `erli18n_cowboy`/`erli18n_elli` docs.
+    {optional_applications, [telemetry, cowboy, elli]},
     %% Application env defaults consumed by `erli18n_telemetry`:
     %%   * `emit_lookup_telemetry` (boolean, default false):
     %%     opt-in flag for `[erli18n, lookup, miss]` and

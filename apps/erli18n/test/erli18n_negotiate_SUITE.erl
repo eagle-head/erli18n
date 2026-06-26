@@ -43,6 +43,9 @@
     negotiate_default/1,
     best_match_wildcard_skip/1,
     best_match_first_available_wins/1,
+    available_index_contract/1,
+    available_index_first_occurrence_wins/1,
+    negotiate_with_index_matches/1,
     no_atom_interning/1
 ]).
 
@@ -73,6 +76,9 @@ all() ->
         negotiate_default,
         best_match_wildcard_skip,
         best_match_first_available_wins,
+        available_index_contract,
+        available_index_first_occurrence_wins,
+        negotiate_with_index_matches,
         no_atom_interning
     ].
 
@@ -238,11 +244,19 @@ negotiate_bounds_preference_list(_Config) ->
     %% catalog key), and a valid sibling still resolves.
     Huge = binary:copy(~"a_", 8000),
     ?assertEqual({ok, ~"pt"}, erli18n_negotiate:negotiate([Huge, ~"pt-BR"], [~"pt"])),
-    %% The accepted preference count is bounded; a huge wildcard/over-cap list
-    %% followed by a real match still terminates quickly.
+    %% The preference list is bounded by a per-CONSUMED-cell budget (?MAX_RANGES,
+    %% 32 cells inspected max): every inspected cell — accepted, wildcard-skipped,
+    %% or oversized-skipped — decrements it. A real match within the first 32 cells
+    %% still resolves.
+    NearPrefs = lists:duplicate(30, ~"*") ++ [~"pt"],
+    ?assertEqual({ok, ~"pt"}, erli18n_negotiate:negotiate(NearPrefs, [~"pt"])),
+    %% A real match that appears only AFTER the 32-cell budget is exhausted (here
+    %% behind 5000 wildcard cells) is correctly unreachable — that IS the anti-DoS
+    %% contract — and the bounded scan still terminates quickly regardless of the
+    %% input length.
     Prefs = lists:duplicate(5000, ~"*") ++ [~"pt"],
     {Micros, Res} = timer:tc(fun() -> erli18n_negotiate:negotiate(Prefs, [~"pt"]) end),
-    ?assertEqual({ok, ~"pt"}, Res),
+    ?assertEqual(error, Res),
     ?assert(Micros < 200000),
     ok.
 
@@ -376,6 +390,55 @@ best_match_first_available_wins(_Config) ->
     ?assertEqual(
         {ok, ~"pt-BR"},
         erli18n_negotiate:negotiate([~"pt_BR"], [~"pt-BR", ~"pt_BR"])
+    ),
+    ok.
+
+%% =========================
+%% Prebuilt available index (available_index/1 + negotiate_with_index/2)
+%% =========================
+
+available_index_contract(_Config) ->
+    %% available_index/1 builds a canonical -> original map: it IS a map, keyed by
+    %% the canonicalized form, valued by the original catalog casing.
+    Index = erli18n_negotiate:available_index([~"pt-BR", ~"fr", ~"en"]),
+    ?assert(is_map(Index)),
+    ?assertEqual(#{~"pt_BR" => ~"pt-BR", ~"fr" => ~"fr", ~"en" => ~"en"}, Index),
+    %% An empty available set yields the empty index.
+    ?assertEqual(#{}, erli18n_negotiate:available_index([])),
+    ok.
+
+available_index_first_occurrence_wins(_Config) ->
+    %% Two entries canonicalizing to the SAME key: the FIRST occurrence's original
+    %% casing is the one kept in the index (first-occurrence-wins).
+    Index = erli18n_negotiate:available_index([~"pt-BR", ~"pt_BR"]),
+    ?assertEqual(#{~"pt_BR" => ~"pt-BR"}, Index),
+    %% That first-occurrence original is what a later match returns.
+    ?assertEqual(
+        {ok, ~"pt-BR"},
+        erli18n_negotiate:negotiate_with_index([~"pt_BR"], Index)
+    ),
+    ok.
+
+negotiate_with_index_matches(_Config) ->
+    %% negotiate_with_index/2 against a PREBUILT index returns {ok, OriginalCasing}
+    %% for several preference lists, and error on no match — matching negotiate/2's
+    %% semantics but hoisting the index out of the per-candidate loop.
+    Index = erli18n_negotiate:available_index([~"pt_BR", ~"en"]),
+    %% Exact canonical hit.
+    ?assertEqual({ok, ~"pt_BR"}, erli18n_negotiate:negotiate_with_index([~"pt-BR"], Index)),
+    %% Base-language fallback (en-US -> en).
+    ?assertEqual({ok, ~"en"}, erli18n_negotiate:negotiate_with_index([~"en-US"], Index)),
+    %% First acceptable preference wins over a later one.
+    ?assertEqual(
+        {ok, ~"en"},
+        erli18n_negotiate:negotiate_with_index([~"zh", ~"en", ~"pt-BR"], Index)
+    ),
+    %% No match -> error.
+    ?assertEqual(error, erli18n_negotiate:negotiate_with_index([~"zh_Hant"], Index)),
+    %% Result is identical to building the index inline via negotiate/2.
+    ?assertEqual(
+        erli18n_negotiate:negotiate([~"pt-BR"], [~"pt_BR", ~"en"]),
+        erli18n_negotiate:negotiate_with_index([~"pt-BR"], Index)
     ),
     ok.
 

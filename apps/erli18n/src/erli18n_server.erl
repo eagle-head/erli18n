@@ -154,6 +154,7 @@ counts only the 130 data entries — see both functions.)
 -export([
     memory_info/0,
     loaded_catalogs/0,
+    loaded_locales/0,
     which_keys/2
 ]).
 
@@ -761,6 +762,18 @@ loaded_catalogs() ->
         {D, L, erli18n_pt_store:data_count(M)}
      || {D, L, M} <- erli18n_pt_store:all(), erli18n_pt_store:data_count(M) > 0
     ].
+
+-doc """
+The sorted, distinct locales across all loaded catalogs — the locale projection
+of `loaded_catalogs/0`. Backed by the loaded-catalog index: ONE keyed,
+copy-free `persistent_term` read plus a `usort`, NOT a node-wide scan, so it is
+cheap enough for the per-request locale-negotiation default path.
+
+See also `loaded_catalogs/0`.
+""".
+-spec loaded_locales() -> [locale()].
+loaded_locales() ->
+    erli18n_pt_store:loaded_locales().
 
 -doc """
 Enumerates the keys (singular and plural) loaded for `(Domain, Locale)`.
