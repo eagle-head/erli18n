@@ -1,0 +1,15 @@
+# Blank issues are disabled so every report flows through a structured form
+# (bug_report.yml / feature_request.yml), which enforces the data the maintainer
+# needs and applies the right triage labels. Usage questions and security reports
+# are routed out of the issue tracker via the contact links below.
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & usage help (GitHub Discussions)
+    url: https://github.com/eagle-head/erli18n/discussions
+    about: "How-to and usage questions belong here, not in the issue tracker."
+  - name: Erlang Forums
+    url: https://erlangforums.com
+    about: "Broader Erlang/Elixir, i18n, and gettext discussion with the community."
+  - name: Report a security vulnerability
+    url: https://github.com/eagle-head/erli18n/blob/main/SECURITY.md
+    about: "Do NOT open a public issue for security reports — follow SECURITY.md and email privately."
