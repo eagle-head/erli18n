@@ -242,13 +242,13 @@ jobs:
     # rules, e.g. required reviewers, that you configure in repo settings).
     environment: hex-publish
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Tag push -> github.ref_name is the tag; dispatch -> the tag input.
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@v1.24.0
         with:
           otp-version: '28'
           # No rebar3-version pin: setup-beam installs the current rebar3 — the
