@@ -101,8 +101,8 @@ make gate-full     # OTP 27/28/29, full gate, gettext parity, ELP installed
 
 ## CI as the gate — and keeping control over who triggers it
 
-CI runs the **full** quality gate (the same steps as `--full`, with ELP
-installed) on **OTP 27, 28, and 29** — automatically on every push to `main`
+CI runs the **full** quality gate (the same steps as `--full`, with ELP on
+every OTP major ELP ships a build for) on **OTP 27, 28, and 29** — automatically on every push to `main`
 and every pull request targeting `main`. Promoting those runs to **required
 status checks** is a one-time branch-protection setting (see _Activation_).
 

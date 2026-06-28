@@ -11,9 +11,11 @@
 #   --full | --pre-push     Everything in --fast (run strictly) plus require_elp,
 #                           dialyzer, eqwalizer, ct + cover, and the gettext
 #                           parity gate (~5min). Pre-push/release gate.
-#                           REQUIRES `elp` to be
-#                           installed: if it is missing, --full FAILS (it does
-#                           not silently skip the eqwalizer / elp lint steps).
+#                           REQUIRES `elp` on every OTP major ELP ships a build
+#                           for: if it is missing there, --full FAILS. On an OTP
+#                           major ELP has no build for yet (sentinel
+#                           /etc/erli18n/elp-unsupported), the elp lint /
+#                           eqwalizer steps SKIP loudly instead.
 #   --fix                   Auto-fix what's auto-fixable (currently:
 #                           erlfmt formatting). Does NOT run other checks.
 #   --help                  Print this message.
@@ -171,14 +173,24 @@ find_actionlint() {
 ELP_INSTALL_HINT="https://whatsapp.github.io/eqwalizer/getting-started/"
 ACTIONLINT_INSTALL_HINT="https://github.com/rhysd/actionlint (pinned in mise.toml as aqua:rhysd/actionlint; run 'mise install')"
 
-# Hard gate: in --full (and any strict CI path) elp is a REQUIRED toolchain
-# component, not an optional nicety. The eqwalizer and elp-lint steps are real
-# type/diagnostic gates; letting them silently SKIP when elp is missing turns a
-# RED type error into a green build (the "SKIP-passes hole"). This step records
-# a real FAIL — counted in TOTAL/FAILED, driving a non-zero gate exit — when
-# `find_elp` does not resolve, so a machine without elp cannot pass --full.
-# When elp IS present this step passes cheaply and the subsequent run_eqwalizer
-# / run_elp_lint steps execute against the now-guaranteed binary.
+# ELP ships prebuilt binaries only for the OTP majors it has actually built;
+# there is no OTP 29 build yet. The toolchain installer
+# (docker/erli18n-otp.Dockerfile and .github/workflows/ci.yml) drops this
+# sentinel on a lane whose OTP major ELP does not build for, so the elp-driven
+# steps SKIP there instead of FAILing — they stay REQUIRED on every major ELP
+# does build for. Self-healing: once ELP ships the major, the installer stops
+# dropping the sentinel and elp is required again.
+ELP_UNSUPPORTED_SENTINEL="/etc/erli18n/elp-unsupported"
+elp_unsupported_here() { [[ -f "$ELP_UNSUPPORTED_SENTINEL" ]]; }
+elp_unsupported_otp() { cat "$ELP_UNSUPPORTED_SENTINEL" 2>/dev/null || echo '?'; }
+
+# Hard gate: in --full elp is a REQUIRED toolchain component on every OTP major
+# ELP builds for, not an optional nicety. The eqwalizer and elp-lint steps are
+# real type/diagnostic gates; letting them silently SKIP when elp is missing
+# turns a RED type error into a green build (the "SKIP-passes hole"). This step
+# records a real FAIL when `find_elp` does not resolve AND no sentinel marks this
+# OTP major as one ELP has no build for — so a machine without elp cannot pass
+# --full, while a lane ELP genuinely cannot build for SKIPs loudly instead.
 require_elp() {
     TOTAL_COUNT=$((TOTAL_COUNT + 1))
     printf '%s[%d] elp present (required for --full)%s\n' \
@@ -186,6 +198,9 @@ require_elp() {
     local elp_bin
     if elp_bin=$(find_elp); then
         printf '    %s[OK]%s  found: %s\n\n' "$GREEN$BOLD" "$RESET" "$elp_bin"
+    elif elp_unsupported_here; then
+        printf '    %s[SKIP]%s  ELP ships no OTP %s build yet; elp lint + eqwalize are skipped on this lane (enforced on the OTP majors ELP builds for).\n\n' \
+            "$YELLOW$BOLD" "$RESET" "$(elp_unsupported_otp)"
     else
         printf '    %s[FAIL]%s  elp is REQUIRED for --full; install per %s\n\n' \
             "$RED$BOLD" "$RESET" "$ELP_INSTALL_HINT"
@@ -266,6 +281,11 @@ run_eqwalizer() {
     printf '%s[%d] eqwalizer (gradual typing)%s\n' "$BOLD$CYAN" "$TOTAL_COUNT" "$RESET"
     local elp_bin
     if ! elp_bin=$(find_elp); then
+        if elp_unsupported_here; then
+            printf '    %s[SKIP]%s ELP ships no OTP %s build yet; eqwalize skipped on this lane (enforced where ELP builds).\n\n' \
+                "$YELLOW$BOLD" "$RESET" "$(elp_unsupported_otp)"
+            return 0
+        fi
         if [[ "$strict" == "1" ]]; then
             printf '    %s[FAIL]%s elp REQUIRED but not found — install per %s\n\n' \
                 "$RED$BOLD" "$RESET" "$ELP_INSTALL_HINT"
@@ -313,6 +333,11 @@ run_elp_lint() {
         "$BOLD$CYAN" "$TOTAL_COUNT" "$RESET"
     local elp_bin
     if ! elp_bin=$(find_elp); then
+        if elp_unsupported_here; then
+            printf '    %s[SKIP]%s ELP ships no OTP %s build yet; elp lint skipped on this lane (enforced where ELP builds).\n\n' \
+                "$YELLOW$BOLD" "$RESET" "$(elp_unsupported_otp)"
+            return 0
+        fi
         if [[ "$strict" == "1" ]]; then
             printf '    %s[FAIL]%s elp REQUIRED but not found — install per %s\n\n' \
                 "$RED$BOLD" "$RESET" "$ELP_INSTALL_HINT"
