@@ -197,12 +197,12 @@ evaluate(Base, Oracle, Scenario) when is_map(Scenario) ->
         Id ->
             try
                 Got = run_scenario(Base, Scenario),
-                case maps:find(Id, Oracle) of
-                    {ok, Expected} when Expected =:= Got ->
+                case Oracle of
+                    #{Id := Got} ->
                         {Id, ok};
-                    {ok, Expected} ->
+                    #{Id := Expected} ->
                         {Id, {mismatch, Expected, Got}};
-                    error ->
+                    _ ->
                         {Id, {no_oracle_entry, Got}}
                 end
             catch
@@ -267,10 +267,10 @@ dispatch(_Domain, _Locale, S) ->
 %% Required-field accessor with a scenario-tagged error so a malformed
 %% matrix row points straight at the offending `id` and key.
 req(Scenario, Key) ->
-    case maps:find(Key, Scenario) of
-        {ok, Value} ->
+    case Scenario of
+        #{Key := Value} ->
             Value;
-        error ->
+        _ ->
             error({missing_field, Key, {scenario, maps:get(id, Scenario, undefined)}})
     end.
 
