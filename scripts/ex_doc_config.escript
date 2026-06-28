@@ -44,6 +44,30 @@ convert(Opts, ExtrasBase) ->
                 {true, {source_url, to_bin(Url)}};
             ({api_reference, Bool}) when is_boolean(Bool) ->
                 {true, {api_reference, Bool}};
+            %% Sidebar module grouping. ex_doc matches each pattern in a group's
+            %% list against a module: an ATOM matches the module name exactly
+            %% (`atom =:= module`), a binary matches the module's id string, and a
+            %% `{re_pattern,...}` is a regex over the id (see ExDoc.Config:
+            %% match_module/4). We keep the module lists as bare atoms — the most
+            %% robust form — so only the group NAME is normalized to a binary
+            %% (mirroring rebar3_ex_doc:to_ex_doc_format/1).
+            ({groups_for_modules, Groups}) when is_list(Groups) ->
+                {true, {groups_for_modules, [{to_bin(Name), Mods} || {Name, Mods} <- Groups]}};
+            %% Sidebar extras grouping. ex_doc matches each pattern against the
+            %% extra's INPUT path *exactly* when the pattern is a binary
+            %% (`path =:= string`; only a regex does a substring match — see
+            %% ExDoc.Config:match_extra/2). The `.config` file ex_doc consults is
+            %% plain Erlang terms with no regex literal, so we use exact binaries
+            %% and join the SAME <extras-base> prefix onto every pattern that
+            %% `{extras, ...}` above joins onto the files — keeping the two lists
+            %% in lockstep whether ex_doc runs from the repo root (gen_docs.sh,
+            %% base = apps/<app>) or from the app dir (bare paths, empty base).
+            ({groups_for_extras, Groups}) when is_list(Groups) ->
+                {true,
+                    {groups_for_extras, [
+                        {to_bin(Name), [to_bin(join_base(ExtrasBase, P)) || P <- Patterns]}
+                     || {Name, Patterns} <- Groups
+                    ]}};
             %% `prefix_ref_vsn_with_v` is consumed by gen_docs.sh (source-ref),
             %% not an ex_doc config key — drop it here.
             ({prefix_ref_vsn_with_v, _}) ->
