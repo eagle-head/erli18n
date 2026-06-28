@@ -1,0 +1,56 @@
+name: Labels
+
+# "Labels as code": ensure every label in .github/labels.yml exists with the right
+# color and description, so the canonical taxonomy the issue forms depend on is
+# always present. Runs only when the taxonomy (or this workflow) changes on main,
+# plus on demand; workflow_dispatch exposes a dry-run toggle to preview which
+# labels would be created or updated. It runs with `skip-delete`, so it is
+# non-destructive — labels not in labels.yml (e.g. GitHub's defaults) are left alone.
+run-name: >-
+  Labels · ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run == true && 'dry-run' || 'sync' }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/labels.yml"
+      - ".github/workflows/labels.yml"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Preview changes without applying them (no labels are created, updated, or deleted)."
+        type: boolean
+        default: false
+
+# Serialize label syncs so two runs can never race on the same label set.
+concurrency:
+  group: labels-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: the only write scope granted is issues:write (labels live under
+# the issues API). contents:read is the minimum actions/checkout needs to read
+# labels.yml; no other scope is granted.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    name: Sync labels from .github/labels.yml
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      # crazy-max/ghaction-github-labeler@v6.0.0, pinned to its commit SHA so a
+      # moved tag can never silently change the action we run.
+      - name: Sync labels
+        uses: crazy-max/ghaction-github-labeler@548a7c3603594ec17c819e1239f281a3b801ab4d # v6.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          yaml-file: .github/labels.yml
+          # Non-destructive: create/update only — never delete a label that is not
+          # listed in labels.yml, so GitHub's default labels stay intact.
+          skip-delete: true
+          # On a manual run, honor the dry-run input; on a push to main, apply.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}

@@ -1,0 +1,39 @@
+# Dependabot configuration.
+# Reference: https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+#
+# Scope: the GitHub Actions consumed by this repo's workflows (ci.yml,
+# release.yml, and any future workflow such as label sync) are pinned to mutable
+# major tags, so nothing otherwise tracks upstream releases or advisories for
+# them. The `github-actions` ecosystem with directory "/" scans every file under
+# .github/workflows/, so new workflows are covered automatically.
+#
+# Rebar3/Hex dependencies are intentionally NOT listed here: Dependabot has no
+# Erlang/rebar3 ecosystem, and runtime deps are already pinned via rebar.lock.
+# (The rebar3-native equivalent for those is the optional `rebar3_depup` plugin.)
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # Batch every routine action bump into ONE pull request to keep the queue
+    # quiet. Security updates are unaffected: they are delivered individually and
+    # immediately (grouping defaults to version updates only), so urgent fixes
+    # are never held back behind this batch.
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
+    # Supply-chain hardening: hold a freshly published action version for a few
+    # days before proposing it, giving a compromised or broken release time to
+    # be caught and yanked before it ever lands in a PR here. (Cooldown applies
+    # to version updates only; security updates still arrive immediately.)
+    cooldown:
+      default-days: 5
+    # Conventional Commits: CI/tooling changes use the `ci` type, and
+    # `include: "scope"` appends the dependency scope, yielding messages such as
+    # `ci(deps): bump actions/checkout from 6 to 7`.
+    commit-message:
+      prefix: "ci"
+      include: "scope"
