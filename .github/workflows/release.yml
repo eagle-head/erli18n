@@ -374,7 +374,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
-            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar \
+            -e LANG=C.UTF-8 \
             erlang:28 rebar3 hex build package
 
       # Publish FROM the app dir, for the same lock-resolution reason as the build
@@ -387,7 +387,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
-            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar -e HEX_API_KEY \
+            -e LANG=C.UTF-8 -e HEX_API_KEY \
             erlang:28 rebar3 hex publish package --repo hexpm --yes
 
       # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh is
@@ -401,7 +401,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" -w /work \
-            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar \
+            -e LANG=C.UTF-8 \
             erlang:28 bash scripts/gen_docs.sh ${{ steps.pkg.outputs.app }}
 
       # Publish the pre-built doc/ directory directly. `--doc-dir` makes
@@ -414,7 +414,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
-            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar -e HEX_API_KEY \
+            -e LANG=C.UTF-8 -e HEX_API_KEY \
             erlang:28 rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
 
       # Create the visible GitHub Release LAST — only after Hex publishing has
