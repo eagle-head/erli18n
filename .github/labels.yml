@@ -1,0 +1,59 @@
+# Canonical label taxonomy — source of truth ("labels as code").
+#
+# This file is applied to the repository by .github/workflows/labels.yml using
+# crazy-max/ghaction-github-labeler. The issue forms in .github/ISSUE_TEMPLATE/
+# auto-apply a subset of these labels (bug_report -> bug + needs-triage;
+# feature_request -> enhancement + needs-triage), so every label they reference
+# MUST exist here. The label-sync workflow creates/updates every label below with
+# its color and description; it runs with `skip-delete`, so labels NOT listed here
+# (e.g. GitHub's defaults) are left untouched, never deleted.
+#
+# Three axes, mirroring the commit-scope model:
+#   - Type:    bug | enhancement | documentation | question
+#   - Package: package: erli18n | package: rebar3_erli18n
+#   - Triage:  needs-triage | good first issue | help wanted
+#
+# Security reports go PRIVATE via SECURITY.md — there is intentionally no public
+# "security" label or issue path.
+#
+# To rename an existing label without losing the issues/PRs attached to it, add a
+# `from_name: "<old name>"` key to its entry (see the action's docs).
+
+# --- Type -------------------------------------------------------------------
+- name: "bug"
+  color: "#d73a4a"
+  description: "Incorrect or unexpected behavior"
+
+- name: "enhancement"
+  color: "#a2eeef"
+  description: "New feature or request"
+
+- name: "documentation"
+  color: "#0075ca"
+  description: "Documentation, HexDocs, or guides"
+
+- name: "question"
+  color: "#d876e3"
+  description: "Usage question (prefer Discussions or the Erlang Forums)"
+
+# --- Package ----------------------------------------------------------------
+- name: "package: erli18n"
+  color: "#1d76db"
+  description: "Affects the erli18n runtime library"
+
+- name: "package: rebar3_erli18n"
+  color: "#1d76db"
+  description: "Affects the rebar3_erli18n rebar3 plugin"
+
+# --- Triage -----------------------------------------------------------------
+- name: "needs-triage"
+  color: "#fbca04"
+  description: "Awaiting maintainer triage"
+
+- name: "good first issue"
+  color: "#7057ff"
+  description: "Good for newcomers"
+
+- name: "help wanted"
+  color: "#008672"
+  description: "Extra attention or a contributor is welcome"
