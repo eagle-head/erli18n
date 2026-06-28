@@ -66,16 +66,18 @@ Run before pushing; install the git hooks once so it runs automatically.
 
 ```
 bin/quality-gate.sh --full     # compile · xref · erlfmt · elvis · hank · elp lint
-                               # · dialyzer · eqwalize · ct+cover (100%) · catalog check
-./hooks/install.sh             # --fast on pre-commit, --full on pre-push
+                               # · actionlint · dialyzer · eqwalize · ct+cover (100%)
+                               # · gettext parity · catalog check
+bin/install-git-hooks.sh       # pre-commit: --fast; pre-push: the Dockerized OTP 27/28/29 matrix
 ```
 
 For a change touching `src/`, the PO parser, plural rules, telemetry, an
-`.app.src`, or the publish path, also run the local two-OTP matrix — it is a
-_superset_ of CI (both supported OTPs **and** ELP):
+`.app.src`, or the publish path, also run the local OTP matrix — it is a
+_superset_ of CI (all supported OTPs **and** ELP, with the GNU gettext parity
+oracle built once and graded against every lane):
 
 ```
-docker compose -f compose.matrix.yml up     # OTP 27 + 28, full gate, ELP installed
+make gate-full     # OTP 27/28/29, full gate, gettext parity, ELP installed
 ```
 
 ## Flow: local change → `main`
@@ -100,7 +102,9 @@ docker compose -f compose.matrix.yml up     # OTP 27 + 28, full gate, ELP instal
 ## CI as the gate — and keeping control over who triggers it
 
 CI runs the **full** quality gate (the same steps as `--full`, with ELP
-installed) on **OTP 27 and 28**, as a **required status check** on `main`.
+installed) on **OTP 27, 28, and 29** — automatically on every push to `main`
+and every pull request targeting `main`. Promoting those runs to **required
+status checks** is a one-time branch-protection setting (see _Activation_).
 
 For this public, open-source repository:
 
@@ -172,18 +176,19 @@ secrets. ([Using environments for deployment / required reviewers](https://docs.
 
 ## Activation — required GitHub settings (one-time)
 
-The file-based parts of this workflow live in the repo; these repository
-**settings** are not version-controlled and must be configured before the
-CI-as-gate model is live:
+The file-based parts of this workflow already live in the repo — `ci.yml`
+already triggers on `pull_request: branches: [main]` and already installs ELP
+and runs `elp lint` / `eqwalize-all` across OTP 27/28/29. What is **not**
+version-controlled is the repository **settings** that turn those runs into a
+binding gate:
 
 1. **Settings → Actions → General → Fork pull request workflows from outside
    collaborators →** `Require approval for all outside collaborators`. (Stops
    external PRs from running CI without maintainer approval.)
-2. **Add the `pull_request: branches: [main]` trigger and the ELP install +
-   `elp lint` / `eqwalize-all` steps to `.github/workflows/ci.yml`** so CI is the
-   full gate. (Do this only after step 1.)
-3. **Settings → Branches / Rulesets → protect `main`:** require the CI status
-   checks; block direct pushes and force-pushes; require linear history; do not
-   allow bypassing.
-4. **Settings → Environments → `hex-publish` →** add the maintainer as a
+2. **Settings → Branches / Rulesets → protect `main`:** require the CI status
+   checks `full gate (OTP 27)`, `full gate (OTP 28)`, and `full gate (OTP 29)`
+   (the exact job names emitted by `ci.yml`); block direct pushes and
+   force-pushes; require linear history; do not allow bypassing. Require **only**
+   checks that actually run on PRs — never one that doesn't, or merges deadlock.
+3. **Settings → Environments → `hex-publish` →** add the maintainer as a
    **required reviewer** (locks publishing).
