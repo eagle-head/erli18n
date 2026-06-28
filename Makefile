@@ -33,7 +33,7 @@ OTP_SERVICES := erli18n-otp27 erli18n-otp28 erli18n-otp29
 
 .DEFAULT_GOAL := help
 
-.PHONY: help gate-fast gate-full extract parity release-check hooks-install otp-matrix pull
+.PHONY: help gate-fast gate-full gate-otp extract parity release-check hooks-install otp-matrix pull
 
 help: ## List the available targets.
 	@echo "erli18n make targets:"
@@ -52,6 +52,13 @@ otp-matrix: extract ## Run the full in-container gate across OTP 27/28/29 (reuse
 	$(DC) run --rm -T --no-deps erli18n-otp27
 	$(DC) run --rm -T --no-deps erli18n-otp28
 	$(DC) run --rm -T --no-deps erli18n-otp29
+
+gate-otp: ## Build + extract + run the FULL gate for ONE OTP (e.g. `make gate-otp OTP=29`). Self-contained: this is EXACTLY what each CI matrix job runs, so a lane reproduces identically local and remote.
+	@test -n "$(OTP)" || { echo "Usage: make gate-otp OTP=<27|28|29>"; exit 1; }
+	$(DC) build --pull gettext-extract erli18n-otp$(OTP)
+	@mkdir -p $(ARTIFACTS_DIR)
+	$(DC) run --rm -T gettext-extract
+	$(DC) run --rm -T --no-deps erli18n-otp$(OTP)
 
 pull: ## Rebuild the gate images, pulling the latest base (newest OTP minor + gettext).
 	$(DC) build --pull

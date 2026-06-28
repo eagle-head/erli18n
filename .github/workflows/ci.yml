@@ -27,110 +27,52 @@ permissions:
 jobs:
   gate:
     name: full gate (OTP ${{ matrix.otp }})
-    # Runner OS is pinned per the erlef/setup-beam compatibility matrix
-    # (https://github.com/erlef/setup-beam#compatibility-between-operating-system-and-erlangotp):
-    # OTP 27/28/29 -> Ubuntu 24.04 (libssl3t64). OTP 25.3 / 26 are unsupported —
-    # the native -doc/-moduledoc (EEP-59) attributes require OTP 27+.
+    # The gate runs INSIDE the official erlang:NN image, via docker-compose.yml —
+    # exactly what `make gate-full` does locally, so CI and the local pre-push
+    # gate are the SAME environment down to the rebar3 the image maintainers ship
+    # for each OTP. This removes erlef/setup-beam and its separately-pinned rebar3,
+    # which drifted from the images and broke OTP 29 (rebar3 3.24's precompiled
+    # BEAMs do not load on OTP 29). gettext, the pt_BR/ru_RU UTF-8 locales, ELP,
+    # and actionlint are all baked into the image by docker/erli18n-otp.Dockerfile,
+    # so there are no per-tool install steps here.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         otp: ['27', '28', '29']
+    env:
+      # Deterministic Compose project name so the per-OTP build volume has a
+      # predictable name for the CT-log extraction on failure below.
+      COMPOSE_PROJECT_NAME: erli18n-gate
     steps:
       - uses: actions/checkout@v6
 
-      # gettext (msgfmt) drives the parity oracle; the pt_BR / ru_RU UTF-8
-      # locales drive the plural/parity suites. apt-get on hosted runners flakes
-      # transiently (mirror/network), so wrap the network-touching calls in a
-      # small retry — a single hiccup must not redden the gate.
-      - name: Install system dependencies (gettext + UTF-8 locales)
+      # The gate goes through the SAME Makefile target a developer runs locally —
+      # `make gate-otp OTP=${{ matrix.otp }}` reproduces this job byte for byte:
+      # build this OTP's image from the official erlang:NN base (--pull = latest
+      # minor), extract the GNU gettext oracle once, then run the full gate inside
+      # the image (compile, xref, erlfmt, elvis, hank, elp lint, dialyzer,
+      # eqwalize, ct + cover, the hard-fail gettext parity step, catalog). ONE
+      # source of truth (Makefile + docker-compose.yml) for local and remote.
+      - name: Run the full gate for OTP ${{ matrix.otp }}
+        run: make gate-otp OTP=${{ matrix.otp }}
+
+      # CT logs live on the per-OTP build volume (REBAR_BASE_DIR=/rebar/otpNN),
+      # off the host workspace; on failure, copy them out for the artifact.
+      - name: Collect CT logs on failure
+        if: failure()
         run: |
-          retry() {
-            local n=1
-            until "$@"; do
-              if [ "$n" -ge 3 ]; then
-                echo "::error::'$*' failed after $n attempts"
-                return 1
-              fi
-              echo "attempt $n for '$*' failed; retrying in 5s..."
-              sleep 5
-              n=$((n + 1))
-            done
-          }
-          retry sudo apt-get update
-          retry sudo apt-get install -y gettext locales
-          msgfmt --version | head -1
-          sudo sed -i 's/^# *\(pt_BR.UTF-8 UTF-8\)/\1/; s/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen
-          sudo locale-gen pt_BR.UTF-8 ru_RU.UTF-8
-          locale -a | grep -E 'pt_BR|ru_RU'
-
-      - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: ${{ matrix.otp }}
-          rebar3-version: '3.24'
-
-      # The --full gate runs ELP (elp lint + eqwalize-all) on every OTP major ELP
-      # ships a prebuilt binary for. ELP's assets are
-      # elp-linux-x86_64-unknown-linux-gnu-otp-<major>[.minor].tar.gz. Three
-      # outcomes mirror docker/erli18n-otp.Dockerfile so the gate is never
-      # silently de-fanged: install when an asset exists; drop the
-      # /etc/erli18n/elp-unsupported sentinel (gate skips ELP on this lane) when
-      # ELP has no build for this major yet (e.g. OTP 29); fail if NO otp-* asset
-      # exists at all (the naming changed or the network is down).
-      - name: Install ELP (matching OTP, for elp lint + eqwalize-all)
-        run: |
-          set -euo pipefail
-          OTP_MAJOR='${{ matrix.otp }}'
-          ASSETS=$(curl -fsSL https://api.github.com/repos/WhatsApp/erlang-language-platform/releases/latest \
-            | grep -oE '"browser_download_url": *"[^"]+"' | cut -d'"' -f4)
-          URL=$(printf '%s\n' "$ASSETS" | grep -E "x86_64-unknown-linux-gnu-otp-${OTP_MAJOR}[.0-9]*\.tar\.gz$" | head -1 || true)
-          if [ -n "$URL" ]; then
-            echo "ELP asset for OTP ${OTP_MAJOR}: ${URL}"
-            curl -fsSL "$URL" -o /tmp/elp.tar.gz
-            sudo tar -xzf /tmp/elp.tar.gz -C /usr/local/bin
-            sudo chmod +x /usr/local/bin/elp
-            elp version
-          elif printf '%s\n' "$ASSETS" | grep -qE 'x86_64-unknown-linux-gnu-otp-[0-9]'; then
-            echo "::warning::ELP ships no otp-${OTP_MAJOR} build yet; elp lint + eqwalize are skipped on this lane and enforced on the supported lanes."
-            sudo mkdir -p /etc/erli18n
-            printf '%s\n' "${OTP_MAJOR}" | sudo tee /etc/erli18n/elp-unsupported
-          else
-            echo "::error::No ELP otp-* asset found at all; the release naming may have changed."
-            exit 1
-          fi
-
-      - name: Cache rebar3 build + Dialyzer PLT
-        uses: actions/cache@v5
-        with:
-          path: |
-            _build
-            ~/.cache/rebar3
-          key: ${{ runner.os }}-otp${{ matrix.otp }}-gate-${{ hashFiles('rebar.lock', 'rebar.config') }}
-          restore-keys: |
-            ${{ runner.os }}-otp${{ matrix.otp }}-gate-
-
-      # actionlint (the --full gate's workflow linter) is a standalone binary the
-      # GitHub runners do not ship; install the version pinned in mise.toml.
-      - name: Install actionlint (pinned)
-        env:
-          ACTIONLINT_VERSION: '1.7.12'
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
-          sudo tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint
-          actionlint --version
-
-      # The full local gate, run identically per OTP: compile (warnings_as_errors),
-      # xref, erlfmt --check, elvis, hank, elp lint, dialyzer, eqwalize-all,
-      # ct --cover/cover (100%), and the catalog-freshness check.
-      - name: Run the full quality gate
-        run: bin/quality-gate.sh --full
+          mkdir -p ct-logs
+          docker run --rm \
+            -v "erli18n-gate_gate-rebar-otp${{ matrix.otp }}:/rebar:ro" \
+            -v "$PWD/ct-logs:/out" \
+            alpine sh -c 'cp -r /rebar/otp${{ matrix.otp }}/test/logs/. /out/ 2>/dev/null || true'
 
       - name: Upload CT logs on failure
         if: failure()
         uses: actions/upload-artifact@v6
         with:
           name: ct-logs-otp${{ matrix.otp }}
-          path: _build/test/logs/
+          path: ct-logs/
+          if-no-files-found: ignore
           retention-days: 7
