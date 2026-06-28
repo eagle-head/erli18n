@@ -48,22 +48,50 @@ RUN set -eux; \
     msgfmt --version | head -1; \
     rm -rf /var/lib/apt/lists/*
 
-# Install ELP matching this image's OTP major (derived from OTP_VERSION). The
-# `--full` gate REQUIRES elp (it records a hard FAIL when absent), so a missing
-# or failed install must redden the build, not silently skip. Asset names are
+# Install ELP matching this image's OTP major (derived from OTP_VERSION). ELP
+# ships prebuilt binaries per OTP major; asset names are
 # elp-linux-x86_64-unknown-linux-gnu-otp-<major>[.minor].tar.gz — identical to
-# the lookup in .github/workflows/ci.yml.
+# the lookup in .github/workflows/ci.yml. Three outcomes, so a real toolchain
+# gap never silently disables the gate:
+#   * an asset exists for this OTP major -> install it (a failed download/extract
+#     reddens the build via set -e);
+#   * NO asset for this major but ELP does ship OTHER otp-* builds -> ELP has no
+#     build for this OTP yet (e.g. OTP 29 today). Drop a sentinel so the gate
+#     SKIPS the elp-driven steps on this lane (still enforced on the lanes ELP
+#     does build for); self-healing once ELP ships this major;
+#   * NO otp-* asset at all -> the release naming changed (or the network is
+#     down): FAIL rather than silently drop ELP everywhere.
 RUN set -eux; \
     OTP_MAJOR="${OTP_VERSION%%.*}"; \
-    URL="$(curl -fsSL https://api.github.com/repos/WhatsApp/erlang-language-platform/releases/latest \
-        | grep -oE '"browser_download_url": *"[^"]+"' | cut -d'"' -f4 \
-        | grep -E "x86_64-unknown-linux-gnu-otp-${OTP_MAJOR}[.0-9]*\.tar\.gz$" | head -1)"; \
-    echo "ELP asset for OTP ${OTP_MAJOR}: ${URL}"; \
-    curl -fsSL "${URL}" -o /tmp/elp.tar.gz; \
-    tar -xzf /tmp/elp.tar.gz -C /usr/local/bin; \
-    chmod +x /usr/local/bin/elp; \
-    rm -f /tmp/elp.tar.gz; \
-    elp version
+    ASSETS="$(curl -fsSL https://api.github.com/repos/WhatsApp/erlang-language-platform/releases/latest \
+        | grep -oE '"browser_download_url": *"[^"]+"' | cut -d'"' -f4)"; \
+    URL="$(printf '%s\n' "${ASSETS}" | grep -E "x86_64-unknown-linux-gnu-otp-${OTP_MAJOR}[.0-9]*\.tar\.gz$" | head -1 || true)"; \
+    if [ -n "${URL}" ]; then \
+        echo "ELP asset for OTP ${OTP_MAJOR}: ${URL}"; \
+        curl -fsSL "${URL}" -o /tmp/elp.tar.gz; \
+        tar -xzf /tmp/elp.tar.gz -C /usr/local/bin; \
+        chmod +x /usr/local/bin/elp; \
+        rm -f /tmp/elp.tar.gz; \
+        elp version; \
+    elif printf '%s\n' "${ASSETS}" | grep -qE 'x86_64-unknown-linux-gnu-otp-[0-9]'; then \
+        echo "WARNING: ELP ships no otp-${OTP_MAJOR} build yet (has: $(printf '%s\n' "${ASSETS}" | grep -oE 'otp-[0-9.]+' | sort -u | tr '\n' ' ')); this lane runs WITHOUT elp. elp lint + eqwalize are skipped here and enforced on the supported lanes."; \
+        mkdir -p /etc/erli18n; \
+        printf '%s\n' "${OTP_MAJOR}" > /etc/erli18n/elp-unsupported; \
+    else \
+        echo "ERROR: no ELP x86_64-linux otp-* asset found at all; the release naming may have changed."; \
+        exit 1; \
+    fi
+
+# actionlint (pinned to mise.toml's `aqua:rhysd/actionlint`) lints every GitHub
+# Actions workflow in the --full gate. It is a standalone binary the rebar3
+# plugin set does not provide, so install it here; keep ACTIONLINT_VERSION in
+# lockstep with mise.toml.
+ARG ACTIONLINT_VERSION=1.7.12
+RUN set -eux; \
+    curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz; \
+    tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint; \
+    rm -f /tmp/actionlint.tar.gz; \
+    actionlint --version
 
 # The repo is bind-mounted here at run time; the image carries only the
 # toolchain. Keep rebar3's build tree OFF the bind mount via REBAR_BASE_DIR —

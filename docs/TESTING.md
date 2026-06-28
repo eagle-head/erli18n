@@ -222,7 +222,7 @@ bin/quality-gate.sh --full    # ~5min: + require_elp, dialyzer, eqwalize-all,
 
 `make hooks-install` wires `--fast` as the pre-commit hook and the Dockerized
 **OTP 27/28/29** matrix as the pre-push hook. CI (`.github/workflows/ci.yml`)
-runs the full gate across **OTP 27, 28, and 29** with ELP on every push to
+runs the full gate across **OTP 27, 28, and 29** (with ELP on the OTP majors ELP builds for) on every push to
 `main` and on every pull request targeting `main`; fork PRs are gated by the
 repository's outside-collaborator-approval setting. `make otp-matrix` reproduces
 that matrix locally in Docker.
