@@ -13,7 +13,7 @@ provider under the `erli18n` namespace, so that after load the project has:
 - `rebar3 erli18n report`  — per-`(Domain, Locale)` completeness.
 
 The plugin is a SEPARATE Hex package from the runtime `erli18n` library and
-depends on it (`{deps,[{erli18n,"~> 0.5"}]}`, `{applications,[...,erli18n]}`),
+depends on it (`{deps,[{erli18n,"~> 0.6"}]}`, `{applications,[...,erli18n]}`),
 pointing plugin -> lib — the same direction as `rebar3_gpb_plugin` -> `gpb`.
 The providers reuse the published PO read/serialize API (`erli18n_po:parse/1`,
 `erli18n_po:dump/1`, `erli18n_po:escape_string/1`) across that boundary.

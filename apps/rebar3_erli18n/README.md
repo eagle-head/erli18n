@@ -16,7 +16,7 @@ rebar3 erli18n report    # per-(Domain, Locale) translation completeness
 
 This plugin is published as its own Hex package, **separate** from the runtime
 `erli18n` library, and it depends on that library (`{deps, [{erli18n, "~>
-0.5"}]}`, `{applications, [kernel, stdlib, erli18n]}`). The dependency points
+0.6"}]}`, `{applications, [kernel, stdlib, erli18n]}`). The dependency points
 **plugin → lib** — the same direction as
 [`rebar3_gpb_plugin`](https://github.com/lrascao/rebar3_gpb_plugin) → `gpb`,
 `rebar3_proper` → `proper`, and `rebar3_lint` → `elvis_core`.
