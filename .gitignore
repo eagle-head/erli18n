@@ -48,3 +48,12 @@ examples/erli18n_cowboy_demo/_checkouts/
 examples/erli18n_cowboy_demo/_build/
 examples/erli18n_elli_demo/_checkouts/
 examples/erli18n_elli_demo/_build/
+
+# Parity gate scratch: docker-compose.yml bind-mounts ./.gate/artifacts <->
+# /artifacts, where the gettext-extract service drops the generated oracle
+# (parity_oracle.eterm) and plural table (plural_forms.extracted.eterm). These
+# are regenerated on every run, never source. The pattern is root-anchored
+# (`/.gate/`) — a gitignore entry cannot begin with `./`, so the literal
+# `./.gate/` would match nothing; `/.gate/` is the equivalent "relative to repo
+# root" form that actually ignores the directory.
+/.gate/

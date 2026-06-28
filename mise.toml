@@ -4,3 +4,8 @@
 # compatibility issues with erlef/setup-beam on the Medium runner image.
 # Runtime validation of the workflow happens on GitHub Actions itself.
 "aqua:rhysd/actionlint" = "1.7.12"
+
+# erlang: the Tier-1 OTP majors the CI gate exercises (27 minimum / 28 / 29).
+# Pinned together so a `mise install` provisions the whole support matrix
+# locally; the first entry (27, the floor) is the default the mise shims use.
+erlang = ["27", "28", "29"]

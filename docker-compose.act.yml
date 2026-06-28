@@ -23,9 +23,13 @@
 # YAML is unchanged — only `~/.config/act/actrc` is pointed at the
 # custom image. Real CI stays on the vanilla GitHub-hosted runner.
 #
+# This file is NOT the default Compose file: the repo-root docker-compose.yml is
+# the parity gate pipeline. Always target this one explicitly with
+# `-f docker-compose.act.yml`.
+#
 # Bootstrap (run once after pulling, or after volume reset):
-#   docker compose --profile init up --abort-on-container-exit
-#   docker compose build act-runner
+#   docker compose -f docker-compose.act.yml --profile init up --abort-on-container-exit
+#   docker compose -f docker-compose.act.yml build act-runner
 #
 # Subsequent invocations:
 #   mise exec -- act -j lint
