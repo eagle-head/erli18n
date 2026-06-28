@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Pre-push hook — runs the FULL quality gate through docker-compose.
+#
+# Pipeline (the same one CI runs):
+#   1. gettext-extract  — ONCE. Builds the parity oracle (parity_oracle.eterm)
+#      and the extracted plural table into the shared ./.gate/artifacts mount
+#      (host ./.gate/artifacts <-> container /artifacts) using the latest GNU
+#      gettext CLI.
+#   2. erli18n-otp27 / erli18n-otp28 / erli18n-otp29 — each runs
+#      `bin/quality-gate.sh --full` (including the hard gettext parity gate)
+#      against that mounted oracle on its OTP line.
+#
+# Any non-zero step blocks the push. To bypass once (escape hatch, use
+# sparingly): `git push --no-verify`.
+#
+# Installed via `bin/install-git-hooks.sh` (sets git core.hooksPath to this
+# directory).
+#
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Prefer Docker Compose v2 (`docker compose`); fall back to the v1 binary.
+if docker compose version >/dev/null 2>&1; then
+    DC=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    DC=(docker-compose)
+else
+    echo "pre-push: Docker Compose is required for the full gate but was not found." >&2
+    echo "          Install Docker, or push with --no-verify to bypass (use sparingly)." >&2
+    exit 1
+fi
+
+readonly COMPOSE_FILE="docker-compose.yml"
+
+# 0) Refresh the gate images to the latest OTP minor (erlang:27/28/29) and the
+#    latest GNU gettext base. `build --pull` re-fetches the rolling base tags so
+#    every push tests the newest release; it is a fast cache hit when unchanged.
+echo "==> [pre-push] refreshing gate images (latest OTP minor + gettext)"
+"${DC[@]}" -f "$COMPOSE_FILE" build --pull
+
+# 1) Build the oracle ONCE. `run --rm` returns the container's exit code, so a
+#    failed extraction (e.g. missing GNU gettext in the image) blocks the push.
+echo "==> [pre-push] gettext-extract (building the parity oracle)"
+"${DC[@]}" -f "$COMPOSE_FILE" run --rm gettext-extract
+
+# 2) Full gate on each supported OTP line. `--no-deps` stops Compose from
+#    re-triggering gettext-extract (already done in step 1); the oracle is read
+#    from the mounted /artifacts.
+for otp in 27 28 29; do
+    echo "==> [pre-push] erli18n-otp${otp} (full gate + parity)"
+    "${DC[@]}" -f "$COMPOSE_FILE" run --rm --no-deps "erli18n-otp${otp}"
+done
+
+echo "==> [pre-push] full gate passed on OTP 27/28/29."

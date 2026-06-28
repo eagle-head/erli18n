@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook — fast subset of the quality gate (no docker, ~30s).
+#
+# Runs `bin/quality-gate.sh --fast`: compile, xref, fmt --check, lint, hank,
+# elp lint, and the catalog-freshness check. The gettext parity gate is NOT
+# part of --fast (it needs the docker-built oracle); it runs in the pre-push
+# hook instead.
+#
+# Installed via `bin/install-git-hooks.sh` (sets git core.hooksPath to this
+# directory). A non-zero exit blocks the commit. To bypass once (escape hatch,
+# use sparingly): `git commit --no-verify`.
+#
+set -euo pipefail
+
+exec "$(git rev-parse --show-toplevel)/bin/quality-gate.sh" --fast
