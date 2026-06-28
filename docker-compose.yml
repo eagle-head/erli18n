@@ -1,0 +1,115 @@
+# erli18n parity gate pipeline.
+#
+# This is THE gate pipeline (the default Compose file: `docker compose up` picks
+# it up with no `-f`). It runs in two stages:
+#
+#   1. gettext-extract  — builds the GNU gettext oracle ONCE: it drives the real
+#                         gettext CLI to write plural_forms.extracted.eterm and
+#                         parity_oracle.eterm into the shared artifacts mount.
+#   2. erli18n-otp27/28/29 — three OTP build environments that run the full
+#                         quality gate (which includes the hard-fail parity step,
+#                         graded against the extracted oracle). They depend on the
+#                         extractor finishing successfully, then run in parallel.
+#
+# Shared bind mount: host ./.gate/artifacts <-> container /artifacts. The
+# extractor writes it; the OTP services read it (mounted read-only there).
+#
+# (Local `act`-runner bootstrap lives separately in docker-compose.act.yml.)
+#
+# Usage (the Makefile's gate-full / otp-matrix targets wrap these):
+#   docker compose up --build                       # extract once, then all lanes
+#   docker compose up --build erli18n-otp28          # one lane (pulls the extractor)
+#   docker compose run --rm erli18n-otp28            # parity step only (image CMD)
+#
+# NOTE: do NOT add `--abort-on-container-exit` to a full `up`: gettext-extract is
+# a one-shot that exits 0 as soon as the oracle is written, and that flag would
+# tear the OTP lanes down with it. To fail the command on a lane failure, drive a
+# single lane with `--exit-code-from`, e.g.
+#   docker compose up --build --exit-code-from erli18n-otp28 erli18n-otp28
+
+# Shared bits of the three OTP services. YAML sequences/maps are NOT deep-merged
+# on override, so per-service `volumes:`/`environment:` are listed in full below;
+# only the truly-identical scalars/maps live in this anchor.
+x-otp-gate: &otp-gate
+  working_dir: /work
+  # The OTP services run the FULL gate (compile, xref, lint, dialyzer, ct, and
+  # the hard-fail parity step). `bash …` runs the gate regardless of the script's
+  # executable bit. The image's own CMD (parity suite only) is used by
+  # `docker compose run` without an explicit command override.
+  command: ["bash", "bin/quality-gate.sh", "--full"]
+  # Extract once, then fan out: the three OTP lanes wait for the oracle producer
+  # to exit 0 before they start, then run concurrently.
+  depends_on:
+    gettext-extract:
+      condition: service_completed_successfully
+
+services:
+  # Stage 1: the GNU gettext oracle producer (runs once).
+  gettext-extract:
+    build:
+      context: .
+      dockerfile: docker/gettext-extract.Dockerfile
+    image: erli18n/gettext-extract:latest
+    container_name: erli18n-gettext-extract
+    working_dir: /work
+    volumes:
+      - .:/work
+      - ./.gate/artifacts:/artifacts
+
+  # Stage 2: the OTP matrix. Each lane gets its own named volume mounted at a
+  # private REBAR_BASE_DIR so the concurrent rebar3 builds never touch the host
+  # `_build` nor clobber one another under the shared /work bind mount. The
+  # /artifacts mount is read-only here — these services only consume the oracle.
+  erli18n-otp27:
+    <<: *otp-gate
+    build:
+      context: .
+      dockerfile: docker/erli18n-otp.Dockerfile
+      args:
+        OTP_VERSION: "27"
+    image: erli18n/erli18n-otp:27
+    container_name: erli18n-otp27
+    environment:
+      REBAR_BASE_DIR: /rebar/otp27
+    volumes:
+      - .:/work
+      - ./.gate/artifacts:/artifacts:ro
+      - gate-rebar-otp27:/rebar/otp27
+
+  erli18n-otp28:
+    <<: *otp-gate
+    build:
+      context: .
+      dockerfile: docker/erli18n-otp.Dockerfile
+      args:
+        OTP_VERSION: "28"
+    image: erli18n/erli18n-otp:28
+    container_name: erli18n-otp28
+    environment:
+      REBAR_BASE_DIR: /rebar/otp28
+    volumes:
+      - .:/work
+      - ./.gate/artifacts:/artifacts:ro
+      - gate-rebar-otp28:/rebar/otp28
+
+  erli18n-otp29:
+    <<: *otp-gate
+    build:
+      context: .
+      dockerfile: docker/erli18n-otp.Dockerfile
+      args:
+        OTP_VERSION: "29"
+    image: erli18n/erli18n-otp:29
+    container_name: erli18n-otp29
+    environment:
+      REBAR_BASE_DIR: /rebar/otp29
+    volumes:
+      - .:/work
+      - ./.gate/artifacts:/artifacts:ro
+      - gate-rebar-otp29:/rebar/otp29
+
+volumes:
+  # Per-OTP rebar3 build trees, kept off the host bind mount (see above).
+  gate-rebar-otp27:
+  gate-rebar-otp28:
+  gate-rebar-otp29:
