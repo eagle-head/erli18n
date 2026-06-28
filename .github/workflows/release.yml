@@ -247,14 +247,16 @@ jobs:
           # Tag push -> github.ref_name is the tag; dispatch -> the tag input.
           ref: ${{ inputs.tag || github.ref_name }}
 
-      - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1.24.0
-        with:
-          otp-version: '28'
-          # No rebar3-version pin: setup-beam installs the current rebar3 — the
-          # same line the official images ship. A version pinned separately from
-          # the toolchain drifts and breaks (that is what broke the OTP 29 gate),
-          # so we never hard-code one.
+      # Publishing runs INSIDE the official erlang:28 image — the same "use the
+      # image's toolchain" rule as the gate. The image ships a rebar3 matched to
+      # its OTP, so there is no setup-beam and no rebar3 version to pin (a
+      # separately-pinned rebar3 drifts — it is what broke the OTP 29 gate — and a
+      # missing pin leaves setup-beam with NO rebar3 at all). Hex packages ship
+      # SOURCE, so the publish OTP never reaches consumers (they recompile,
+      # floored at minimum_otp_vsn=27); OTP 28 is just a stable toolchain to build
+      # the tarball + docs. Pull once so the rebar3 steps below reuse the image.
+      - name: Pull the publish image (erlang:28, latest minor)
+        run: docker pull erlang:28
 
       # Derive APP, the package version, and the per-app .app.src / CHANGELOG
       # paths from the PREFIXED tag. The longest matching prefix wins, so
@@ -369,18 +371,24 @@ jobs:
       # and published separately below via gen_docs.sh + `--doc-dir`, so the dry
       # run validates only the package.
       - name: Build package tarball (dry-run, no upload)
-        working-directory: apps/${{ steps.pkg.outputs.app }}
-        run: rebar3 hex build package
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
+            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar \
+            erlang:28 rebar3 hex build package
 
       # Publish FROM the app dir, for the same lock-resolution reason as the build
       # above. This is the structural fix: an `--app NAME` publish from the
       # umbrella root would omit `erli18n` from the plugin's `requirements`
       # (the root lock has no sibling app).
       - name: Publish package to Hex.pm
-        working-directory: apps/${{ steps.pkg.outputs.app }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: rebar3 hex publish package --repo hexpm --yes
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
+            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar -e HEX_API_KEY \
+            erlang:28 rebar3 hex publish package --repo hexpm --yes
 
       # Build the HTML docs from the native EEP-48 BEAM chunks. gen_docs.sh is
       # app-parameterized: it reads apps/$APP/rebar.config for the package's own
@@ -390,17 +398,24 @@ jobs:
       # docs` on a Markdown backtick in a `%%` comment. (Run from the repo root;
       # the script takes the app name as its argument.)
       - name: Build docs (bypassing the EDoc bug)
-        run: scripts/gen_docs.sh ${{ steps.pkg.outputs.app }}
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar \
+            erlang:28 bash scripts/gen_docs.sh ${{ steps.pkg.outputs.app }}
 
       # Publish the pre-built doc/ directory directly. `--doc-dir` makes
       # rebar3_hex upload the given directory as-is instead of invoking a doc
       # provider, so the EDoc crash is never hit here either. Run FROM the app dir
       # (where gen_docs.sh wrote `doc/`); a single-app context needs no `--app`.
       - name: Publish docs to HexDocs
-        working-directory: apps/${{ steps.pkg.outputs.app }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
+            -e LANG=C.UTF-8 -e REBAR_BASE_DIR=/tmp/rebar -e HEX_API_KEY \
+            erlang:28 rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
 
       # Create the visible GitHub Release LAST — only after Hex publishing has
       # succeeded, so a failed publish never leaves a release for a version that
