@@ -1,0 +1,510 @@
+%% =====================================================================
+%% Parity scenario matrix — shared by the subject (erli18n) and the oracle
+%% (the real GNU gettext CLI).
+%%
+%% This file is the SINGLE source of truth for the parity harness. It is
+%% read by BOTH:
+%%
+%%   * apps/erli18n/test/erli18n_parity_SUITE.erl — builds the same
+%%     catalog in erli18n and looks each scenario up; and
+%%   * bin/extract-gettext-table.sh — builds a `.po`, compiles it with
+%%     `msgfmt`, runs `gettext`/`ngettext` against it, and records the
+%%     output in `parity_oracle.eterm` keyed by the scenario `id`.
+%%
+%% The suite then compares erli18n's output to the recorded oracle output
+%% byte-for-byte. There is NO expected value in this file: the GNU gettext
+%% CLI IS the oracle.
+%%
+%% ---------------------------------------------------------------------
+%% FORMAT CONTRACT (read carefully before editing — two parsers depend on
+%% it: Erlang `file:consult/1` AND a line-oriented `awk` parser in the
+%% shell extractor):
+%%
+%%   * The whole file is ONE Erlang term: a list of maps, terminated by
+%%     `].`. `file:consult/1` returns `{ok, [Matrix]}`.
+%%   * Each scenario map opens with a line containing `#{` and closes with
+%%     a line that is just `}` or `},`.
+%%   * EXACTLY ONE field per line, `key => value,` (trailing comma except
+%%     the last field of a map). Do not put two fields on one line.
+%%   * Every binary value uses the `<<"...">>` form and MUST NOT contain a
+%%     double quote. (UTF-8 is allowed as `<<"..."/utf8>>`, but the
+%%     committed scenarios stay ASCII so the byte stream is unambiguous.)
+%%   * `op` is one of: gettext | ngettext | pgettext | npgettext.
+%%   * `context` / `msgid_plural` are `undefined` when not applicable.
+%%   * `n` is an integer for ngettext/npgettext, else `undefined`.
+%%   * `present` is `true` when the looked-up entry is installed in the
+%%     catalog, `false` for a deliberate MISS (fallback to the source).
+%%     `present => true` with an empty `translations` list means the entry
+%%     is installed with an empty `msgstr ""` (the other fallback path).
+%%   * `translations` is the msgstr list: 1 element for a singular/context
+%%     lookup, exactly `nplurals` elements for a plural lookup, `[]` for a
+%%     miss or an empty msgstr.
+%%
+%% Field order per map is fixed (parsers are tolerant of order, but keep it
+%% stable for readability):
+%%   id, op, locale, domain, plural_forms, context, msgid, msgid_plural,
+%%   n, present, translations, description
+%%
+%% The `plural_forms` values are kept in sync with the CLDR seed table
+%% apps/erli18n/priv/gettext/plural_forms.eterm (ru/pl/ar/ja/n!=1/n>1).
+%%
+%% All content is en-US (repo standard).
+%% =====================================================================
+[
+    %% --- Singular / contextual / fallback (gettext, pgettext) ---------
+    #{
+        id => <<"singular_de_hit">>,
+        op => gettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Hello">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => true,
+        translations => [<<"Hallo">>],
+        description => <<"German singular hit returns the translation">>
+    },
+    #{
+        id => <<"singular_pt_br_hit">>,
+        op => gettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"File">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => true,
+        translations => [<<"Arquivo">>],
+        description => <<"Brazilian Portuguese singular hit">>
+    },
+    #{
+        id => <<"singular_de_miss_fallback">>,
+        op => gettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Missing">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => false,
+        translations => [],
+        description => <<"Miss returns the source msgid unchanged (R1)">>
+    },
+    #{
+        id => <<"singular_empty_msgstr_fallback">>,
+        op => gettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Empty">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => true,
+        translations => [],
+        description => <<"Empty msgstr falls back to the source msgid">>
+    },
+    #{
+        id => <<"context_menu_file">>,
+        op => pgettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => <<"menu">>,
+        msgid => <<"File">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => true,
+        translations => [<<"Menu Arquivo">>],
+        description => <<"pgettext returns the menu-context translation">>
+    },
+    #{
+        id => <<"context_button_save">>,
+        op => pgettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => <<"button">>,
+        msgid => <<"Save">>,
+        msgid_plural => undefined,
+        n => undefined,
+        present => true,
+        translations => [<<"Gravar">>],
+        description => <<"pgettext returns the button-context translation">>
+    },
+    %% NOTE: a context MISS (pgettext to an unknown context) is deliberately
+    %% NOT a parity scenario. The GNU `gettext` CLI has no context flag, so a
+    %% context lookup passes the raw `context <EOT> msgid` key; on a miss it
+    %% echoes that whole key back (with the EOT byte), whereas erli18n's
+    %% pgettext correctly falls back to the bare msgid. That divergence is a
+    %% CLI limitation, not an erli18n defect, so it is covered by erli18n's
+    %% own unit suites rather than against this oracle.
+
+    %% --- Plural pt_BR (n > 1): 0 and 1 singular, 2+ plural ------------
+    #{
+        id => <<"plural_ptbr_n0">>,
+        op => ngettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"Fish">>,
+        msgid_plural => <<"Fishes">>,
+        n => 0,
+        present => true,
+        translations => [<<"Peixe">>, <<"Peixes">>],
+        description => <<"pt_BR n=0 selects the singular form (n > 1 false)">>
+    },
+    #{
+        id => <<"plural_ptbr_n1">>,
+        op => ngettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"Fish">>,
+        msgid_plural => <<"Fishes">>,
+        n => 1,
+        present => true,
+        translations => [<<"Peixe">>, <<"Peixes">>],
+        description => <<"pt_BR n=1 selects the singular form">>
+    },
+    #{
+        id => <<"plural_ptbr_n2">>,
+        op => ngettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"Fish">>,
+        msgid_plural => <<"Fishes">>,
+        n => 2,
+        present => true,
+        translations => [<<"Peixe">>, <<"Peixes">>],
+        description => <<"pt_BR n=2 selects the plural form">>
+    },
+    #{
+        id => <<"plural_ptbr_n5">>,
+        op => ngettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"Fish">>,
+        msgid_plural => <<"Fishes">>,
+        n => 5,
+        present => true,
+        translations => [<<"Peixe">>, <<"Peixes">>],
+        description => <<"pt_BR n=5 selects the plural form">>
+    },
+    #{
+        id => <<"plural_ptbr_n100">>,
+        op => ngettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => undefined,
+        msgid => <<"Fish">>,
+        msgid_plural => <<"Fishes">>,
+        n => 100,
+        present => true,
+        translations => [<<"Peixe">>, <<"Peixes">>],
+        description => <<"pt_BR n=100 selects the plural form">>
+    },
+
+    %% --- Plural de (n != 1): 1 singular, everything else plural -------
+    #{
+        id => <<"plural_de_n0">>,
+        op => ngettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Tree">>,
+        msgid_plural => <<"Trees">>,
+        n => 0,
+        present => true,
+        translations => [<<"Baum">>, <<"Baeume">>],
+        description => <<"de n=0 selects the plural form (n != 1 true)">>
+    },
+    #{
+        id => <<"plural_de_n1">>,
+        op => ngettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Tree">>,
+        msgid_plural => <<"Trees">>,
+        n => 1,
+        present => true,
+        translations => [<<"Baum">>, <<"Baeume">>],
+        description => <<"de n=1 selects the singular form">>
+    },
+    #{
+        id => <<"plural_de_n2">>,
+        op => ngettext,
+        locale => <<"de">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n != 1);">>,
+        context => undefined,
+        msgid => <<"Tree">>,
+        msgid_plural => <<"Trees">>,
+        n => 2,
+        present => true,
+        translations => [<<"Baum">>, <<"Baeume">>],
+        description => <<"de n=2 selects the plural form">>
+    },
+
+    %% --- Plural ru (Slavic 3-form: one / few / many) -----------------
+    #{
+        id => <<"plural_ru_n1">>,
+        op => ngettext,
+        locale => <<"ru">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"Stone">>,
+        msgid_plural => <<"Stones">>,
+        n => 1,
+        present => true,
+        translations => [<<"Kamen">>, <<"Kamnia">>, <<"Kamney">>],
+        description => <<"ru n=1 selects the one-form (index 0)">>
+    },
+    #{
+        id => <<"plural_ru_n2">>,
+        op => ngettext,
+        locale => <<"ru">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"Stone">>,
+        msgid_plural => <<"Stones">>,
+        n => 2,
+        present => true,
+        translations => [<<"Kamen">>, <<"Kamnia">>, <<"Kamney">>],
+        description => <<"ru n=2 selects the few-form (index 1)">>
+    },
+    #{
+        id => <<"plural_ru_n5">>,
+        op => ngettext,
+        locale => <<"ru">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"Stone">>,
+        msgid_plural => <<"Stones">>,
+        n => 5,
+        present => true,
+        translations => [<<"Kamen">>, <<"Kamnia">>, <<"Kamney">>],
+        description => <<"ru n=5 selects the many-form (index 2)">>
+    },
+    #{
+        id => <<"plural_ru_n11">>,
+        op => ngettext,
+        locale => <<"ru">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"Stone">>,
+        msgid_plural => <<"Stones">>,
+        n => 11,
+        present => true,
+        translations => [<<"Kamen">>, <<"Kamnia">>, <<"Kamney">>],
+        description => <<"ru n=11 is the many-form (the n%100!=11 exception)">>
+    },
+    #{
+        id => <<"plural_ru_n21">>,
+        op => ngettext,
+        locale => <<"ru">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"Stone">>,
+        msgid_plural => <<"Stones">>,
+        n => 21,
+        present => true,
+        translations => [<<"Kamen">>, <<"Kamnia">>, <<"Kamney">>],
+        description => <<"ru n=21 wraps back to the one-form (index 0)">>
+    },
+
+    %% --- Plural pl (Polish 3-form, differs from ru at n==1) ----------
+    #{
+        id => <<"plural_pl_n1">>,
+        op => ngettext,
+        locale => <<"pl">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"File">>,
+        msgid_plural => <<"Files">>,
+        n => 1,
+        present => true,
+        translations => [<<"Plik">>, <<"Pliki">>, <<"Plikow">>],
+        description => <<"pl n=1 selects the one-form (index 0)">>
+    },
+    #{
+        id => <<"plural_pl_n2">>,
+        op => ngettext,
+        locale => <<"pl">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"File">>,
+        msgid_plural => <<"Files">>,
+        n => 2,
+        present => true,
+        translations => [<<"Plik">>, <<"Pliki">>, <<"Plikow">>],
+        description => <<"pl n=2 selects the few-form (index 1)">>
+    },
+    #{
+        id => <<"plural_pl_n5">>,
+        op => ngettext,
+        locale => <<"pl">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"File">>,
+        msgid_plural => <<"Files">>,
+        n => 5,
+        present => true,
+        translations => [<<"Plik">>, <<"Pliki">>, <<"Plikow">>],
+        description => <<"pl n=5 selects the many-form (index 2)">>
+    },
+    #{
+        id => <<"plural_pl_n12">>,
+        op => ngettext,
+        locale => <<"pl">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=3; plural=n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;">>,
+        context => undefined,
+        msgid => <<"File">>,
+        msgid_plural => <<"Files">>,
+        n => 12,
+        present => true,
+        translations => [<<"Plik">>, <<"Pliki">>, <<"Plikow">>],
+        description => <<"pl n=12 is the many-form (the n%100 teen exception)">>
+    },
+
+    %% --- Plural ar (Arabic 6-form) -----------------------------------
+    #{
+        id => <<"plural_ar_n0">>,
+        op => ngettext,
+        locale => <<"ar">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;">>,
+        context => undefined,
+        msgid => <<"Book">>,
+        msgid_plural => <<"Books">>,
+        n => 0,
+        present => true,
+        translations => [<<"Kitab0">>, <<"Kitab1">>, <<"Kitab2">>, <<"Kitab3">>, <<"Kitab4">>, <<"Kitab5">>],
+        description => <<"ar n=0 selects form 0 (zero)">>
+    },
+    #{
+        id => <<"plural_ar_n1">>,
+        op => ngettext,
+        locale => <<"ar">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;">>,
+        context => undefined,
+        msgid => <<"Book">>,
+        msgid_plural => <<"Books">>,
+        n => 1,
+        present => true,
+        translations => [<<"Kitab0">>, <<"Kitab1">>, <<"Kitab2">>, <<"Kitab3">>, <<"Kitab4">>, <<"Kitab5">>],
+        description => <<"ar n=1 selects form 1 (one)">>
+    },
+    #{
+        id => <<"plural_ar_n2">>,
+        op => ngettext,
+        locale => <<"ar">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;">>,
+        context => undefined,
+        msgid => <<"Book">>,
+        msgid_plural => <<"Books">>,
+        n => 2,
+        present => true,
+        translations => [<<"Kitab0">>, <<"Kitab1">>, <<"Kitab2">>, <<"Kitab3">>, <<"Kitab4">>, <<"Kitab5">>],
+        description => <<"ar n=2 selects form 2 (two)">>
+    },
+    #{
+        id => <<"plural_ar_n11">>,
+        op => ngettext,
+        locale => <<"ar">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;">>,
+        context => undefined,
+        msgid => <<"Book">>,
+        msgid_plural => <<"Books">>,
+        n => 11,
+        present => true,
+        translations => [<<"Kitab0">>, <<"Kitab1">>, <<"Kitab2">>, <<"Kitab3">>, <<"Kitab4">>, <<"Kitab5">>],
+        description => <<"ar n=11 selects form 4 (many)">>
+    },
+
+    %% --- Plural ja (degenerate single form, PSD-008) -----------------
+    #{
+        id => <<"plural_ja_n1">>,
+        op => ngettext,
+        locale => <<"ja">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=1; plural=0;">>,
+        context => undefined,
+        msgid => <<"Tree">>,
+        msgid_plural => <<"Trees">>,
+        n => 1,
+        present => true,
+        translations => [<<"Ki">>],
+        description => <<"ja n=1 selects the single form (index 0)">>
+    },
+    #{
+        id => <<"plural_ja_n5">>,
+        op => ngettext,
+        locale => <<"ja">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=1; plural=0;">>,
+        context => undefined,
+        msgid => <<"Tree">>,
+        msgid_plural => <<"Trees">>,
+        n => 5,
+        present => true,
+        translations => [<<"Ki">>],
+        description => <<"ja n=5 still selects the single form (index 0)">>
+    },
+
+    %% --- Contextual plural (npgettext) -------------------------------
+    #{
+        id => <<"ctx_plural_menu_n1">>,
+        op => npgettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => <<"menu">>,
+        msgid => <<"tree">>,
+        msgid_plural => <<"trees">>,
+        n => 1,
+        present => true,
+        translations => [<<"Menu arvore">>, <<"Menu arvores">>],
+        description => <<"npgettext menu-context n=1 selects the singular form">>
+    },
+    #{
+        id => <<"ctx_plural_menu_n2">>,
+        op => npgettext,
+        locale => <<"pt_BR">>,
+        domain => <<"erli18n_parity">>,
+        plural_forms => <<"nplurals=2; plural=(n > 1);">>,
+        context => <<"menu">>,
+        msgid => <<"tree">>,
+        msgid_plural => <<"trees">>,
+        n => 2,
+        present => true,
+        translations => [<<"Menu arvore">>, <<"Menu arvores">>],
+        description => <<"npgettext menu-context n=2 selects the plural form">>
+    }
+].
