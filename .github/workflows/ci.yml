@@ -29,13 +29,13 @@ jobs:
     name: full gate (OTP ${{ matrix.otp }})
     # Runner OS is pinned per the erlef/setup-beam compatibility matrix
     # (https://github.com/erlef/setup-beam#compatibility-between-operating-system-and-erlangotp):
-    # OTP 27/28 -> Ubuntu 24.04 (libssl3t64). OTP 25.3 / 26 are unsupported —
+    # OTP 27/28/29 -> Ubuntu 24.04 (libssl3t64). OTP 25.3 / 26 are unsupported —
     # the native -doc/-moduledoc (EEP-59) attributes require OTP 27+.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        otp: ['27', '28']
+        otp: ['27', '28', '29']
     steps:
       - uses: actions/checkout@v6
 

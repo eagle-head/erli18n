@@ -90,9 +90,153 @@ permissions:
   contents: write
 
 jobs:
+  # RELEASE AUTHORIZATION GATE — runs BEFORE any Hex publish and is a hard
+  # dependency of the `publish` job (`needs: authorize`). A release proceeds ONLY
+  # when BOTH of these hold; either one failing fails this job and blocks publish:
+  #
+  #   (1) FRESH MERGE WINDOW: less than 24h elapsed between the source main PR
+  #       (the one that produced this released commit) MERGING to `main` and this
+  #       release event. A version tag pushed long after the code landed on main
+  #       is stale and must be re-merged first — shipping must be recent relative
+  #       to the merge it ships. (Maintainer APPROVAL of the publish itself is
+  #       the `hex-publish` environment's required reviewer, not a PR review.)
+  #
+  #   (2) MAINTAINER IDENTITY: the actor triggering this release is EITHER the
+  #       author of that approved PR OR an active member of the maintainers team.
+  #       Releases are locked to maintainers.
+  #
+  # This is an ADDITIVE safeguard layered on top of the existing locks (the
+  # tag-push trigger needs write access, and the `hex-publish` environment's
+  # required reviewer still gates the actual Hex push). It weakens nothing: the
+  # `publish` job keeps `environment: hex-publish` and every downstream check.
+  #
+  # Identity resolution uses the GitHub Actions context + the gh/REST API:
+  #   - the released commit:        github.sha
+  #   - the release actor:          github.triggering_actor
+  #   - the source PR + author:     GET /repos/{repo}/commits/{sha}/pulls,
+  #                                 then .user.login on the PR
+  #   - the merge timestamp:        .merged_at on that PR
+  #   - team membership:            GET /orgs/{org}/teams/{team}/memberships/{user}
+  #
+  # FAIL-CLOSED by design: the repo-scoped GITHUB_TOKEN cannot read org team
+  # membership, so the team lookup uses an OPTIONAL `MAINTAINERS_TOKEN` secret (a
+  # PAT / fine-grained token with `read:org`). When that secret is absent the team
+  # check is treated as "not a member", so the actor must then be the approved
+  # PR's author — strictly stronger, never weaker. The maintainers org/team
+  # default to this repo's owner and a `maintainers` team and can be overridden
+  # with the `MAINTAINERS_ORG` / `MAINTAINERS_TEAM` repository Variables.
+  authorize:
+    name: Authorize release
+    runs-on: ubuntu-24.04
+    # Read-only scopes: this gate only inspects the PR/commit metadata, it never
+    # writes to the repo. (The `publish` job inherits the workflow-level
+    # `contents: write` it needs for the GitHub Release.)
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Verify fresh merge window and maintainer identity
+        env:
+          # Repo-scoped token for the commit/PR/review lookups on THIS repo.
+          GH_TOKEN: ${{ github.token }}
+          # OPTIONAL read:org token used ONLY for the maintainers-team lookup.
+          # Absent -> team check fails closed (actor must be the PR author).
+          MAINTAINERS_TOKEN: ${{ secrets.MAINTAINERS_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.triggering_actor }}
+          ORG: ${{ vars.MAINTAINERS_ORG || github.repository_owner }}
+          TEAM: ${{ vars.MAINTAINERS_TEAM || 'maintainers' }}
+          # 24h, in seconds. The merge to main must be strictly newer than this.
+          MAX_AGE_SECONDS: '86400'
+        run: |
+          set -euo pipefail
+          FAILED=0
+          fail() { echo "::error::$1"; FAILED=1; }
+
+          echo "Release actor:      ${ACTOR}"
+          echo "Release commit:     ${SHA}"
+          echo "Maintainers team:   ${ORG}/${TEAM}"
+
+          # --- Locate the approved main PR that produced this commit ----------
+          # "List pull requests associated with a commit" returns the PR(s) whose
+          # merge landed this commit on a branch. Keep only those merged into
+          # `main` and take the most recently merged one.
+          PR=$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
+                 --jq 'map(select(.base.ref == "main" and .merged_at != null))
+                       | sort_by(.merged_at) | last | .number' 2>/dev/null || echo "")
+          if [ -z "${PR}" ] || [ "${PR}" = "null" ]; then
+            echo "::error::No merged pull request targeting 'main' is associated with commit ${SHA}. A release must originate from an approved main PR; refusing to publish."
+            exit 1
+          fi
+          echo "Source PR:          #${PR}"
+
+          PR_AUTHOR=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.user.login')
+          echo "PR author:          ${PR_AUTHOR}"
+
+          # --- Check (1): the PR merged to main less than 24h ago -------------
+          # The window is measured from the MERGE to main (.merged_at), not from
+          # a PR review: the rule is "publish within 24h of the code landing on
+          # main". (Maintainer APPROVAL of the publish is the hex-publish
+          # environment's required reviewer — a separate, manual gate that a solo
+          # maintainer CAN grant on their own deployment, unlike a PR self-review.)
+          MERGED_AT=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.merged_at' 2>/dev/null || echo "")
+          if [ -z "${MERGED_AT}" ] || [ "${MERGED_AT}" = "null" ]; then
+            fail "PR #${PR} has no merge timestamp; a release must originate from a PR merged into main."
+          else
+            MERGED_EPOCH=$(date -u -d "${MERGED_AT}" +%s)
+            NOW=$(date -u +%s)
+            AGE=$((NOW - MERGED_EPOCH))
+            echo "PR merged at:       ${MERGED_AT} (${AGE}s ago)"
+            if [ "${AGE}" -lt 0 ]; then
+              fail "PR #${PR} merge timestamp ${MERGED_AT} is in the future (clock skew?); refusing to release."
+            elif [ "${AGE}" -ge "${MAX_AGE_SECONDS}" ]; then
+              fail "PR #${PR} merged ${AGE}s ago, which is >= ${MAX_AGE_SECONDS}s (24h). The merge is stale: publish within 24h of merging to main."
+            else
+              echo "Merge window OK:    ${AGE}s < ${MAX_AGE_SECONDS}s."
+            fi
+          fi
+
+          # --- Check (2): the actor is the PR author OR a maintainers member --
+          IS_AUTHOR=0
+          if [ "${ACTOR}" = "${PR_AUTHOR}" ]; then
+            IS_AUTHOR=1
+          fi
+
+          IS_MAINTAINER=0
+          if [ -n "${MAINTAINERS_TOKEN:-}" ]; then
+            STATE=$(GH_TOKEN="${MAINTAINERS_TOKEN}" gh api \
+                      "orgs/${ORG}/teams/${TEAM}/memberships/${ACTOR}" \
+                      --jq '.state' 2>/dev/null || echo "")
+            if [ "${STATE}" = "active" ]; then
+              IS_MAINTAINER=1
+            fi
+            echo "Team membership:    state='${STATE:-none}' (org ${ORG} / team ${TEAM})"
+          else
+            echo "Team membership:    not checked (no MAINTAINERS_TOKEN secret; org team lookup needs a read:org token). Failing closed."
+          fi
+
+          if [ "${IS_AUTHOR}" -eq 1 ]; then
+            echo "Identity OK:        actor '${ACTOR}' is the author of approved PR #${PR}."
+          elif [ "${IS_MAINTAINER}" -eq 1 ]; then
+            echo "Identity OK:        actor '${ACTOR}' is an active member of ${ORG}/${TEAM}."
+          else
+            fail "Release actor '${ACTOR}' is neither the author of approved PR #${PR} ('${PR_AUTHOR}') nor an active member of the '${ORG}/${TEAM}' maintainers team. Releases are locked to maintainers."
+          fi
+
+          # --- Both checks must pass ------------------------------------------
+          if [ "${FAILED}" -ne 0 ]; then
+            echo "::error::Release authorization FAILED. BOTH must hold: (1) source PR #${PR} merged to main < 24h ago, AND (2) actor '${ACTOR}' is the PR author or a maintainers-team member. See the messages above."
+            exit 1
+          fi
+          echo "Release authorization PASSED for actor '${ACTOR}' via PR #${PR}."
+
   publish:
     name: Publish to Hex.pm
     runs-on: ubuntu-24.04
+    # Hard dependency on the authorization gate: publishing cannot start until
+    # the fresh-approval + maintainer-identity checks pass.
+    needs: authorize
     # The HEX_API_KEY secret lives in this environment. Declaring it here is
     # what grants access to that secret (and runs any environment protection
     # rules, e.g. required reviewers, that you configure in repo settings).
