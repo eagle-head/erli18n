@@ -1,0 +1,87 @@
+%% =====================================================================
+%% Committed CLDR plural-forms seed table — format (a).
+%%
+%% This is the SOURCE OF TRUTH for the runtime CLDR plural table embedded
+%% in `apps/erli18n/src/erli18n_plural.erl` (`cldr_data/0`). The generator
+%% `bin/gen-plural-table.escript` reads this file and regenerates the
+%% `cldr_data/0` rows between the `%% BEGIN/END GENERATED CLDR TABLE`
+%% markers. To change a locale's plural rule, edit a row HERE and re-run:
+%%
+%%     escript bin/gen-plural-table.escript
+%%
+%% Shape: a single Erlang term, a list of rows, each row a 3-tuple
+%%
+%%     {Locale :: binary(), NPlurals :: pos_integer(), PluralExpr :: binary()}
+%%
+%% where `PluralExpr` is the C `plural=` expression (the right-hand side of
+%% the gettext `Plural-Forms: nplurals=N; plural=EXPR;` header) such that
+%% `nplurals=NPlurals; plural=PluralExpr;` reproduces the locale's CLDR
+%% canonical rule. Every `PluralExpr` MUST be accepted by
+%% `erli18n_plural:compile/1` (the generator and the build assert this).
+%%
+%% This file shares its shape with `plural_forms.extracted.eterm`, the
+%% artifact produced from the real GNU gettext toolchain by
+%% `bin/extract-gettext-table.sh`, so the two can be diffed locale-by-locale
+%% to detect drift on a CLDR/gettext release.
+%%
+%% Rows are sorted by `Locale` (byte order). Region rows appear only where
+%% they diverge from the base language (e.g. `pt_PT` = `n != 1` against the
+%% base `pt` = `n > 1`); other regions fall back to the base language via
+%% `erli18n_plural:cldr_rule/1`.
+%%
+%% This table mirrors the CLDR plural rules the GNU gettext toolchain ships;
+%% it tracks that upstream data (verified by the diff against
+%% `plural_forms.extracted.eterm` above) rather than pinning a fixed locale
+%% count. All comments and content are en-US (repo standard).
+%% =====================================================================
+[
+    {<<"ar">>, 6, <<"n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5">>},
+    {<<"bg">>, 2, <<"n != 1">>},
+    {<<"cs">>, 3, <<"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2">>},
+    {<<"da">>, 2, <<"n != 1">>},
+    {<<"de">>, 2, <<"n != 1">>},
+    {<<"de_AT">>, 2, <<"n != 1">>},
+    {<<"de_CH">>, 2, <<"n != 1">>},
+    {<<"el">>, 2, <<"n != 1">>},
+    {<<"en">>, 2, <<"n != 1">>},
+    {<<"en_GB">>, 2, <<"n != 1">>},
+    {<<"en_US">>, 2, <<"n != 1">>},
+    {<<"es">>, 2, <<"n != 1">>},
+    {<<"es_ES">>, 2, <<"n != 1">>},
+    {<<"es_MX">>, 2, <<"n != 1">>},
+    {<<"et">>, 2, <<"n != 1">>},
+    {<<"fa">>, 2, <<"n != 1">>},
+    {<<"fi">>, 2, <<"n != 1">>},
+    {<<"fr">>, 2, <<"n > 1">>},
+    {<<"fr_CA">>, 2, <<"n > 1">>},
+    {<<"fr_FR">>, 2, <<"n > 1">>},
+    {<<"he">>, 2, <<"n != 1">>},
+    {<<"hi">>, 2, <<"n != 1">>},
+    {<<"hr">>, 3, <<"n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>},
+    {<<"hu">>, 2, <<"n != 1">>},
+    {<<"it">>, 2, <<"n != 1">>},
+    {<<"ja">>, 1, <<"0">>},
+    {<<"ko">>, 1, <<"0">>},
+    {<<"nb">>, 2, <<"n != 1">>},
+    {<<"nl">>, 2, <<"n != 1">>},
+    {<<"nn">>, 2, <<"n != 1">>},
+    {<<"no">>, 2, <<"n != 1">>},
+    {<<"pl">>, 3, <<"n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>},
+    {<<"pt">>, 2, <<"n > 1">>},
+    {<<"pt_BR">>, 2, <<"n > 1">>},
+    {<<"pt_PT">>, 2, <<"n != 1">>},
+    {<<"ro">>, 3, <<"n==1 ? 0 : (n==0 || (n%100>0 && n%100<20)) ? 1 : 2">>},
+    {<<"ru">>, 3, <<"n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>},
+    {<<"sk">>, 3, <<"(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2">>},
+    {<<"sl">>, 4, <<"n%100==1 ? 0 : n%100==2 ? 1 : n%100==3 || n%100==4 ? 2 : 3">>},
+    {<<"sr">>, 3, <<"n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>},
+    {<<"sv">>, 2, <<"n != 1">>},
+    {<<"th">>, 1, <<"0">>},
+    {<<"tr">>, 2, <<"n != 1">>},
+    {<<"uk">>, 3, <<"n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2">>},
+    {<<"vi">>, 1, <<"0">>},
+    {<<"zh">>, 1, <<"0">>},
+    {<<"zh_CN">>, 1, <<"0">>},
+    {<<"zh_HK">>, 1, <<"0">>},
+    {<<"zh_TW">>, 1, <<"0">>}
+].
