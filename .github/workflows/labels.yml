@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # crazy-max/ghaction-github-labeler@v6.0.0, pinned to its commit SHA so a
       # moved tag can never silently change the action we run.

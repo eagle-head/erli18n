@@ -45,7 +45,7 @@ jobs:
       # predictable name for the CT-log extraction on failure below.
       COMPOSE_PROJECT_NAME: erli18n-gate
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # The gate goes through the SAME Makefile target a developer runs locally —
       # `make gate-otp OTP=${{ matrix.otp }}` reproduces this job byte for byte:
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload CT logs on failure
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ct-logs-otp${{ matrix.otp }}
           path: ct-logs/
