@@ -15,6 +15,18 @@ the norm.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-28
+
+Documentation and packaging patch. No code or behavior change — the plugin's
+CLI and its `{erli18n, "~> 0.6"}` requirement are unchanged.
+
+### Changed
+
+- **Refreshed the package documentation and Hex metadata.** The module doc now
+  states the current `erli18n ~> 0.6` line, the README is brought in step with
+  the umbrella's OTP 27/28/29 gate, and the `.app.src` links point at the
+  current source and docs.
+
 ## [0.1.1] — 2026-06-25
 
 ### Changed
