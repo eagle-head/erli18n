@@ -25,6 +25,28 @@ The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **a
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-06-28
+
+Documentation and packaging patch. No public API or runtime behavior change —
+the shipped CLDR plural rules are byte-identical to 0.6.0.
+
+### Added
+
+- **Committed CLDR plural seed** (`priv/gettext/plural_forms.eterm`) plus a
+  generator (`bin/gen-plural-table.escript`) that regenerates the inline
+  `erli18n_plural:cldr_data/0` table from it. The seed is the single source of
+  truth and the diffable target for a live GNU `gettext` parity gate, which
+  rebuilds the expected table from the real toolchain on every run and fails on
+  any divergence.
+
+### Changed
+
+- **Documentation now describes the CLDR plural rules by their source** — the
+  upstream GNU `gettext` / Unicode CLDR data the table tracks — instead of a
+  fixed locale count, and drops forward-looking feature promises. The README,
+  the narrative guides, and the module docs are aligned with the OTP 27/28/29
+  gate.
+
 ## [0.6.0] — 2026-06-25
 
 Phase 5: **per-request localization middleware for Cowboy and Elli**, plus the
@@ -559,8 +581,7 @@ behaviorally unchanged. The minor bump follows the `0.x` SemVer policy above.
 - **Bidi / RTL.** Interpolation does **not** auto-insert Unicode bidi isolation
   marks (U+2066–U+2069) around spliced values. Placing an RTL value into an LTR
   sentence (or the reverse) can reorder neighboring punctuation under the
-  Unicode Bidirectional Algorithm. Isolate mixed-direction values yourself until
-  a future version offers opt-in isolation.
+  Unicode Bidirectional Algorithm. Isolate mixed-direction values yourself.
 
 ## [0.1.0] — 2026-06-14
 
