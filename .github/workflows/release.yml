@@ -251,7 +251,10 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: '28'
-          rebar3-version: '3.24'
+          # No rebar3-version pin: setup-beam installs the current rebar3 — the
+          # same line the official images ship. A version pinned separately from
+          # the toolchain drifts and breaks (that is what broke the OTP 29 gate),
+          # so we never hard-code one.
 
       # Derive APP, the package version, and the per-app .app.src / CHANGELOG
       # paths from the PREFIXED tag. The longest matching prefix wins, so
