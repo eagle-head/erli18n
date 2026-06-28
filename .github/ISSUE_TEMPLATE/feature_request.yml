@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose new functionality or an API change for erli18n or rebar3_erli18n.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement.
+
+        For non-trivial proposals, please lay out the motivation, the proposed API, and the
+        compatibility/parity impact before opening a pull request — this saves a round-trip if
+        the design is contentious.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Which package
+      description: Which Hex package would this change land in?
+      options:
+        - erli18n (runtime library)
+        - rebar3_erli18n (rebar3 plugin)
+        - Either / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that erli18n does not support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: >-
+        Sketch the function signatures, the `:telemetry` event shape, or the config/env key
+        you have in mind. Rendered as Erlang.
+      render: erlang
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility & parity impact
+      description: >-
+        How does this affect GNU gettext parity (`erli18n_parity_SUITE`)? Does it change a
+        public API surface — an exported `erli18n` function, a `:telemetry` event schema, or an
+        application env key? Public-API changes trigger a minor version bump under the 0.x SemVer
+        policy, so call them out here.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for this idea.
+          required: true
+        - label: I would be willing to help implement this.
+          required: false

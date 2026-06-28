@@ -1,0 +1,84 @@
+name: Bug report
+description: Report incorrect behavior in the erli18n library or the rebar3_erli18n plugin.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        **Security vulnerability?** Do **not** file it here. Public issues are the wrong
+        channel for security reports — follow [SECURITY.md](https://github.com/eagle-head/erli18n/blob/main/SECURITY.md)
+        and email the maintainer privately instead.
+
+        A minimal reproducer (a Common Test case or a `.po`/`.pot` fixture) is the single
+        most useful thing you can provide for a parser/i18n library — it turns a guess into
+        a reproducible bug.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package
+      description: Which Hex package does this bug affect?
+      options:
+        - erli18n (runtime library)
+        - rebar3_erli18n (rebar3 plugin)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: The Hex version (e.g. `erli18n 0.6.0`) or the git SHA if you built from source.
+      placeholder: "0.6.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: otp
+    attributes:
+      label: Erlang/OTP version
+      description: erli18n supports OTP 27, 28, and 29 (Tier-1). 27 is the minimum.
+      options:
+        - "27"
+        - "28"
+        - "29"
+        - Other / multiple
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened vs. what you expected
+      description: Describe the actual behavior, then the behavior you expected.
+      placeholder: |
+        Actual: erli18n:gettext/2 returned ...
+        Expected: it should have returned ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducer
+      description: >-
+        Ideally a Common Test case or a `.po`/`.pot` fixture that triggers the bug.
+        Paste it here (it will be rendered as Erlang) or link a gist.
+      render: erlang
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Logs, stack traces, locale data, or anything else that helps. Optional.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those follow SECURITY.md, not public issues).
+          required: true
