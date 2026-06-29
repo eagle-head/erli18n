@@ -7,8 +7,9 @@
 #
 # Why this exists instead of `rebar3 ex_doc`:
 #   `rebar3 ex_doc` first runs EDoc (the legacy `@doc` tool) to generate doc
-#   chunks. EDoc parses every `%%` comment through its wiki markup and throws on
-#   a Markdown-style backtick (`` `code` ``), aborting the whole command. That
+#   chunks. EDoc parses the `%%` comments attached to `-type`/`-spec`
+#   declarations through its wiki markup and throws on a Markdown-style backtick
+#   (`` `code` ``), aborting the whole command (edoc_specs:find_type_docs/3). That
 #   EDoc step is vestigial — `ex_doc` reads the docs from the BEAM, not from
 #   EDoc's chunks. This script does exactly what the plugin does *after* the
 #   EDoc step, minus the crashing precondition.
@@ -38,7 +39,12 @@ OUT="${APP_DIR}/doc"
 echo "==> compiling ${APP} ${VSN} (native Docs chunks land in the BEAM)"
 rebar3 compile
 
-EBIN="_build/default/lib/${APP}/ebin"
+# Locate the build tree via rebar3 itself rather than hardcoding `_build/default`,
+# so the docs build is decoupled from _build's physical location (e.g. if
+# REBAR_BASE_DIR ever relocates it). `rebar3 path --base` prints the current
+# profile's base dir on stdout; its progress logs go to stderr.
+BASE=$(rebar3 path --base)
+EBIN="${BASE}/lib/${APP}/ebin"
 [ -d "$EBIN" ] || { echo "error: ebin dir not found: $EBIN" >&2; exit 1; }
 
 # Prefer a standalone `ex_doc` on PATH; otherwise use the escript bundled in the
@@ -47,7 +53,7 @@ if command -v ex_doc >/dev/null 2>&1; then
     EXDOC=(ex_doc)
 else
     OTP=$(erl -noshell -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().')
-    PRIV="_build/default/plugins/rebar3_ex_doc/priv"
+    PRIV="${BASE}/plugins/rebar3_ex_doc/priv"
     ESCRIPT=""
     for sub in 0 1 2 3; do
         cand="${PRIV}/ex_doc_otp_$((OTP - sub))"

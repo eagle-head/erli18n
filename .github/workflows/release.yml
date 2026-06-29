@@ -111,7 +111,11 @@ jobs:
   # `publish` job keeps `environment: hex-publish` and every downstream check.
   #
   # Identity resolution uses the GitHub Actions context + the gh/REST API:
-  #   - the released commit:        github.sha
+  #   - the released tag:           inputs.tag || github.ref_name
+  #   - the released commit:        the TAG resolved via GET /repos/{repo}/
+  #                                 commits/{tag} — NOT github.sha, which on a
+  #                                 workflow_dispatch from main is main HEAD, a
+  #                                 different commit than the tag actually ships
   #   - the release actor:          github.triggering_actor
   #   - the source PR + author:     GET /repos/{repo}/commits/{sha}/pulls,
   #                                 then .user.login on the PR
@@ -143,7 +147,8 @@ jobs:
           # Absent -> team check fails closed (actor must be the PR author).
           MAINTAINERS_TOKEN: ${{ secrets.MAINTAINERS_TOKEN }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
           ACTOR: ${{ github.triggering_actor }}
           ORG: ${{ vars.MAINTAINERS_ORG || github.repository_owner }}
           TEAM: ${{ vars.MAINTAINERS_TEAM || 'maintainers' }}
@@ -154,9 +159,23 @@ jobs:
           FAILED=0
           fail() { echo "::error::$1"; FAILED=1; }
 
+          # The released TAG: the dispatch input, else the pushed tag ref.
+          TAG="${INPUT_TAG:-$REF_NAME}"
           echo "Release actor:      ${ACTOR}"
-          echo "Release commit:     ${SHA}"
+          echo "Released tag:       ${TAG}"
           echo "Maintainers team:   ${ORG}/${TEAM}"
+
+          # Resolve the TAG to the exact commit the `publish` job checks out and
+          # ships, and validate THAT commit's provenance. github.sha is NOT used:
+          # on a workflow_dispatch from main it is main HEAD — a different commit
+          # than the tag — so gating on it would authorize the wrong artifact.
+          # GET /commits/{ref} accepts a tag and dereferences annotated tags.
+          SHA=$(gh api "repos/${REPO}/commits/${TAG}" --jq '.sha' 2>/dev/null || echo "")
+          if [ -z "${SHA}" ] || [ "${SHA}" = "null" ]; then
+            echo "::error::Cannot resolve tag '${TAG}' to a commit on ${REPO}. The tag must exist and point at a real commit before releasing."
+            exit 1
+          fi
+          echo "Released commit:    ${SHA} (tag ${TAG})"
 
           # --- Locate the approved main PR that produced this commit ----------
           # "List pull requests associated with a commit" returns the PR(s) whose
@@ -345,8 +364,16 @@ jobs:
           echo "Plugin requires erli18n '$REQ' (minor series '$NEED_MINOR') to be published first."
           # Ask Hex which erli18n versions exist. A matching X.Y.* release must be
           # present before the plugin may publish.
-          RELEASES=$(curl -fsSL https://hex.pm/api/packages/erli18n \
-                       | grep -o '"version":"[0-9][^"]*"' | sed 's/"version":"//;s/"//' || true)
+          # Separate transport failure from "not published": capture the body and
+          # curl's status independently (with --retry for transient blips), so a
+          # Hex outage reports "unreachable" and blocks safely instead of
+          # masquerading as "erli18n not published yet".
+          if ! BODY=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --max-time 20 \
+                        https://hex.pm/api/packages/erli18n); then
+            echo "::error::Could not reach the Hex API to verify erli18n's publish order (network/5xx). Re-run when Hex is reachable."
+            exit 1
+          fi
+          RELEASES=$(printf '%s' "$BODY" | grep -o '"version":"[0-9][^"]*"' | sed 's/"version":"//;s/"//' || true)
           echo "Published erli18n versions on Hex:"
           echo "$RELEASES" | sed 's/^/  - /'
           if echo "$RELEASES" | grep -qE "^${NEED_MINOR//./\\.}\\."; then
@@ -355,6 +382,42 @@ jobs:
             echo "::error::erli18n ${NEED_MINOR}.x is NOT yet published on Hex. Publish erli18n FIRST (push its erli18n-v${NEED_MINOR}.* tag, confirm it is live), then re-run this plugin publish."
             exit 1
           fi
+
+      # IDEMPOTENCY GATE — probe Hex for this exact version BEFORE any package
+      # operation. Hex releases are IMMUTABLE: re-publishing an already-live
+      # version is rejected ("must include the --replace flag"), and --replace is
+      # NOT a retry mechanism (it only overwrites a public package within 1h of
+      # first publish, and would mutate an already-consumed release). So GET the
+      # release endpoint (200 = live, 404 = absent) and SKIP the package upload
+      # when it is already live; the docs + GitHub Release steps below still run,
+      # so a re-run after a partial failure converges instead of hard-failing.
+      # (Runs on the runner; curl only, no Docker, no auth.)
+      - name: Probe Hex for an existing release (idempotency gate)
+        id: hexcheck
+        env:
+          APP: ${{ steps.pkg.outputs.app }}
+          VSN: ${{ steps.pkg.outputs.vsn }}
+        run: |
+          set -euo pipefail
+          URL="https://hex.pm/api/packages/${APP}/releases/${VSN}"
+          # -sS (not -f) so a 404 still yields the status code; --retry so a
+          # transient Hex blip self-heals instead of blocking the mutable docs +
+          # Release steps; || CODE=000 turns a hard network failure into the
+          # explicit error branch rather than a false "not published".
+          CODE=$(curl -sS --retry 5 --retry-all-errors --retry-delay 3 --max-time 20 \
+                   -o /dev/null -w '%{http_code}' "$URL") || CODE="000"
+          echo "GET $URL -> HTTP $CODE"
+          case "$CODE" in
+            200)
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::${APP} ${VSN} is already live on Hex (immutable). Skipping the package upload; docs + GitHub Release still run." ;;
+            404)
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              echo "${APP} ${VSN} is not on Hex yet — it will be published." ;;
+            *)
+              echo "::error::Unexpected HTTP $CODE probing $URL. Refusing to guess whether ${APP} ${VSN} exists; not publishing. Re-run when Hex is reachable."
+              exit 1 ;;
+          esac
 
       # Dry-run / build BEFORE publishing. Run FROM the app dir so the build
       # resolves the package's deps into a per-app lock — this is what lands the
@@ -371,8 +434,10 @@ jobs:
       # and published separately below via gen_docs.sh + `--doc-dir`, so the dry
       # run validates only the package.
       - name: Build package tarball (dry-run, no upload)
+        if: steps.hexcheck.outputs.published != 'true'
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
             -e LANG=C.UTF-8 \
             erlang:28 rebar3 hex build package
@@ -382,10 +447,12 @@ jobs:
       # umbrella root would omit `erli18n` from the plugin's `requirements`
       # (the root lock has no sibling app).
       - name: Publish package to Hex.pm
+        if: steps.hexcheck.outputs.published != 'true'
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
             -e LANG=C.UTF-8 -e HEX_API_KEY \
             erlang:28 rebar3 hex publish package --repo hexpm --yes
@@ -400,6 +467,7 @@ jobs:
       - name: Build docs (bypassing the EDoc bug)
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/work" -w /work \
             -e LANG=C.UTF-8 \
             erlang:28 bash scripts/gen_docs.sh ${{ steps.pkg.outputs.app }}
@@ -413,6 +481,7 @@ jobs:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/work" -w "/work/${{ steps.pkg.outputs.app_dir }}" \
             -e LANG=C.UTF-8 -e HEX_API_KEY \
             erlang:28 rebar3 hex publish docs --repo hexpm --doc-dir doc --yes
@@ -423,7 +492,7 @@ jobs:
       # CHANGELOG (apps/$APP/CHANGELOG.md, not the umbrella root CHANGELOG); if
       # that version has no section yet, fall back to GitHub's auto-generated
       # notes so the release is never empty.
-      - name: Create GitHub Release
+      - name: Create or update the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.pkg.outputs.tag }}
@@ -445,7 +514,20 @@ jobs:
           # (e.g. erli18n-v1.2.0-rc1 -> version 1.2.0-rc1).
           PRERELEASE=""
           case "$APP_VSN" in *-*) PRERELEASE="--prerelease" ;; esac
-          if grep -q '[^[:space:]]' "$NOTES_FILE"; then
+          HAVE_NOTES=0
+          grep -q '[^[:space:]]' "$NOTES_FILE" && HAVE_NOTES=1
+          # CHECK-THEN-CREATE: `gh release create` hard-fails if a release already
+          # exists for the tag, which would break a partial-failure re-run. View
+          # first, then edit the existing release or create a new one — so the step
+          # is idempotent and always converges to a release for the tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release ${TAG} already exists — updating."
+            if [ "$HAVE_NOTES" -eq 1 ]; then
+              gh release edit "$TAG" --title "Release $TAG" --notes-file "$NOTES_FILE" $PRERELEASE
+            else
+              echo "Leaving existing notes as-is (no ${CHANGELOG} section for ${APP_VSN})."
+            fi
+          elif [ "$HAVE_NOTES" -eq 1 ]; then
             echo "Using ${CHANGELOG} section for ${APP} ${APP_VSN} as release notes."
             gh release create "$TAG" --title "Release $TAG" --notes-file "$NOTES_FILE" --verify-tag $PRERELEASE
           else
