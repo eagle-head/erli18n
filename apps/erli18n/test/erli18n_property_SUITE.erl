@@ -53,7 +53,10 @@
     negotiate_best_match_is_member/1,
     http_negotiate_locale_is_total/1,
     http_cookie_value_is_total/1,
-    http_query_value_is_total/1
+    http_query_value_is_total/1,
+    register_roundtrip_equals_reference/1,
+    register_twice_equals_once/1,
+    register_batch_order_independent/1
 ]).
 
 %% Number of QuickCheck runs per property. 200 = release-blocking floor
@@ -86,7 +89,10 @@ all() ->
         negotiate_best_match_is_member,
         http_negotiate_locale_is_total,
         http_cookie_value_is_total,
-        http_query_value_is_total
+        http_query_value_is_total,
+        register_roundtrip_equals_reference,
+        register_twice_equals_once,
+        register_batch_order_independent
     ].
 
 init_per_suite(Config) ->
@@ -187,6 +193,21 @@ http_cookie_value_is_total(_Config) ->
 
 http_query_value_is_total(_Config) ->
     run_property(erli18n_http_props:prop_query_value_is_total()).
+
+register_roundtrip_equals_reference(_Config) ->
+    run_property(
+        erli18n_register_compiled_props:prop_register_roundtrip_equals_reference()
+    ).
+
+register_twice_equals_once(_Config) ->
+    run_property(
+        erli18n_register_compiled_props:prop_register_twice_equals_once()
+    ).
+
+register_batch_order_independent(_Config) ->
+    run_property(
+        erli18n_register_compiled_props:prop_register_batch_order_independent()
+    ).
 
 %% =========================
 %% Helpers
