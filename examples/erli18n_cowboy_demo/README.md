@@ -30,7 +30,7 @@ see the module docs.)
 
 ## First-time setup
 
-`erli18n` 0.6.0 is not yet on Hex, so this example resolves it from the in-repo
+`erli18n` 0.7.0 is not yet on Hex, so this example resolves it from the in-repo
 source through a gitignored `_checkouts/` symlink. Create it once:
 
 ```sh

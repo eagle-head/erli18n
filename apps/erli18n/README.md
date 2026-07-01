@@ -22,7 +22,7 @@ Modern, GNU `gettext`–compatible internationalization (i18n) for Erlang/OTP �
 Add the dependency to `rebar.config`:
 
 ```erlang
-{deps, [{erli18n, "~> 0.6"}]}.
+{deps, [{erli18n, "~> 0.7"}]}.
 ```
 
 Then load a catalog and translate:
@@ -155,7 +155,7 @@ erli18n_interp:format(<<"Hi %{who}">>, #{}, #{on_missing => strict}).
 
 ## Locale negotiation & fallback (opt-in)
 
-Catalogs are keyed by exact binary, so by default a `pt_BR` request only matches a `pt_BR` catalog. Phase 2 adds two **opt-in** pieces that close the common gaps — without changing the default exact-match behavior or touching the copy-free hot path.
+Catalogs are keyed by exact binary, so by default a `pt_BR` request only matches a `pt_BR` catalog. Two **opt-in** pieces close the common gaps — without changing the default exact-match behavior or touching the copy-free hot path.
 
 **1. Request-time negotiation** (`erli18n_negotiate`, exposed on the facade). Pick the best locale a client supports from those you have loaded. `parse_accept_language/1` turns an HTTP header into a priority-ordered list; `negotiate/2` resolves it (with BCP-47 canonicalization and base-language fallback) against your available set, always returning a usable locale:
 
@@ -233,13 +233,15 @@ Most Erlang projects today either reach for the venerable but [largely-stalled `
 - **A copy-free hot path** — `lookup_*` reads run directly from `persistent_term` in the *calling* process, with no copy onto the caller heap and no lock; only writes (loading and reloading catalogs) go through the owning `gen_server`. No process bottleneck on the read side. A reload or unload defers a one-time, node-wide `persistent_term` literal-area GC, paid once per write and negligible for the load-once workload.
 - **Heavily tested** — Common Test suites, PropEr property-based tests, fuzzing, and a parity suite that checks output byte-for-byte against GNU `msgfmt` as a ground-truth oracle. 100% behavioral coverage.
 
-String **extraction** is handled by the companion rebar3 plugin, [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) — an Erlang-native extractor that walks your source's abstract forms and recognizes the full facade family by name and arity, producing `.pot` templates (the `mix gettext.extract` experience for Erlang). It is shipped as a **separate** Hex package that depends on this library (`{deps, [{erli18n, "~> 0.6"}]}`); consumers opt in with `{plugins, [rebar3_erli18n]}` and gain `rebar3 erli18n {extract,merge,check,report}`. Only **compile-time-literal** msgids are extracted (runtime-computed keys still translate, they just aren't discovered statically) — the same model and the same caveat as Elixir's Gettext. Compile-time key checking is intentionally out of scope; runtime lookup plus the `check` freshness gate is the mainstream pattern. (The plugin is published as its own Hex package, after this library; see [`apps/rebar3_erli18n/README.md`](https://github.com/eagle-head/erli18n/blob/main/apps/rebar3_erli18n/README.md).)
+String **extraction** is handled by the companion rebar3 plugin, [`rebar3_erli18n`](https://github.com/eagle-head/erli18n/tree/main/apps/rebar3_erli18n) — an Erlang-native extractor that walks your source's abstract forms and recognizes the full facade family by name and arity, producing `.pot` templates (the `mix gettext.extract` experience for Erlang). It is shipped as a **separate** Hex package that depends on this library (`{deps, [{erli18n, "~> 0.7"}]}`); consumers opt in with `{plugins, [rebar3_erli18n]}` and gain `rebar3 erli18n {extract,merge,check,report,compile}`. Only **compile-time-literal** msgids are extracted (runtime-computed keys still translate, they just aren't discovered statically) — the same model and the same caveat as Elixir's Gettext. The plugin also offers an **opt-in** `compile` provider that bakes catalogs into BEAM carriers plus an **opt-in** compile-time key-existence check (`rebar3 erli18n compile`); runtime lookup plus the `check` freshness gate remains the default. (The plugin is published as its own Hex package, after this library; see [`apps/rebar3_erli18n/README.md`](https://github.com/eagle-head/erli18n/blob/main/apps/rebar3_erli18n/README.md).)
+
+**Compiled catalogs (opt-in).** By default catalogs load at runtime from `.po` files with [`erli18n:ensure_loaded/3,4`](https://hexdocs.pm/erli18n/erli18n.html). As an opt-in alternative, the `rebar3_erli18n` plugin can bake each catalog — already parsed, with its `Plural-Forms` rule already compiled — into a generated BEAM module, and [`erli18n:register_compiled_catalogs/1`](https://hexdocs.pm/erli18n/erli18n.html) registers them at boot with **no `.po` parse and no plural compile** (the install cost remains; it is *no parse / no compile at startup*, not *zero-load*). Call it once in your app's `start/2`, before the supervision tree. See the "Compiled catalogs" section of the `erli18n` module docs and the plugin README.
 
 ## Installation
 
 ```erlang
 {deps, [
-    {erli18n, "~> 0.6"}
+    {erli18n, "~> 0.7"}
 ]}.
 ```
 
@@ -247,7 +249,7 @@ For [`telemetry`](https://github.com/beam-telemetry/telemetry) observability (op
 
 ```erlang
 {deps, [
-    {erli18n, "~> 0.6"},
+    {erli18n, "~> 0.7"},
     {telemetry, "~> 1.3"}
 ]}.
 ```
@@ -256,7 +258,7 @@ For the optional per-request adapters, add the web framework you already use to 
 
 ```erlang
 {deps, [
-    {erli18n, "~> 0.6"},
+    {erli18n, "~> 0.7"},
     {cowboy, "~> 2.13"}    %% or: {elli, "~> 3.3"}
 ]}.
 ```
@@ -271,7 +273,7 @@ OTP 27 is the floor because the public modules use the native `-doc` / `-moduled
 
 ## Status
 
-**Initial development (`0.6.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.6.0` → `0.7.0`); patch bumps (`0.6.0` → `0.6.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
+**Initial development (`0.7.0`).** Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), the public API is functional but may change on a minor bump (`0.7.0` → `0.8.0`); patch bumps (`0.7.0` → `0.7.1`) stay backward-compatible. The criteria for a stable `1.0.0` are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Documentation
 

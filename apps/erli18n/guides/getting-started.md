@@ -9,7 +9,7 @@ with [`erli18n`](erli18n.html), the facade).
 
 ```erlang
 %% rebar.config
-{deps, [{erli18n, "~> 0.6"}]}.
+{deps, [{erli18n, "~> 0.7"}]}.
 ```
 
 `erli18n` runs on `kernel` + `stdlib` alone. [`telemetry`](https://github.com/beam-telemetry/telemetry)

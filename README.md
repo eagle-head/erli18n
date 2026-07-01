@@ -13,7 +13,7 @@ This repository is a **rebar3 umbrella** that ships **two separately-published H
 | Package | Path | What it is |
 | ------- | ---- | ---------- |
 | [`erli18n`](apps/erli18n/) | [`apps/erli18n/`](apps/erli18n/) | The runtime i18n library — `.po`/`.pot` loading, CLDR pluralization, copy-free `persistent_term` lookups, and the full GNU gettext facade family (`gettext`, `ngettext`, `pgettext`, `npgettext`, plus interpolating `f`-suffix siblings), and optional per-request localization middleware for Cowboy & Elli. |
-| [`rebar3_erli18n`](apps/rebar3_erli18n/) | [`apps/rebar3_erli18n/`](apps/rebar3_erli18n/) | The companion rebar3 plugin — an Erlang-native string extractor that walks your source's abstract forms and produces `.pot` templates, giving you `rebar3 erli18n {extract,merge,check,report}`. It is a separate Hex package that depends on `erli18n`. |
+| [`rebar3_erli18n`](apps/rebar3_erli18n/) | [`apps/rebar3_erli18n/`](apps/rebar3_erli18n/) | The companion rebar3 plugin — an Erlang-native string extractor that walks your source's abstract forms and produces `.pot` templates, giving you `rebar3 erli18n {extract,merge,check,report,compile}`. It is a separate Hex package that depends on `erli18n`. |
 
 The two packages have **independent versions**, coupled only by the plugin's `~>` dependency constraint on the library (the plugin reuses `erli18n`'s public PO read/serialize API across the package boundary). The umbrella co-locates them for atomic cross-package changes and shared tooling; each is published to Hex on its own.
 
@@ -23,7 +23,7 @@ To consume both packages from a downstream project, add the runtime library as a
 
 ```erlang
 %% rebar.config of a downstream consumer
-{deps, [{erli18n, "~> 0.6"}]}.
+{deps, [{erli18n, "~> 0.7"}]}.
 {plugins, [rebar3_erli18n]}.
 ```
 
@@ -31,7 +31,7 @@ For the runtime library — installation, the full facade API, locale negotiatio
 
 ➡️ **[`apps/erli18n/README.md`](apps/erli18n/README.md)**
 
-For the string-extraction plugin — installation as a `{plugins, [...]}` entry and the `extract`/`merge`/`check`/`report` commands — see the plugin README:
+For the string-extraction plugin — installation as a `{plugins, [...]}` entry and the `extract`/`merge`/`check`/`report`/`compile` commands — see the plugin README:
 
 ➡️ **[`apps/rebar3_erli18n/README.md`](apps/rebar3_erli18n/README.md)**
 

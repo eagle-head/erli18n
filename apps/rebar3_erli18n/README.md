@@ -1,22 +1,23 @@
 # rebar3_erli18n
 
-A [rebar3](https://rebar3.org/) plugin that extracts, merges, checks, and
-reports [gettext](https://www.gnu.org/software/gettext/) catalogs for the
-[`erli18n`](https://hex.pm/packages/erli18n) runtime library. It is the Erlang
-counterpart to `mix gettext.extract` / `mix gettext.merge`.
+A [rebar3](https://rebar3.org/) plugin that extracts, merges, checks, reports,
+and (opt-in) **compiles** [gettext](https://www.gnu.org/software/gettext/)
+catalogs for the [`erli18n`](https://hex.pm/packages/erli18n) runtime library.
+It is the Erlang counterpart to `mix gettext.extract` / `mix gettext.merge`.
 
 ```
 rebar3 erli18n extract   # walk Erlang abstract forms into .pot templates
 rebar3 erli18n merge     # msgmerge-style sync of .po catalogs against the .pot
 rebar3 erli18n check     # CI gate: fail the build on .pot drift
 rebar3 erli18n report    # per-(Domain, Locale) translation completeness
+rebar3 erli18n compile   # opt-in: bake .po catalogs into BEAM carrier modules
 ```
 
 ## Distribution model — a SEPARATE package from `erli18n`
 
 This plugin is published as its own Hex package, **separate** from the runtime
 `erli18n` library, and it depends on that library (`{deps, [{erli18n, "~>
-0.6"}]}`, `{applications, [kernel, stdlib, erli18n]}`). The dependency points
+0.7"}]}`, `{applications, [kernel, stdlib, erli18n]}`). The dependency points
 **plugin → lib** — the same direction as
 [`rebar3_gpb_plugin`](https://github.com/lrascao/rebar3_gpb_plugin) → `gpb`,
 `rebar3_proper` → `proper`, and `rebar3_lint` → `elvis_core`.
@@ -47,11 +48,11 @@ itself as a normal runtime dependency, since your code calls
 `erli18n:gettext/1` and friends:
 
 ```erlang
-{deps, [{erli18n, "~> 0.6"}]}.
+{deps, [{erli18n, "~> 0.7"}]}.
 {plugins, [rebar3_erli18n]}.
 ```
 
-The plugin registers four providers under the `erli18n` namespace, so the
+The plugin registers five providers under the `erli18n` namespace, so the
 commands are spelled `rebar3 erli18n <provider>`.
 
 ## The catalog layout
@@ -163,6 +164,122 @@ named by `--domain`), and one line per locale (every locale directory found, or
 just the one named by `--locale`). A locale with no catalog for a domain is
 reported as `(no catalog)` rather than omitted.
 
+## Compile-time catalogs (opt-in) — `rebar3 erli18n compile`
+
+By default `erli18n` loads catalogs at runtime from `.po` files with
+`erli18n:ensure_loaded/3,4` (read + parse + plural compile at boot). `rebar3
+erli18n compile` is an **opt-in** alternative: it bakes each catalog — ALREADY
+parsed, with its `Plural-Forms` rule ALREADY compiled — into a generated BEAM
+carrier module, so the consumer's boot registers it with **no `.po` parse and no
+plural compile**.
+
+For every `(Domain, Locale)` catalog under the root it parses the `.po` and
+compiles the plural rule ahead of time, then emits
+`erli18n_cc_<Domain>__<Locale>.erl` into the `gen_dir`. The emitter uses only
+`erl_parse:abstract/2` + `erl_pp` from stdlib (no `merl`, no `erl_syntax`, no
+parse transform), and the normal app-compile step turns those carriers into
+BEAM. Orphaned carriers (from a deleted `.po`) are pruned, and a `.gitignore`
+marks the `gen_dir` as a build artifact.
+
+The whole surface is off until you opt in. With no `{compiled_catalogs, true}`
+in `rebar.config`, the provider is a loud-logged no-op that writes nothing.
+
+### Wiring it up
+
+```erlang
+%% rebar.config
+{plugins, [rebar3_erli18n]}.
+
+{erli18n, [
+    {compiled_catalogs, true},            % master gate (default: false)
+    {key_check, warn},                    % off | warn | strict (default: warn)
+    {compiled_domains, [default, errors]},% all (default) or an explicit list
+    {gen_dir, "src/erli18n_gen"},         % carrier output dir (default shown)
+    {include_fuzzy, false},               % bake #, fuzzy entries (default: false)
+    {gen_eqwalizer_nowarn, true},         % nowarn on generated catalog/0 (default: true)
+    {max_po_bytes, 16777216},             % reject a .po larger than this before reading (infinity disables; default 16 MiB)
+    {max_entries, 500000}                 % reject a parsed catalog with more entries (infinity disables; default)
+]}.
+
+%% Regenerate the carriers on every build, before the app compile:
+{provider_hooks, [{pre, [{compile, {erli18n, compile}}]}]}.
+```
+
+Then register the baked catalogs once, in the consuming app's `start/2`,
+**before** the supervision tree starts, so every catalog is live before any
+worker can look one up:
+
+```erlang
+%% my_app_app.erl
+start(_Type, _Args) ->
+    _ = erli18n:register_compiled_catalogs(my_app),
+    my_app_sup:start_link().
+```
+
+`register_compiled_catalogs/1` is additive and idempotent: it composes with
+runtime `ensure_loaded/3` and reports `{ok, already}` for a catalog already
+present. The honest framing is **no parse / no compile at startup — NOT
+zero-load**: registration still installs each catalog through the runtime's
+single serialized writer; the cost is the install, not the parsing.
+
+### The compile-time key check
+
+After codegen the provider compares every compile-time-literal facade call site
+(the same `extract` walk) against the per-`(Domain)` key universe of the
+*compiled* catalogs and reports each call site whose `{Context, Msgid}` has no
+matching compiled key. It is scoped to the domains actually being compiled, so
+it never flags a domain you did not opt into. The `{key_check, ...}` policy is
+`off | warn | strict` (default `warn` — log and continue; `strict` fails the
+build). CLI overrides take precedence over the config, in this order:
+`--no-key-check` > `--strict` / `--check` > the `{key_check}` config.
+
+### CI one-liner
+
+```console
+$ rebar3 erli18n compile --check
+```
+
+`--check` is a dry run: it parses every catalog, compiles every plural rule, and
+runs the key check **in strict mode** while writing **no** carriers — so CI fails
+fast on a broken `Plural-Forms` rule or a call site missing from the compiled
+catalogs, without mutating the tree.
+
+### Runtime vs compiled — which to use
+
+Compiled catalogs are an optimization for a specific shape of project; the
+runtime loader stays the default and the right choice for most.
+
+- **Runtime `ensure_loaded/3,4`** (the default): catalogs are plain `.po` files
+  shipped in `priv/`, editable and reloadable without a recompile
+  (`erli18n:reload/3`). Best when translations change independently of code, are
+  supplied per tenant, or are edited by translators against a running release.
+- **Compiled `register_compiled_catalogs/1`**: catalogs are frozen into the
+  release at build time. Best when translations ship **with** the code and you
+  want boot to skip the `.po` read/parse/compile entirely. The trade-off is that
+  a translation change now requires a recompile, and the carriers are a generated
+  build artifact.
+
+### eqWAlizer note (generated carriers)
+
+Each generated `catalog/0` always carries the precise
+`-spec catalog() -> erli18n_server:compiled_spec().`. By default
+(`{gen_eqwalizer_nowarn, true}`) it **also** carries a function-scoped
+`-eqwalizer({nowarn_function, catalog/0}).`, because a generated catalog can
+embed a deeply nested plural-rule literal that eqWAlizer cannot always narrow to
+the spec. The nowarn keeps a generated module type-clean without weakening the
+precise spec. Set `{gen_eqwalizer_nowarn, false}` to omit the nowarn (for a
+catalog simple enough to type-check against the spec without the escape hatch).
+
+### `include_fuzzy` parity caveat
+
+`{include_fuzzy, false}` (the default) matches the runtime parser: `#, fuzzy`
+entries are dropped, so a compiled catalog serves exactly what
+`erli18n:ensure_loaded/3` would. Setting `{include_fuzzy, true}` bakes fuzzy
+entries **in**, which makes the compiled catalog serve translations the runtime
+loader would skip — keep it `false` unless you deliberately want fuzzy entries
+live, and keep it consistent with how the same catalogs are loaded at runtime so
+the two paths stay at parity.
+
 ## Local development — the two-checkouts requirement
 
 Until both packages are published, a consumer that wants to drive this plugin
@@ -179,7 +296,7 @@ Both are load-bearing (empirically verified against rebar3 3.24 / OTP 28):
 - The consumer's `{plugins, [rebar3_erli18n]}` entry by name must still be
   present; `_checkouts/rebar3_erli18n` only takes precedence over a Hex fetch
   for that name.
-- The plugin's own `{deps, [{erli18n, "~> 0.6"}]}` declaration is what pulls
+- The plugin's own `{deps, [{erli18n, "~> 0.7"}]}` declaration is what pulls
   the consumer's `_checkouts/erli18n` onto the plugin's runtime code path at
   provider-run time. **Without** the plugin declaring the `erli18n` dep, the
   consumer's `erli18n` checkout does not land on the plugin path and
@@ -227,10 +344,9 @@ there is no `Fetching erli18n` line, and no `undef erli18n_po:dump/1`. The
 (the lib is never `non_existing` and its API is callable).
 
 Because that load path is proven, the providers reuse `erli18n_po` directly:
-the plugin does **not** vendor a private copy of the escaper/dumper. A vendored
-fallback was specified as a contingency *only* for the case where `erli18n_po`
-could not be reached cross-package; that case did not occur, so no duplicate
-escaper exists to drift out of sync with `erli18n_po:escape_string/1`.
+the plugin does **not** vendor a private copy of the escaper/dumper, so no
+duplicate escaper exists to drift out of sync with
+`erli18n_po:escape_string/1`.
 
 ## Xref and the rebar3 host API
 
@@ -251,9 +367,8 @@ Rejected alternatives:
 - **(a) declare `rebar3` as a build dependency** — impossible: there is no
   `rebar`/`rebar3` Hex package carrying those host modules.
 - **(b) extract the host beams out of the running escript onto an extra xref
-  path** — the old workaround; it was version-coupled to the local rebar3 and
-  needed a generator escript plus a git-ignored beam directory. Removed in favor
-  of the scoped ignore.
+  path** — version-coupled to the local rebar3, and needs a generator escript
+  plus a git-ignored beam directory; the scoped ignore avoids all of that.
 - **(c) exclude the whole plugin app from xref** — over-broad; it would silence
   real undefined-call bugs in the plugin's own logic modules.
 
