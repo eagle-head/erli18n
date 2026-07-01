@@ -1,7 +1,7 @@
 {application, rebar3_erli18n, [
     {description,
-        "rebar3 plugin: extract/merge/check/report gettext catalogs from Erlang abstract forms"},
-    {vsn, "0.1.2"},
+        "rebar3 plugin: extract/merge/check/report/compile gettext catalogs from Erlang abstract forms"},
+    {vsn, "0.2.0"},
     {registered, []},
     {applications, [kernel, stdlib, erli18n]},
     {env, []},

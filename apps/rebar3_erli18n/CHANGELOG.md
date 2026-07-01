@@ -15,6 +15,96 @@ the norm.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-29
+
+A new **`rebar3 erli18n compile`** provider — opt-in compile-time
+`.po`->BEAM catalog codegen — plus a compile-time **key-existence check**. The
+minor bump under the `0.x` policy is driven by the new provider, the new
+`{erli18n, [...]}` `rebar.config` surface, and the raised runtime-library
+requirement. The four existing providers (`extract`, `merge`, `check`,
+`report`) and their flags are unchanged, and the whole compile surface is
+**opt-in**: with no `{compiled_catalogs, true}` in `rebar.config`, the provider
+is a loud-logged no-op that writes nothing.
+
+### Added
+
+- **`rebar3 erli18n compile` — opt-in compile-time catalog codegen.** For every
+  `(Domain, Locale)` catalog under the catalog root, the provider reads the
+  `.po`, parses its entries and compiles its `Plural-Forms` rule **ahead of
+  time**, then emits a tiny generated carrier module
+  (`erli18n_cc_<Domain>__<Locale>.erl`) whose `catalog/0` returns the
+  ALREADY-parsed entries plus the ALREADY-compiled plural rule baked into the
+  BEAM literal pool. A consumer registers them at boot through the runtime
+  library's `erli18n:register_compiled_catalogs/1` with **no runtime `.po` parse
+  and no plural compile**. The term-to-source emitter (`rebar3_erli18n_codegen`)
+  uses **only** `erl_parse:abstract/2` + `erl_pp` from stdlib — no `merl`, no
+  `erl_syntax`, no parse transform, and no `compile:forms`-to-BEAM step; the
+  generated source is byte-deterministic for a given catalog and compiled by the
+  normal app-compile step. The provider prunes orphaned carriers (a deleted
+  `.po` leaves no stale module behind) and writes a `.gitignore` so the
+  generated `gen_dir` is a build artifact, not version-controlled.
+  - **vs-CLDR plural divergence is emitted once, here, at build time.** A
+    catalog whose `Plural-Forms` header diverges from CLDR is logged a single
+    time during codegen; the divergence is baked into the carrier header so the
+    runtime install is **silent** (boot is not noisy). A broken `Plural-Forms`
+    rule aborts the build loudly rather than shipping a bad carrier.
+- **Compile-time key-existence check** (`rebar3_erli18n_keycheck`). After
+  codegen, the provider compares every compile-time-literal facade call site (as
+  produced by the existing `extract` walk) against the per-domain key universe
+  of the *compiled* catalogs and reports each call site whose `{Context, Msgid}`
+  has no matching compiled key. The check is scoped to the domains actually being
+  compiled (domain scoping), so it never flags a domain the project did not opt into.
+  Policy is `off | warn | strict` (default `warn`): `warn` logs each diagnostic
+  and continues, `strict` fails the build. The CLI overrides — `--strict`,
+  `--no-key-check`, and `--check` (a dry run that validates without writing
+  carriers) — take precedence over the config in that order. This is the missing
+  half of what was previously documented as "compile-time key checking
+  intentionally out of scope": it is now an **opt-in** capability, not the
+  default.
+- **`{erli18n, [...]}` `rebar.config` surface** (read through the new
+  `rebar3_erli18n_host:get_config/3` seam). Keys: `compiled_catalogs` (master
+  gate, default off), `key_check` (`off | warn | strict`, default `warn`),
+  `compiled_domains` (`all` or an explicit `[atom()]`), `gen_dir` (default
+  `"src/erli18n_gen"`), `include_fuzzy` (default `false`),
+  `gen_eqwalizer_nowarn` (default `true`), `max_po_bytes` (default 16 MiB), and
+  `max_entries` (default 500000). An unknown `key_check` atom or an
+  ill-typed value degrades to its documented default with a one-time log rather
+  than crashing the build.
+- **Build-time size and entry caps mirror the runtime loader.** The `compile`
+  provider rejects an oversized `.po` before reading it (a file larger than
+  `max_po_bytes`, default 16 MiB, checked via `filelib:file_size/1`) and a
+  catalog with more than `max_entries` (default 500000) after the parse, so a
+  compiled carrier can never carry more than `erli18n:ensure_loaded/3` would
+  accept. Both defaults come from the runtime library
+  (`erli18n_server:default_max_bytes/0` and `default_max_entries/0`) as the
+  single source of truth; set either to `infinity` to disable that cap. A
+  violation is a loud build error (`{input_too_large, _, _}` /
+  `{too_many_entries, _, _}`) that prevents carrier generation.
+- **A carrier's baked `po_path` is a binary.** The generated carrier header
+  stores `po_path` as a binary, mirroring the runtime loader's path
+  normalization, rather than a character-code list.
+- **README sections** for the compile provider: the opt-in `rebar.config`
+  snippet and `provider_hooks` wiring, the consumer `start/2` registration
+  snippet, the `rebar3 erli18n compile --check` CI one-liner, a
+  runtime-vs-compiled decision guide, the generated-carrier eqWAlizer note, and
+  the `include_fuzzy` parity caveat.
+
+### Changed
+
+- **Raised the `erli18n` dependency from `~> 0.6` to `~> 0.7`,** in lockstep with
+  the co-released `erli18n` 0.7.0. The bump is **required**, not cosmetic: the
+  codegen constructs the `erli18n_server:compiled_spec()` / `baked_header()`
+  terms and targets `erli18n:register_compiled_catalogs/1`, all introduced in
+  `erli18n` 0.7.0, so a generated carrier cannot register against an older
+  runtime line. The publish order is unchanged — `erli18n` 0.7.0 must be live on
+  Hex before this plugin, since the published `requirements` resolve `~> 0.7`.
+- **The host seam (`rebar3_erli18n_host`) now wraps two additional rebar3 host
+  calls** — `rebar_state:get/3` (the `rebar.config` reader backing
+  `get_config/3`) and `rebar_api:warn/2` — bringing the scoped host-API surface
+  to ten `{M, F, A}` edges. The three suppression sites stay in lockstep: the
+  seam's `-ignore_xref`, its `-dialyzer({no_unknown, [...]})`, and the
+  `{xref_ignores, [...]}` block in `rebar.config`.
+
 ## [0.1.2] — 2026-06-28
 
 Documentation and packaging patch. No code or behavior change — the plugin's
@@ -195,6 +285,8 @@ prefixed tag (`rebar3_erli18n-vX.Y.Z`), so these point at the
 `.github/workflows/release.yml`.
 -->
 
-[Unreleased]: https://github.com/eagle-head/erli18n/compare/rebar3_erli18n-v0.1.1...HEAD
+[Unreleased]: https://github.com/eagle-head/erli18n/compare/rebar3_erli18n-v0.2.0...HEAD
+[0.2.0]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.2.0
+[0.1.2]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.1.2
 [0.1.1]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.1.1
 [0.1.0]: https://github.com/eagle-head/erli18n/releases/tag/rebar3_erli18n-v0.1.0
