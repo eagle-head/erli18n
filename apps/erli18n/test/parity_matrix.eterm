@@ -448,7 +448,7 @@
         description => <<"ar n=11 selects form 4 (many)">>
     },
 
-    %% --- Plural ja (degenerate single form, PSD-008) -----------------
+    %% --- Plural ja (degenerate single form, nplurals=1) -----------------
     #{
         id => <<"plural_ja_n1">>,
         op => ngettext,

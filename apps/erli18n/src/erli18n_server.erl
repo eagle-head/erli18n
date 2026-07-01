@@ -19,13 +19,12 @@ roundtrip to the server).
 Each `{Domain, Locale}` catalog is stored as ONE persistent term (key
 `{erli18n_catalog, Domain, Locale}`) holding a map of all its entries plus the
 header — see `erli18n_pt_store`. `persistent_term:get/2` returns the term WITHOUT
-copying it onto the caller's heap, so reads are copy-free and lock-free (the
-benchmark measured ~55% faster than the previous per-row ETS storage). The
+copying it onto the caller's heap, so reads are copy-free and lock-free. The
 trade-off is the write side: installing/erasing a catalog defers a node-wide
 literal-area cleanup (a major GC on processes still holding the old catalog plus
 an all-process heap scan). erli18n loads catalogs once at boot and rarely
-reloads, so this is acceptable — but it is a real cost the old ETS storage did
-not have, paid once per `reload/3,4` and `unload/2`.
+reloads, so this is acceptable — but it is a real cost, paid once per
+`reload/3,4` and `unload/2`.
 
 ## Mental model
 
@@ -135,10 +134,9 @@ counts only the 130 data entries — see both functions.)
 ]).
 
 %% Read API (direct persistent_term lookup from caller process — lock-free hot
-%% path, per RISK-012 anti-bottleneck pattern).
+%% path; keeping reads off the server mailbox avoids a bottleneck).
 %%
-%% Finding #16 (lookup-plural-5-exported-footgun-bypasses-form-evaluation): the
-%% plural read is exposed ONLY through the form-aware `lookup_plural_form/5',
+%% The plural read is exposed ONLY through the form-aware `lookup_plural_form/5',
 %% which evaluates the catalog's compiled `Plural-Forms' rule against the count N
 %% before reading the form. There is no exported raw, index-based plural read:
 %% exporting one invited callers to pass the count N as the form index and
@@ -159,8 +157,8 @@ counts only the 130 data entries — see both functions.)
 ]).
 
 %% Load orchestration: parse .po + compile plural + validate vs CLDR + install
-%% atomically. Per BR-MIGRAR-022/029 and RISK-012 this is a serialized write
-%% path; idempotency makes the second call cheap.
+%% atomically. This is a serialized write path; idempotency makes the second
+%% call cheap.
 -export([
     ensure_loaded/3,
     ensure_loaded/4,
@@ -189,31 +187,30 @@ counts only the 130 data entries — see both functions.)
 -type plural_entries() :: [{plural_index(), translation()}].
 -type msgid_plural() :: undefined | binary().
 -type singular_entry() :: {singular, context(), msgid(), translation()}.
-%% Finding #14: the parsed plural entry carries the `msgid_plural` form text (4th
+%% The parsed plural entry carries the `msgid_plural` form text (4th
 %% element). It plays no part in lookup keying and is dropped when the catalog
 %% map is built (it exists purely so `erli18n_po:dump/1` round-trips faithfully).
 -type plural_entry() ::
     {plural, context(), msgid(), msgid_plural(), plural_entries()}.
 -type catalog_entry() :: singular_entry() | plural_entry().
 
-%% Load orchestration types (Part 5).
+%% Load orchestration types.
 %%
-%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout):
-%% `opts()` gains resource bounds and a tunable commit timeout. Every field is
-%% optional; omitting them preserves the legacy behaviour (modulo the safety-cap
+%% `opts()` carries resource bounds and a tunable commit timeout. Every field is
+%% optional; omitting them preserves the default behaviour (modulo the safety-cap
 %% defaults). The heavy read+parse+compile+build runs in the CALLING process, so
-%% these are the boundary knobs a multi-tenant deployment (ADR-0003) needs:
+%% these are the boundary knobs a multi-tenant deployment needs:
 %%   * `max_bytes`   — reject the file (via `filelib:file_size/1`) BEFORE reading
 %%                     it whole into memory. `infinity` = no cap.
 %%   * `max_entries` — reject the catalog AFTER the parse if it has more than N
 %%                     entries. `infinity` = no cap.
 %%   * `timeout`     — timeout of the commit `gen_server:call/3'. The heavy phase
-%%                     no longer runs behind the mailbox, so the deadline only
-%%                     covers the single `persistent_term:put'.
+%%                     runs in the calling process, not behind the mailbox, so the
+%%                     deadline only covers the single `persistent_term:put'.
 -doc """
 Load options accepted by `ensure_loaded/4`, `reload/4` and each item of
 `ensure_loaded_many/1`. All fields are optional; omitting one preserves the
-legacy behaviour (modulo the safety-cap defaults).
+default behaviour (modulo the safety-cap defaults).
 
 - `include_fuzzy` (default `false`): includes entries marked `#, fuzzy`.
 - `max_bytes` (default `application:get_env(erli18n, max_po_bytes)`, 16 MiB):
@@ -222,9 +219,9 @@ legacy behaviour (modulo the safety-cap defaults).
 - `max_entries` (default `application:get_env(erli18n, max_po_entries)`,
   500000): rejects the catalog AFTER the parse if it has more than N entries.
   `infinity` disables the cap.
-- `timeout` (default 5000 ms): deadline of the commit `gen_server:call/3`. Since
-  the heavy phase no longer runs behind the mailbox, the deadline covers only the
-  single `persistent_term:put` (microsecond scale).
+- `timeout` (default 5000 ms): deadline of the commit `gen_server:call/3`. The
+  heavy phase runs in the calling process, not behind the mailbox, so the deadline
+  covers only the single `persistent_term:put` (microsecond scale).
 """.
 -type opts() :: #{
     include_fuzzy => boolean(),
@@ -259,11 +256,11 @@ plural-rule compile error (`{plural_compile_error, _}`) and the anti-DoS caps
     | {file_error, file:posix() | badarg | terminated | system_limit}
     | bound_error()
     | {load_failed, term()}.
-%% Finding #6: errors introduced by the resource bounds. A subset of
+%% Errors introduced by the resource bounds. A subset of
 %% `ensure_error()', surfaced from the caller-side heavy phase BEFORE any
-%% mutation (same "errors before mutation" ordering the load pipeline always had).
+%% mutation (same "errors before mutation" ordering the load pipeline always has).
 -doc """
-Errors from the anti-DoS bounds (finding #6), a subset of `ensure_error()`.
+Errors from the anti-DoS bounds, a subset of `ensure_error()`.
 Both are surfaced in the CALLER's heavy phase, BEFORE any mutation:
 `input_too_large` when the file size exceeds `max_bytes` (checked without reading
 the bytes, via `filelib:file_size/1`); `too_many_entries` when the post-parse
@@ -273,7 +270,7 @@ is the configured limit.
 -type bound_error() ::
     {input_too_large, Bytes :: non_neg_integer(), Limit :: non_neg_integer()}
     | {too_many_entries, Count :: non_neg_integer(), Limit :: non_neg_integer()}.
-%% Finding #6: a single catalog to load in the bulk API. Same positional shape as
+%% A single catalog to load in the bulk API. Same positional shape as
 %% the `ensure_loaded/4' arguments.
 -doc """
 A catalog to load in the bulk API `ensure_loaded_many/1`. Same positional shape
@@ -483,7 +480,7 @@ Inserts a batch of entries (singular and plural) of a catalog in one write.
 - `Entries`: a list mixing `{singular, Context, Msgid, Translation}` and
   `{plural, Context, Msgid, MsgidPlural, [{Index, Translation}]}`. The
   `MsgidPlural` is preserved in the parsed format for `dump/1` round-trips, but
-  plays no part in lookup keying (finding #14).
+  plays no part in lookup keying.
 
 ## Return and effects
 Each entry is merged into the catalog map (one key per plural form). Synchronous;
@@ -549,7 +546,7 @@ See also `reload/3`, `loaded_catalogs/0`.
 unload(Domain, Locale) when is_atom(Domain), is_binary(Locale) ->
     ok = gen_server:call(?MODULE, {unload, Domain, Locale}).
 
-%% Finding #16: guarded so a malformed argument is a loud `function_clause' (a
+%% Guarded so a malformed argument is a loud `function_clause' (a
 %% contract break) rather than a silent `undefined' miss — consistent with
 %% `lookup_plural_form/5'.
 -doc """
@@ -574,7 +571,7 @@ transient — never cache it.
 
 ## Failure modes
 Arguments outside the guards are `function_clause` (contract break, LOUD
-failure), never a silent `undefined` (finding #16).
+failure), never a silent `undefined`.
 
 ```erlang
 1> erli18n_server:insert_singular(my_domain, <<"fr">>, undefined, <<"Hello">>, <<"Bonjour">>).
@@ -644,8 +641,7 @@ encapsulation of the locale-specific knowledge the library exists to provide.
 
 ## Return
 - `{ok, Translation}` when the form exists.
-- `undefined` on a miss — it is up to the caller to fall back to `msgid_plural`
-  (PSD-003).
+- `undefined` on a miss — it is up to the caller to fall back to `msgid_plural`.
 
 ## Fallback rules (order matters)
 - **Header absent** (catalog not loaded, or populated only by `insert_*`)
@@ -654,7 +650,7 @@ encapsulation of the locale-specific knowledge the library exists to provide.
   C/Germanic default (`N == 1 -> form 0; otherwise form 1`).
 - **Header with a compiled rule** -> evaluates the rule. `erli18n_plural:evaluate/2`
   is total (it clamps malformed rules instead of crashing), so the form index is
-  computed directly — no per-request `try` on this hot path (finding #1).
+  computed directly — no per-request `try` on this hot path.
 
 ## Failure modes
 A non-integer `N` (or other args outside the guards) is `function_clause`.
@@ -692,9 +688,9 @@ Returns the memory usage of the loaded catalogs.
 
 Observability read in the calling process; not a hot path (do not call it per
 request — it scans the node's persistent terms). Returns a map with:
-- `ets_bytes`: the catalogs' approximate storage in bytes. **The field name is
-  historical** (storage is now `persistent_term`, not ETS); it is kept for
-  backwards compatibility with the 0.3.0 return shape.
+- `ets_bytes`: the catalogs' approximate storage in bytes. The field is named
+  `ets_bytes` for return-shape stability even though the storage substrate is
+  `persistent_term`, not ETS.
 - `num_catalogs`: distinct loaded catalogs that have >=1 data entry (a
   header-only `.po` does not count).
 - `num_keys`: total stored keys across all catalogs, INCLUDING each catalog's
@@ -891,7 +887,7 @@ plural_set_to_list(Set) ->
     ).
 
 %% =========================
-%% Load orchestration (Part 5)
+%% Load orchestration
 %% =========================
 
 -doc """
@@ -920,7 +916,7 @@ See `ensure_loaded/4` (options and bounds), `reload/3` (forces reinstall),
 ensure_loaded(Domain, Locale, PoPath) ->
     ensure_loaded(Domain, Locale, PoPath, #{}).
 
-%% Finding #6: the heavy half (read+parse+compile+validate+bounds+map build) runs
+%% The heavy half (read+parse+compile+validate+bounds+map build) runs
 %% in the CALLING process inside the `[erli18n, catalog, load]' span, so the
 %% measurement is per-tenant and OUTSIDE the server mailbox. Only the validated
 %% payload is handed to the server for the microsecond commit, with a
@@ -984,8 +980,7 @@ ensure_loaded(Domain, Locale, PoPath, Opts) when
     %% `erli18n_telemetry:span/3' is specced `span_result() = term()' — it returns
     %% the first element of the closure tuple, which is always our
     %% `ensure_result()' (proven at the origin: `do_ensure_loaded/4' has a
-    %% precise `-spec'). Re-announce that type at the boundary with one typed cast
-    %% (findings #12/#18).
+    %% precise `-spec'). Re-announce that type at the boundary with one typed cast.
     cast_ensure_result(
         erli18n_telemetry:span(
             erli18n_telemetry:event_catalog_load(),
@@ -997,7 +992,7 @@ ensure_loaded(Domain, Locale, PoPath, Opts) when
         )
     ).
 
-%% Idempotent fast-path (RISK-012 mitigation 2): a pure read, no disk, no server
+%% Idempotent fast-path: a pure read, no disk, no server
 %% roundtrip. On a miss the heavy phase (`stage_catalog/4') runs in this process
 %% and only the validated payload is committed.
 -spec do_ensure_loaded(domain(), locale(), file:filename(), opts()) ->
@@ -1018,22 +1013,22 @@ do_ensure_loaded(Domain, Locale, PoPath, Opts) ->
             end
     end.
 
-%% Reload bypasses the idempotency check: always parses and re-installs.
-%% Resolves AMB-001 overwrite semantics.
+%% Reload bypasses the idempotency check: always parses and re-installs,
+%% overwriting the previous catalog wholesale.
 %%
-%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window): reload is
-%% STAGE -> ATOMIC-INSTALL. The entire failable pipeline (read, parse, plural
+%% Reload is STAGE -> ATOMIC-INSTALL. The entire failable pipeline (read, parse,
+%% plural
 %% compile, CLDR divergence, map build) runs into an in-memory `staged/0' WITHOUT
 %% touching `persistent_term', so a reload whose new `.po' is invalid returns a
-%% structured `{error, _}' and leaves the previously-good catalog FULLY INTACT.
+%% structured `{error, _}' and leaves the already-loaded catalog FULLY INTACT.
 %% On success the only mutation is a single whole-catalog `persistent_term:put':
 %% a concurrent reader sees either the entire old catalog or the entire new one,
-%% never a half-applied state — atomicity stronger than the old per-row swap.
+%% never a half-applied state.
 -doc """
 Atomic reload of a `.po` catalog. Same as `reload/4` with `#{}`.
 
 Unlike `ensure_loaded/3`, it NEVER takes the idempotent fast-path: it always
-parses and reinstalls, replacing the old catalog wholesale (AMB-001). It never
+parses and reinstalls, replacing the old catalog wholesale. It never
 returns `{ok, already}`. See `reload/4` for the atomic STAGE -> INSTALL
 semantics.
 
@@ -1053,7 +1048,7 @@ See `reload/4`, `ensure_loaded/3`.
 reload(Domain, Locale, PoPath) ->
     reload(Domain, Locale, PoPath, #{}).
 
-%% Finding #6: like `ensure_loaded/4', the heavy STAGE runs in the caller inside
+%% Like `ensure_loaded/4', the heavy STAGE runs in the caller inside
 %% the `[erli18n, catalog, reload]' span; only the atomic INSTALL commit travels
 %% to the server with a tunable timeout. reload never takes the idempotent
 %% fast-path: it always re-stages and re-installs.
@@ -1074,9 +1069,8 @@ identical to `ensure_loaded/4`'s. Returns `{ok, NewlyLoaded}` or
 
 ## Edge cases
 - The install defers a node-wide `persistent_term` literal-area cleanup (a major
-  GC on processes holding the old catalog plus an all-process heap scan) — the
-  reload cost the old per-row ETS storage did not have. Paid once per reload;
-  negligible for the load-once workload erli18n targets.
+  GC on processes holding the old catalog plus an all-process heap scan). Paid
+  once per reload; negligible for the load-once workload erli18n targets.
 - The same `bound_error()`s as `ensure_loaded/4` apply; on any error the previous
   catalog stays intact.
 
@@ -1132,19 +1126,18 @@ commit_call(Msg, Opts) ->
 -type commit_msg() ::
     {commit, ensure | reload, domain(), locale(), staged()}.
 
-%% Finding #6, bulk API. Load N catalogs: the heavy phase of each runs in THIS
-%% process (sequential prepare — the v0.1 trade-off; a parallel fan-out is a
-%% future evolution), and every ready-to-install payload is delivered in a SINGLE
-%% commit. That collapses N server roundtrips into one. Already-loaded or failing
-%% catalogs are reported individually; one catalog's error never blocks the
-%% others.
+%% Bulk API. Load N catalogs: the heavy phase of each runs in THIS process
+%% (sequential preparation), and every ready-to-install payload is delivered in a
+%% SINGLE commit. That collapses N server roundtrips into one. Already-loaded or
+%% failing catalogs are reported individually; one catalog's error never blocks
+%% the others.
 -doc """
 Bulk load of N catalogs with a single commit on the server.
 
 `Specs` is `[{Domain, Locale, PoPath, Opts}]`. The heavy phase of each spec runs
-in the calling process (sequential preparation — the v0.1 trade-off; a parallel
-fan-out is a future evolution) and all ready payloads are delivered in a SINGLE
-commit, collapsing N roundtrips into one. Each `Opts` follows `ensure_loaded/4`.
+in the calling process (sequential preparation) and all ready payloads are
+delivered in a SINGLE commit, collapsing N roundtrips into one. Each `Opts`
+follows `ensure_loaded/4`.
 
 Returns `[{Domain, Locale, ensure_result()}]` — already-loaded or failed catalogs
 are reported individually; one catalog's error never blocks the others.
@@ -1331,7 +1324,7 @@ under the single mailbox, which closes the check-then-install race that
   reply `ok`.
 - `{insert_catalog, D, L, Entries}` -> merges the batch; reply `ok`.
 - `{unload, D, L}` -> erases the catalog term; emits the span
-  `[erli18n, catalog, unload]`; reply ALWAYS `ok` (historical contract).
+  `[erli18n, catalog, unload]`; reply ALWAYS `ok` (the `unload/2` contract).
 - `{commit, ensure | reload, D, L, Staged}` -> installs an ALREADY validated
   `staged()` (the heavy phase ran in the caller). Mode `ensure` RE-CHECKS
   idempotency under serialization; mode `reload` always reinstalls. No span here
@@ -1342,7 +1335,7 @@ under the single mailbox, which closes the check-then-install race that
 
 ## Invariant
 The server receives ONLY validated payloads in the commits — no heavy
-read/parse/compile/build runs behind this mailbox (finding #6). That is why this
+read/parse/compile/build runs behind this mailbox. That is why this
 callback is the microsecond section.
 """.
 handle_call({insert_singular, D, L, Ctx, Msgid, T}, _From, State) ->
@@ -1373,16 +1366,16 @@ handle_call({unload, D, L}, _From, State) ->
             {ok, StopMeta}
         end
     ),
-    %% Preserve the historical public contract of `unload/2'.
+    %% `unload/2' always replies `ok', whether or not a catalog was present.
     {reply, ok, State};
-%% Finding #6: the server receives ONLY validated, ready-to-install payloads. The
+%% The server receives ONLY validated, ready-to-install payloads. The
 %% heavy read+parse+compile+build already ran in the caller (inside the
 %% load/reload span), so this clause is the microsecond critical section. The
 %% telemetry span fired caller-side, so no span here. `ensure' mode re-checks
 %% idempotency UNDER serialization; `reload' always reinstalls.
 handle_call({commit, Mode, D, L, Staged}, _From, State) ->
     {reply, do_commit(Mode, D, L, Staged), State};
-%% Bulk commit (finding #6): N validated payloads installed in one critical
+%% Bulk commit: N validated payloads installed in one critical
 %% section, with a single deferred `memory_warning_check' at the end instead of
 %% one per catalog.
 handle_call({commit_many, Items}, _From, State) ->
@@ -1423,7 +1416,7 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% =========================
-%% Internal: commit (serialized critical section) — finding #6
+%% Internal: commit (serialized critical section)
 %% =========================
 %%
 %% The heavy half (read+parse+compile+validate+bounds+map build) already ran in
@@ -1441,11 +1434,11 @@ do_commit(ensure, Domain, Locale, Staged) ->
         undefined -> install_staged(Domain, Locale, Staged)
     end;
 do_commit(reload, Domain, Locale, Staged) ->
-    %% Whole-catalog atomic replacement (finding #4): the put overwrites the
+    %% Whole-catalog atomic replacement: the put overwrites the
     %% term, so there are no stale entries to prune.
     install_staged(Domain, Locale, Staged).
 
-%% Bulk commit (finding #6): install N validated payloads in one critical
+%% Bulk commit: install N validated payloads in one critical
 %% section. Each catalog is idempotency-checked and installed without its own
 %% `memory_warning_check' — that scan is deferred to a SINGLE call after the whole
 %% batch, so a bulk of N is not N memory checks.
@@ -1475,7 +1468,7 @@ commit_one_no_memcheck({D, L, Staged}) ->
 install_staged(Domain, Locale, Staged) ->
     Result = install_staged_no_memcheck(Domain, Locale, Staged),
     %% Memory warning check runs after the install so the measurement reflects the
-    %% post-install state (RISK-011 mitigation 2). Rate-limited inside
+    %% post-install state. Rate-limited inside
     %% `erli18n_telemetry:memory_warning_check/1'.
     _ = erli18n_telemetry:memory_warning_check(memory_info()),
     Result.
@@ -1534,7 +1527,7 @@ emit_fuzzy_skip(Domain, Locale, Count) when Count > 0 ->
 %% AST. The parser always emits #{plural_forms := _}, so the two clauses are
 %% exhaustive; a missing key would be a parser invariant break (function_clause).
 %%
-%% Findings #12 / #18: this `-spec' anchors the `compile_error()' union at the
+%% This `-spec' anchors the `compile_error()' union at the
 %% ORIGIN, so eqwalizer rejects in BUILD any return outside this union.
 -spec maybe_compile_plural(erli18n_po:header_map()) ->
     {ok, erli18n_plural:plural_compiled() | fallback}
@@ -1547,10 +1540,10 @@ maybe_compile_plural(#{plural_forms := PluralRaw}) ->
         {error, _} = E -> E
     end.
 
-%% Header divergence vs CLDR is informational only (PSD-004). When the header is
+%% Header divergence vs CLDR is informational only. When the header is
 %% absent (`fallback') or the locale is not in the CLDR table, we report `none'.
 %%
-%% Finding #17: takes the ALREADY compiled plural bundle and hands it straight to
+%% Takes the ALREADY compiled plural bundle and hands it straight to
 %% `validate_against_cldr_ast/2', which reuses the parsed AST and a memoised
 %% CLDR-AST table (no second compile of the same expression).
 -spec compute_divergence(
@@ -1567,7 +1560,7 @@ compute_divergence(Locale, #{} = PluralCompiled) ->
             {plural_divergence, HdrRule, CldrRule}
     end.
 
-%% Per BR-MIGRAR-030, log uses OTP logger with `#{domain => [erli18n, server]}'
+%% The log uses OTP logger with `#{domain => [erli18n, server]}'
 %% metadata. The divergence info is preserved in the header_state so a telemetry
 %% layer can publish it without re-loading the catalog.
 emit_divergence_log(_Domain, _Locale, none) ->
@@ -1605,13 +1598,13 @@ emit_divergence_telemetry(
     ok.
 
 %% =========================
-%% Finding #4/#6: STAGE (heavy phase, runs in the CALLER)
+%% STAGE (heavy phase, runs in the CALLER)
 %% =========================
 %%
 %% `stage_catalog/4' runs the entire FAILABLE, heavy half of the load pipeline —
 %% bounds check, file read, parse, plural compile, CLDR divergence, map build —
 %% and produces a pure in-memory `staged/0' payload. It performs ZERO mutation,
-%% so on `{error, _}' the prior catalog is provably untouched. Finding #6: it runs
+%% so on `{error, _}' the prior catalog is provably untouched. It runs
 %% in the CALLING process, so a large/slow/pathological `.po' from one tenant
 %% never blocks another's load.
 %%
@@ -1654,7 +1647,7 @@ stage_catalog(Domain, Locale, PoPath, Opts) ->
     end.
 
 %% Size cap applied BEFORE reading the whole file into memory: `filelib:file_size/1'
-%% stats the file, it does not load bytes (finding #6). `infinity' = no cap.
+%% stats the file, it does not load bytes. `infinity' = no cap.
 -spec check_size(file:filename(), non_neg_integer() | infinity) ->
     ok | {error, bound_error()}.
 check_size(_PoPath, infinity) ->

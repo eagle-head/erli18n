@@ -7,7 +7,7 @@ Asserts that every recognized `{Name, Arity}` resolves to the correct
 literal-slot indices (verified against the `erli18n` facade clause heads),
 that the d/dc families shift the slots right by one, that the p/np families
 carry a context slot, that the plural families carry a plural slot, and that
-the Phase 1 `f`-family mirrors its non-`f` sibling's leading slots.
+the interpolating `f`-family mirrors its non-`f` sibling's leading slots.
 """.
 
 -include_lib("common_test/include/ct.hrl").

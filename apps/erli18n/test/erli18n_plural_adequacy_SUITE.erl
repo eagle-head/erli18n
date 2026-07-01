@@ -1,20 +1,19 @@
 -module(erli18n_plural_adequacy_SUITE).
 
 %%% =====================================================================
-%%% Test-adequacy suite for `erli18n_plural` — generated from the
-%%% test-adequacy audit of the plural evaluator/validator.
+%%% Test-adequacy suite for `erli18n_plural`.
 %%%
-%%% Purpose: pin the boundary/contract behaviours that the existing
+%%% Purpose: pin the boundary/contract behaviours that
 %%% `erli18n_plural_SUITE` / `erli18n_plural_props` reach but never
-%%% ASSERT, so the surviving mutants the audit named are killed:
+%%% ASSERT, so a regression in any of the following is caught:
 %%%
 %%%   * the LOWER nplurals range bound (`nplurals=0`) — only the UPPER
-%%%     bound (10000) was asserted (`N >= 1` guard, line 854);
+%%%     bound (10000) is asserted (`N >= 1` guard, line 854);
 %%%   * the NEGATIVE half of the `evaluate_checked/2` form-range guard
-%%%     (`Form >= 0`, line 576) — only positive overflow was asserted;
+%%%     (`Form >= 0`, line 576) — only positive overflow is asserted;
 %%%   * the SELECTED form for a negative cardinal flowing through a real
-%%%     modulo-based CLDR rule (Russian) — totality was covered, but the
-%%%     specific index (the `eval_rem` sign convention) was not;
+%%%     modulo-based CLDR rule (Russian) — totality is covered, but the
+%%%     specific index (the `eval_rem` sign convention) is not;
 %%%   * the exact 7-digit `nplurals` boundary (digit-cap vs range
 %%%     interplay, line 845 `D > ?MAX_INT_DIGITS`);
 %%%   * the exact upper boundary 1000/1001 (`N =< ?NPLURALS_MAX`);
@@ -25,10 +24,8 @@
 %%%   * NUL / control / non-ASCII bytes in the plural body surfacing as a
 %%%     typed `{syntax_error, {unexpected_char, _}, _}` with no crash.
 %%%
-%%% RED/GREEN expectation: GREEN. Every case below is expected to PASS
-%%% against the current `erli18n_plural` (the audit confirmed each
-%%% outcome live in the source); they fail only if the named line is
-%%% mutated.
+%%% Each case asserts a behaviour the current `erli18n_plural` already
+%%% exhibits; a regression at the named line breaks it.
 %%% =====================================================================
 
 -include_lib("common_test/include/ct.hrl").
@@ -82,7 +79,7 @@ compile_ok(Header) ->
     Compiled.
 
 %% =========================
-%% nplurals lower bound (F2, F3, F4, F10, F12)
+%% nplurals lower bound
 %% =========================
 
 %% `nplurals=0` is the min-1 lower boundary: the digit run is a single
@@ -100,7 +97,7 @@ nplurals_zero_lower_bound_rejected(_Config) ->
     ).
 
 %% =========================
-%% nplurals exact upper boundary (F15)
+%% nplurals exact upper boundary
 %% =========================
 
 %% ?NPLURALS_MAX is 1000 (line 316): 1000 is the last accepted value
@@ -116,7 +113,7 @@ nplurals_upper_boundary_exact(_Config) ->
     ).
 
 %% =========================
-%% nplurals 7-digit boundary (F14, F17, F20, F22)
+%% nplurals 7-digit boundary
 %% =========================
 
 %% "1000000" is exactly 7 bytes, so the digit cap `D > ?MAX_INT_DIGITS`
@@ -132,7 +129,7 @@ nplurals_seven_digit_routes_to_out_of_range(_Config) ->
     ).
 
 %% =========================
-%% evaluate_checked/2 negative form (F5, F6, F7, F8, F13)
+%% evaluate_checked/2 negative form
 %% =========================
 
 %% `nplurals=3; plural=n - 1;` compiles (it depends on n, so it is not
@@ -152,7 +149,7 @@ evaluate_checked_negative_form_reported(_Config) ->
     ?assertEqual({ok, 2}, erli18n_plural:evaluate_checked(C, 3)).
 
 %% =========================
-%% Negative N over a real modulo rule (F1, F9, F11, F16, F19)
+%% Negative N over a real modulo rule
 %% =========================
 
 %% evaluate/2 passes negative N through unchanged (no abs(), docstring
@@ -173,7 +170,7 @@ ru_negative_n_selects_pinned_form(_Config) ->
     ?assertEqual({ok, 2}, erli18n_plural:evaluate_checked(C, -21)).
 
 %% =========================
-%% Constant divisor that evaluates to zero (F23)
+%% Constant divisor that evaluates to zero
 %% =========================
 
 %% `2 - 2` is constant (is_constant/1, no `n`) and arithmetically equals
@@ -195,7 +192,7 @@ constant_division_by_zero_rejected(_Config) ->
     ).
 
 %% =========================
-%% Large body literal, uncapped by digit count (F18)
+%% Large body literal, uncapped by digit count
 %% =========================
 
 %% Integer literals INSIDE the expression body are not digit-capped (only
@@ -213,7 +210,7 @@ large_body_literal_fails_soft(_Config) ->
     ).
 
 %% =========================
-%% NUL / control / non-ASCII bytes in the body (F21)
+%% NUL / control / non-ASCII bytes in the body
 %% =========================
 
 %% A NUL (and a 0xFF) byte in the plural body is not whitespace, so it

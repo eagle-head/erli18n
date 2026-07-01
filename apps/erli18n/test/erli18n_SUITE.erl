@@ -1,9 +1,8 @@
 -module(erli18n_SUITE).
 
 %% Common Test suite for the public facade `erli18n.erl` (Part 6).
-%% Each test carries the design citation (BR-MIGRAR-NNN / PSD-NNN)
-%% in its docstring so that a failure points straight at the spec
-%% it violates.
+%% Each test's docstring names the behavior it pins so that a failure
+%% points straight at the contract it violates.
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -207,7 +206,7 @@ gettext_3_explicit_locale(Config) ->
     %% The PD locale is untouched.
     ?assertEqual(~"pt_BR", erli18n:which_locale()).
 
-%% R1 (BR-MIGRAR-001): a miss returns the original msgid.
+%% R1: a miss returns the original msgid.
 gettext_fallback_to_msgid_when_missing(Config) ->
     Path = fixture(Config, "pt_br_default.po"),
     {ok, _} = erli18n:ensure_loaded(default, ~"pt_BR", Path),
@@ -216,7 +215,7 @@ gettext_fallback_to_msgid_when_missing(Config) ->
         erli18n:gettext(default, ~"NotInCatalog", ~"pt_BR")
     ).
 
-%% PSD-003: msgstr "" is treated as untranslated. The parser drops the
+%% msgstr "" is treated as untranslated. The parser drops the
 %% row, the lookup misses, and the facade falls back to the msgid. The
 %% facade's empty-binary guard is defence-in-depth (an empty translation
 %% should never reach the UI even if a row leaked through).
@@ -276,7 +275,7 @@ ngettext_uses_compiled_plural_for_locale(Config) ->
         erli18n:ngettext(~"tree", ~"trees", 100)
     ).
 
-%% BR-MIGRAR-002: with no catalog loaded, ngettext returns msgid when
+%% With no catalog loaded, ngettext returns msgid when
 %% N == 1 and msgid_plural otherwise (English/C grammar fallback).
 ngettext_fallback_when_no_translation(_Config) ->
     %% No catalog for <<"xx">>.
@@ -294,7 +293,7 @@ ngettext_fallback_when_no_translation(_Config) ->
         erli18n:ngettext(~"tree", ~"trees", 0)
     ).
 
-%% PSD-003: msgstr[1] "" — form 1 is dropped by the parser. N=1 returns
+%% msgstr[1] "" — form 1 is dropped by the parser. N=1 returns
 %% the singular translation; N=2 misses form 1 and falls back to
 %% msgid_plural.
 ngettext_fallback_when_form_empty(Config) ->
@@ -872,7 +871,7 @@ setlocale_then_which_locale(_Config) ->
     ok = erli18n:setlocale(~"pt_BR"),
     ?assertEqual(~"pt_BR", erli18n:which_locale()).
 
-%% Per BR-MIGRAR-003: process dictionary is per-process. A freshly
+%% The process dictionary is per-process. A freshly
 %% spawned process starts with which_locale = undefined.
 which_locale_undefined_by_default(_Config) ->
     Parent = self(),
@@ -982,7 +981,7 @@ reload_via_facade(Config) ->
     EsPath = fixture(Config, "es_default.po"),
     {ok, _} = erli18n:ensure_loaded(default, ~"pt_BR", PtBrPath),
     %% Reload under the same (D, L) with a different file; the catalog
-    %% is replaced (AMB-001).
+    %% is replaced.
     {ok, _} = erli18n:reload(default, ~"pt_BR", EsPath),
     %% "Hello" -> "Hola" now (es content under pt_BR key).
     ?assertEqual(

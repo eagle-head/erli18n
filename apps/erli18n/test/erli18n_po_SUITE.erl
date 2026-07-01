@@ -46,7 +46,7 @@
     ascii_escape_high_byte_rejected/1,
     degenerate_plural_nplurals_1/1,
     duplicate_header_dropped/1,
-    %% Coverage-targeted tests
+    %% Parser branch tests
     charset_alias_utf8_no_hyphen/1,
     charset_alias_iso8859_1_no_dashes/1,
     charset_alias_latin_hyphen_1/1,
@@ -128,7 +128,7 @@ all() ->
         ascii_escape_high_byte_rejected,
         degenerate_plural_nplurals_1,
         duplicate_header_dropped,
-        %% Coverage-targeted tests
+        %% Parser branch tests
         charset_alias_utf8_no_hyphen,
         charset_alias_iso8859_1_no_dashes,
         charset_alias_latin_hyphen_1,
@@ -195,7 +195,7 @@ minimal_header() ->
 %% Header tests
 %% =========================
 
-%% PSD-002: header with valid UTF-8 charset parses OK.
+%% Header with valid UTF-8 charset parses OK.
 header_minimal_utf8(_Config) ->
     {ok, Catalog} = erli18n_po:parse(minimal_header()),
     Header = maps:get(header, Catalog),
@@ -206,7 +206,7 @@ header_minimal_utf8(_Config) ->
     ),
     ?assertEqual([], maps:get(entries, Catalog)).
 
-%% PSD-002: unsupported charset returns structured error, no entries
+%% Unsupported charset returns structured error, no entries
 %% emitted.
 header_unsupported_charset(_Config) ->
     Bin = <<
@@ -219,16 +219,16 @@ header_unsupported_charset(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Finding #5 (po-header-malformed-content-type-badmatch-crash): a
-%% `Content-Type` header with a SINGLE SPACE before the colon must
+%% A `Content-Type` header with a SINGLE SPACE before the colon must
 %% surface a structured `{error, {unsupported_charset, _}}` for an
-%% unsupported charset — never a `badmatch` crash. Before the fix the
-%% two charset detection paths diverged: the prepass `find_charset_line`
-%% required the literal `content-type:` substring (no space), so it
-%% missed this line and fell through to the default utf8, while
-%% `build_header`'s field parser trimmed the key to `content-type`,
-%% classified the charset, hit `{error,_}` on the non-exhaustive
-%% `{ok,Charset} =` match, and crashed the loader gen_server.
+%% unsupported charset — never a `badmatch` crash. This pins the two
+%% charset detection paths to AGREE on a whitespace-tolerant field parse:
+%% if the prepass `find_charset_line` required the literal `content-type:`
+%% substring (no space) it would miss this line and fall through to the
+%% default utf8, while `build_header`'s field parser trims the key to
+%% `content-type`, classifies the charset, and would then hit `{error,_}`
+%% on the non-exhaustive `{ok,Charset} =` match — a crash in the loader
+%% gen_server.
 header_unsupported_charset_space_before_colon(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -242,10 +242,9 @@ header_unsupported_charset_space_before_colon(_Config) ->
 
 %% Companion to the above: a SUPPORTED charset with a space before the
 %% colon must parse OK and detect the declared charset (latin1 here),
-%% proving the prepass and `build_header` now AGREE on the same
-%% whitespace-tolerant field parse instead of diverging. Before the fix
-%% the prepass missed the spaced `Content-Type ` line and defaulted to
-%% utf8, so the charset was silently wrong.
+%% pinning the prepass and `build_header` to the same whitespace-tolerant
+%% field parse. If the prepass missed the spaced `Content-Type ` line it
+%% would default to utf8 and the charset would be silently wrong.
 header_supported_charset_space_before_colon(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -255,8 +254,8 @@ header_supported_charset_space_before_colon(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
-%% A TAB before the colon is another adversarial spacing the literal
-%% prepass matcher missed. Same contract: structured error, no crash.
+%% A TAB before the colon is another adversarial spacing a literal
+%% prepass matcher would miss. Same contract: structured error, no crash.
 header_unsupported_charset_tab_before_colon(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -268,7 +267,7 @@ header_unsupported_charset_tab_before_colon(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% PSD-002: ISO-8859-1 body bytes are converted to UTF-8 internally.
+%% ISO-8859-1 body bytes are converted to UTF-8 internally.
 header_latin1(_Config) ->
     %% "é" in latin1 is the single byte 16#E9. Embed it raw in a binary
     %% header and entry.
@@ -292,7 +291,7 @@ header_latin1(_Config) ->
     ?assertEqual(<<"Caf", 16#C3, 16#A9>>, Translation),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
-%% PSD-002: header without Content-Type defaults to utf8.
+%% Header without Content-Type defaults to utf8.
 header_missing_content_type(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -303,7 +302,7 @@ header_missing_content_type(_Config) ->
     Header = maps:get(header, Catalog),
     ?assertEqual(utf8, maps:get(charset, Header)).
 
-%% PSD-005: UTF-8 BOM is silently stripped.
+%% UTF-8 BOM is silently stripped.
 bom_utf8_stripped(_Config) ->
     Bin =
         <<16#EF, 16#BB, 16#BF, (minimal_header())/binary,
@@ -329,7 +328,7 @@ single_entry_singular(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% PSD-006: msgctxt is stored as a separate field, never glued.
+%% msgctxt is stored as a separate field, never glued.
 single_entry_with_context(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -361,7 +360,7 @@ plural_entry(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% PSD-009: header declares nplurals=3, entry has [0, 1, 3] — error,
+%% Header declares nplurals=3, entry has [0, 1, 3] — error,
 %% no entries emitted.
 plural_count_mismatch_missing(_Config) ->
     Bin = <<
@@ -381,7 +380,7 @@ plural_count_mismatch_missing(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% PSD-009: extra plural index also rejected atomically.
+%% Extra plural index also rejected atomically.
 plural_count_mismatch_extra(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -400,7 +399,7 @@ plural_count_mismatch_extra(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% PSD-001: fuzzy entries dropped by default.
+%% Fuzzy entries dropped by default.
 fuzzy_dropped_by_default(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -417,7 +416,7 @@ fuzzy_dropped_by_default(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% PSD-001: include_fuzzy => true preserves fuzzy entries.
+%% include_fuzzy => true preserves fuzzy entries.
 fuzzy_included_with_opt(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -431,7 +430,7 @@ fuzzy_included_with_opt(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% PSD-007: obsolete entries are skipped silently.
+%% Obsolete entries are skipped silently.
 obsolete_skipped(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -475,7 +474,7 @@ multiline_string(_Config) ->
     ?assertEqual(~"first second", Msgid),
     ?assertEqual(~"trad end", Translation).
 
-%% PSD-003: parser preserves empty msgstr verbatim; fallback is the
+%% Parser preserves empty msgstr verbatim; fallback is the
 %% lookup's job.
 empty_msgstr_preserved(_Config) ->
     Bin = <<
@@ -533,9 +532,8 @@ dump_roundtrip_plural(_Config) ->
     >>,
     {ok, C1} = erli18n_po:parse(Bin),
     Dumped = erli18n_po:dump(C1),
-    %% Finding #14: the dumped `.po` must carry the REAL `msgid_plural`
-    %% form (`trees`), not the singular `msgid` (`tree`) it used to
-    %% substitute silently.
+    %% The dumped `.po` must carry the REAL `msgid_plural` form
+    %% (`trees`), not the singular `msgid` (`tree`).
     ?assertNotEqual(
         nomatch, binary:match(Dumped, ~"msgid_plural \"trees\"")
     ),
@@ -545,7 +543,7 @@ dump_roundtrip_plural(_Config) ->
     [{plural, undefined, ~"tree", ~"trees", _}] =
         maps:get(entries, C2).
 
-%% Finding #14: when a parsed plural entry carries `undefined` as its
+%% When a parsed plural entry carries `undefined` as its
 %% `msgid_plural` (a degenerate catalog with `msgstr[N]` lines but no
 %% explicit `msgid_plural` source line — built here in-memory), `dump/1`
 %% falls back to the singular `Msgid` for that slot rather than crashing.
@@ -654,15 +652,13 @@ hex_and_octal_escapes(_Config) ->
     [{singular, undefined, Msgid, _}] = maps:get(entries, Catalog),
     ?assertEqual(~"AA", Msgid).
 
-%% Finding #11 (po-hex-octal-escape-emits-invalid-utf8): a UTF-8 catalog
-%% with a lone high-byte hex escape (`\xFF`) used to return `{ok, _}` with
-%% an INVALID-UTF-8 translation (`<<255>>` spliced raw past the UTF-8
-%% gate), which then crashed downstream unicode-aware ops with badarg.
-%% After the fix the escape byte is interpreted in the declared charset's
-%% code space and transcoded: a lone `\xFF` is not valid UTF-8, so parse
-%% surfaces a STRUCTURED `{escape_invalid_utf8, _}` syntax error instead
-%% of storing garbage — parity with msgfmt's "invalid multibyte sequence"
-%% rejection.
+%% In a UTF-8 catalog the escape byte is interpreted in the declared
+%% charset's code space and transcoded, so a lone high-byte hex escape
+%% (`\xFF`) is not valid UTF-8: parse surfaces a STRUCTURED
+%% `{escape_invalid_utf8, _}` syntax error instead of storing an
+%% invalid-UTF-8 translation (`<<255>>` spliced raw past the UTF-8 gate),
+%% which would then crash downstream unicode-aware ops with badarg. This
+%% is parity with msgfmt's "invalid multibyte sequence" rejection.
 hex_escape_high_byte_utf8_rejected(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -674,12 +670,12 @@ hex_escape_high_byte_utf8_rejected(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Finding #11: in an ISO-8859-1 catalog the escape byte is a Latin-1
-%% codepoint and MUST transcode to UTF-8 like any natural byte. `\xFF`
-%% means U+00FF, whose UTF-8 encoding is <<195,191>> — NOT the raw byte
-%% <<255>> the old code emitted. A natural latin1 byte 0xE9 (é) in the
-%% same field must coexist as <<195,169>>. This is the gettext two-phase
-%% model: escape bytes live in the declared charset's code space.
+%% In an ISO-8859-1 catalog the escape byte is a Latin-1 codepoint and
+%% MUST transcode to UTF-8 like any natural byte. `\xFF` means U+00FF,
+%% whose UTF-8 encoding is <<195,191>> — NOT the raw byte <<255>>. A
+%% natural latin1 byte 0xE9 (é) in the same field must coexist as
+%% <<195,169>>. This is the gettext two-phase model: escape bytes live in
+%% the declared charset's code space.
 hex_escape_latin1_transcodes(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -697,10 +693,10 @@ hex_escape_latin1_transcodes(_Config) ->
     %% é = <<195,169>> (natural byte transcoded) | \xFF = U+00FF =
     %% <<195,191>> (escape transcoded) | z = <<122>>.
     ?assertEqual(<<16#C3, 16#A9, 16#C3, 16#BF, $z>>, Translation),
-    %% The output is valid UTF-8 (the invariant the bug violated).
+    %% The output is valid UTF-8 (the invariant enforced here).
     ?assert(is_binary(unicode:characters_to_binary(Translation, utf8, utf8))).
 
-%% Finding #11: a UTF-8 catalog may legitimately spell a multibyte
+%% A UTF-8 catalog may legitimately spell a multibyte
 %% codepoint as CONSECUTIVE high-byte escapes (`\xC3\xBF` = U+00FF). These
 %% must be grouped into one raw run and validated as UTF-8 together,
 %% yielding <<195,191>> — preserving gettext parity for valid escapes
@@ -717,7 +713,7 @@ hex_escape_utf8_multibyte_ok(_Config) ->
     ?assertEqual(<<$x, 16#C3, 16#BF, $y>>, Translation),
     ?assert(is_binary(unicode:characters_to_binary(Translation, utf8, utf8))).
 
-%% Finding #11: octal `\377` is the byte 0xFF and must behave exactly like
+%% Octal `\377` is the byte 0xFF and must behave exactly like
 %% `\xFF` in every charset — rejected (lone) in UTF-8, transcoded in
 %% latin1.
 octal_escape_high_byte(_Config) ->
@@ -743,7 +739,7 @@ octal_escape_high_byte(_Config) ->
         maps:get(entries, Catalog),
     ?assertEqual(<<16#C3, 16#BF, $z>>, Translation).
 
-%% Finding #11: in a US-ASCII catalog a high byte is OUTSIDE the charset
+%% In a US-ASCII catalog a high byte is OUTSIDE the charset
 %% entirely. The escape characters (`\`,`x`,`F`,`F`) are all ASCII so the
 %% body passes the US-ASCII gate, but the decoded byte 0xFF >= 0x80 is not
 %% representable — surface a structured `{invalid_escape_charset, ...}`
@@ -762,7 +758,7 @@ ascii_escape_high_byte_rejected(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% PSD-008: nplurals=1 (Japanese-style); single msgstr[0] is enough.
+%% nplurals=1 (Japanese-style); single msgstr[0] is enough.
 degenerate_plural_nplurals_1(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -807,12 +803,12 @@ duplicate_header_dropped(_Config) ->
     ).
 
 %% =========================
-%% Coverage-targeted helpers
+%% Parser branch helpers
 %% =========================
 
 po_with_charset(Charset) ->
     %% Build a header with a custom charset string (raw bytes, no escape
-    %% sequences). Used to exercise charset alias mapping branches.
+    %% sequences). Exercises charset alias mapping.
     iolist_to_binary(
         [
             <<
@@ -841,37 +837,37 @@ po_with_entry(Msgid, Msgstr) ->
     ).
 
 %% =========================
-%% Coverage-targeted tests
+%% Parser branch tests
 %% =========================
 
-%% Cover L279: charset alias "utf8" (no hyphen) normalizes to utf8.
+%% Charset alias "utf8" (no hyphen) normalizes to utf8.
 charset_alias_utf8_no_hyphen(_Config) ->
     {ok, Catalog} = erli18n_po:parse(po_with_charset(~"utf8")),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L281: charset alias "iso8859-1" (no dash between iso and 8859)
+%% Charset alias "iso8859-1" (no dash between iso and 8859)
 %% normalizes to latin1.
 charset_alias_iso8859_1_no_dashes(_Config) ->
     {ok, Catalog} = erli18n_po:parse(po_with_charset(~"iso8859-1")),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L282: charset alias "latin-1" normalizes to latin1.
+%% Charset alias "latin-1" normalizes to latin1.
 charset_alias_latin_hyphen_1(_Config) ->
     {ok, Catalog} = erli18n_po:parse(po_with_charset(~"latin-1")),
     ?assertEqual(latin1, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L284: charset alias "us-ascii" normalizes to us_ascii.
+%% Charset alias "us-ascii" normalizes to us_ascii.
 charset_alias_us_ascii(_Config) ->
     {ok, Catalog} = erli18n_po:parse(po_with_charset(~"us-ascii")),
     ?assertEqual(us_ascii, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L285: charset alias "ascii" (short form) normalizes to us_ascii.
+%% Charset alias "ascii" (short form) normalizes to us_ascii.
 charset_alias_ascii_short(_Config) ->
     {ok, Catalog} = erli18n_po:parse(po_with_charset(~"ascii")),
     ?assertEqual(us_ascii, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L269: extract_charset_token hits separator branch when the
-%% charset value is followed by a semicolon parameter list (e.g.
+%% extract_charset_token hits the separator branch when the charset
+%% value is followed by a semicolon parameter list (e.g.
 %% "charset=utf-8; boundary=foo"). After ";" the token finalizes.
 charset_with_trailing_semicolon(_Config) ->
     Bin = <<
@@ -882,9 +878,9 @@ charset_with_trailing_semicolon(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L273: finalize_token(<<>>) -> undefined fires when charset has
-%% an empty value (e.g. "charset=" immediately followed by separator).
-%% The prepass returns {ok, utf8} via the undefined branch.
+%% finalize_token(<<>>) -> undefined fires when charset has an empty
+%% value (e.g. "charset=" immediately followed by separator). The
+%% prepass returns {ok, utf8} via the undefined branch.
 charset_empty_value_defaults_utf8(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -894,8 +890,8 @@ charset_empty_value_defaults_utf8(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L300, L301, L313, L317: us-ascii body with only ASCII bytes
-%% validates ok and passes through.
+%% A us-ascii body with only ASCII bytes validates ok and passes
+%% through.
 us_ascii_pure_ascii_body(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -912,8 +908,8 @@ us_ascii_pure_ascii_body(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% Cover L302, L315: us-ascii body with a byte > 127 is rejected with
-%% the charset_conversion error.
+%% A us-ascii body with a byte > 127 is rejected with the
+%% charset_conversion error.
 us_ascii_non_ascii_byte_rejected(_Config) ->
     %% 16#C3 = 195 (> 127), illegal in US-ASCII.
     Bin = <<
@@ -931,8 +927,8 @@ us_ascii_non_ascii_byte_rejected(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Cover L199: collect_header_msgstr hits the comment branch when a
-%% comment line appears between the header msgid "" and msgstr "".
+%% collect_header_msgstr hits the comment branch when a comment line
+%% appears between the header msgid "" and msgstr "".
 header_msgstr_comment_continuation(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -943,9 +939,8 @@ header_msgstr_comment_continuation(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover the blank branch in collect_header_msgstr (line 196-197 is
-%% covered; this asserts the path works end-to-end with a blank line
-%% between msgid and msgstr).
+%% The blank branch in collect_header_msgstr: a blank line between the
+%% header msgid and msgstr is skipped and the header still parses.
 header_msgstr_blank_continuation(_Config) ->
     Bin = <<
         "msgid \"\"\n"
@@ -956,7 +951,7 @@ header_msgstr_blank_continuation(_Config) ->
     {ok, Catalog} = erli18n_po:parse(Bin),
     ?assertEqual(utf8, maps:get(charset, maps:get(header, Catalog))).
 
-%% Cover L431: msgctxt spread across multiple continuation lines.
+%% msgctxt spread across multiple continuation lines.
 msgctxt_multiline_continuation(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -972,7 +967,7 @@ msgctxt_multiline_continuation(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% Cover L435: msgid_plural spread across multiple continuation lines.
+%% msgid_plural spread across multiple continuation lines.
 msgid_plural_multiline_continuation(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -989,8 +984,8 @@ msgid_plural_multiline_continuation(_Config) ->
     ?assertEqual(~"long trees", MsgidPlural),
     ?assertEqual([{0, ~"a"}, {1, ~"b"}], Plurals).
 
-%% Cover L440-441: msgstr[N] spread across continuation lines. The
-%% append branch for {msgstr, Idx} pops the head and reconcatenates.
+%% msgstr[N] spread across continuation lines. The append branch for
+%% {msgstr, Idx} pops the head and reconcatenates.
 msgstr_index_multiline_continuation(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -1005,8 +1000,8 @@ msgstr_index_multiline_continuation(_Config) ->
         maps:get(entries, Catalog),
     ?assertEqual([{0, ~"first continued"}, {1, ~"b"}], Plurals).
 
-%% Cover L683: msgctxt keyword with no following quoted string returns
-%% a syntax error in the main parser pass.
+%% A msgctxt keyword with no following quoted string returns a syntax
+%% error in the main parser pass.
 msgctxt_keyword_without_string(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -1019,7 +1014,7 @@ msgctxt_keyword_without_string(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Cover L710: strip_keyword_space handles tab whitespace after keyword
+%% strip_keyword_space handles tab whitespace after the keyword
 %% (msgctxt followed by a tab then the quoted string).
 msgctxt_keyword_with_tab(_Config) ->
     Bin = <<
@@ -1034,8 +1029,8 @@ msgctxt_keyword_with_tab(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% Cover L704: a quoted-string continuation line appearing before any
-%% keyword has set last_field is a syntax error.
+%% A quoted-string continuation line appearing before any keyword has
+%% set last_field is a syntax error.
 unexpected_continuation_at_top(_Config) ->
     Bin = <<
         (minimal_header())/binary,
@@ -1048,43 +1043,21 @@ unexpected_continuation_at_top(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Cover L752 (decode_quoted_string {error, expected_quote}): the parser
-%% reaches handle_string_field with content that does not start with ".
-%% This happens when classify_msgstr returns {ok, Content} but the
-%% Content was actually empty after stripping (only possible via the
-%% main parser path: send "msgstr [0] ..." with malformed index).
-%%
-%% The cleanest user-visible trigger: a continuation line whose body
-%% (after stripping leading ws) is just a bare quote followed by
-%% non-quote content — the decode_chars path treats it as content_after
-%% which we already test. Instead, exercise expected_quote via a
-%% malformed continuation by feeding append_to_last a non-quote.
-%%
-%% Simpler: classify_line catches "msgid X" (no quotes) and returns
-%% other-shape via strip_keyword_space => error => syntax_error. To hit
-%% expected_quote inside decode_quoted_string we must reach
-%% decode_quoted_string with input not starting with $". The only
-%% caller paths to decode_quoted_string are:
-%%   - handle_string_field via classify_line
-%%   - collect_header_msgstr (prepass)
-%%   - consume_continuations (prepass)
-%%   - decode_chars continuation in classify_line
-%%
-%% strip_keyword_space already filters non-quote inputs to "error"
-%% before decode_quoted_string is called for main keyword fields, so
-%% the path is via continuation. A continuation line passes the raw
-%% bytes (starting with $") to decode_quoted_string, which always
-%% matches the $" head. So expected_quote is unreachable via main pass.
-%%
-%% However consume_continuations (prepass, L221) calls
-%% decode_quoted_string on Trimmed where Trimmed starts with $".  So
-%% also unreachable via prepass continuation. The only remaining caller
-%% is collect_header_msgstr at L201, which receives "Content" from
-%% strip_keyword_space — which guarantees it starts with $". So
-%% expected_quote really is defensive code.
-%%
-%% Mark as unreachable. This test documents the analysis by exercising
-%% the closest reachable path: a malformed header msgstr with no quote.
+%% decode_quoted_string returns {error, expected_quote} only when its
+%% input does not start with $", but every caller guarantees a leading
+%% $", so that branch is defensive. The callers of decode_quoted_string
+%% are:
+%%   - handle_string_field via classify_line: strip_keyword_space filters
+%%     non-quote inputs to "error" before decode_quoted_string runs.
+%%   - consume_continuations (prepass): passes Trimmed, which starts
+%%     with $".
+%%   - collect_header_msgstr (prepass): receives Content from
+%%     strip_keyword_space, which guarantees a leading $".
+%%   - the decode_chars continuation in classify_line: passes raw bytes
+%%     that start with $".
+%% The closest reachable failure is a malformed continuation whose decode
+%% fails on an invalid escape, exercising decode_quoted_string's error
+%% return path from a main-pass continuation line.
 continuation_invalid_quote_decode(_Config) ->
     %% A malformed continuation that fails decode (invalid escape) —
     %% exercises the error return path of decode_quoted_string from a
@@ -1100,9 +1073,9 @@ continuation_invalid_quote_decode(_Config) ->
         erli18n_po:parse(Bin)
     ).
 
-%% Cover L758, L811, L814: a quoted string with trailing whitespace
-%% after the closing quote. is_only_trailing_ws walks the whitespace
-%% and returns true via the empty-binary base case.
+%% A quoted string with trailing whitespace after the closing quote.
+%% is_only_trailing_ws walks the whitespace and returns true via the
+%% empty-binary base case.
 trailing_whitespace_after_close_quote(_Config) ->
     %% Note: leading whitespace on continuation lines is trimmed by
     %% trim_leading_ws, but trailing whitespace on the keyword line is
@@ -1118,28 +1091,28 @@ trailing_whitespace_after_close_quote(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% Cover L778: \b backspace escape decodes to byte 8.
+%% \b backspace escape decodes to byte 8.
 escape_backspace(_Config) ->
     Bin = po_with_entry(~"k", ~"a\\bb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 8, "b">>, T).
 
-%% Cover L779: \f formfeed escape decodes to byte 12.
+%% \f formfeed escape decodes to byte 12.
 escape_formfeed(_Config) ->
     Bin = po_with_entry(~"k", ~"a\\fb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 12, "b">>, T).
 
-%% Cover L780: \v vertical tab escape decodes to byte 11.
+%% \v vertical tab escape decodes to byte 11.
 escape_vertical_tab(_Config) ->
     Bin = po_with_entry(~"k", ~"a\\vb"),
     {ok, Catalog} = erli18n_po:parse(Bin),
     [{singular, _, _, T}] = maps:get(entries, Catalog),
     ?assertEqual(<<"a", 11, "b">>, T).
 
-%% Cover L781: \a alert (BEL) escape decodes to byte 7.
+%% \a alert (BEL) escape decodes to byte 7.
 escape_alert_bell(_Config) ->
     Bin = po_with_entry(~"k", ~"a\\ab"),
     {ok, Catalog} = erli18n_po:parse(Bin),
@@ -1351,15 +1324,15 @@ tab_indented_line_in_main_parser(_Config) ->
         maps:get(entries, Catalog)
     ).
 
-%% Finding #15 (po-lone-cr-line-endings-not-normalized): split_lines/1
-%% must normalize lone CR (0x0D, classic Mac) to LF, the same way it
-%% already folds CRLF -> LF, so the three newline conventions parse a
-%% byte-identical catalog to the EXACT same result. Before the fix
-%% split_lines/1 only replaced <<"\r\n">> then split on <<"\n">>, so a
-%% lone-CR file was treated as one giant line and the parser saw content
-%% after the first closing quote, returning a spurious
+%% `split_lines/1` normalizes lone CR (0x0D, classic Mac) to LF, the same
+%% way it folds CRLF -> LF, so the three newline conventions parse a
+%% byte-identical catalog to the EXACT same result. A `split_lines/1` that
+%% only replaced <<"\r\n">> then split on <<"\n">> would treat a lone-CR
+%% file as one giant line, so the parser would see content after the first
+%% closing quote, returning a spurious
 %% {error, {syntax_error, 1, content_after_close_quote}}. GNU `msgfmt -c`
-%% accepts the same lone-CR file (exit 0), so this was a real parity gap.
+%% accepts the same lone-CR file (exit 0), so failing to normalize it
+%% would be a real parity gap.
 line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
     %% A logical 2-entry catalog whose lines are joined by a parameterized
     %% terminator. The byte content of each line is identical across the
@@ -1394,7 +1367,7 @@ line_endings_lf_crlf_lone_cr_parse_identically(_Config) ->
     {ok, CrlfCatalog} = erli18n_po:parse(CrlfBin),
     ?assertEqual(Expected, maps:get(entries, CrlfCatalog)),
 
-    %% This is the case that regressed before the fix.
+    %% The lone-CR case — the one a CRLF-only normalization would miss.
     {ok, LoneCrCatalog} = erli18n_po:parse(LoneCrBin),
     ?assertEqual(Expected, maps:get(entries, LoneCrCatalog)),
 
@@ -1441,21 +1414,20 @@ parse_rejects_malformed_escapes_and_index(_Config) ->
     ),
     ok.
 
-%% Finding #1 (po-plural-nplurals-seq-allocation-dos): the header's
-%% `nplurals=` value is attacker-controlled and `collect_digits/2` caps
-%% only the DIGIT COUNT (max 7 digits => up to 9_999_999), so a 158-byte
-%% `.po` can legitimately declare `nplurals=9999999`. The PSD-009 index
-%% validation must NEVER size a list by that header value: the old
-%% `lists:seq(0, Nplurals - 1)` materialized a ~10M-element list (~80MB,
-%% reproduced at ~340ms vs ~0.1ms for a real catalog). After the fix the
+%% The header's `nplurals=` value is attacker-controlled and
+%% `collect_digits/2` caps only the DIGIT COUNT (max 7 digits => up to
+%% 9_999_999), so a 158-byte `.po` can legitimately declare
+%% `nplurals=9999999`. The plural index validation must NEVER size a list
+%% by that header value: `lists:seq(0, Nplurals - 1)` would materialize a
+%% ~10M-element list (~80MB, ~340ms vs ~0.1ms for a real catalog). The
 %% present index set is validated WITHOUT building the header-sized
 %% sequence, so this returns the EXACT same structured
 %% `{plural_count_mismatch, Msgid, Nplurals, Indices}` error a genuine
-%% count mismatch always produced, and it completes in bounded time.
+%% count mismatch always produces, and it completes in bounded time.
 %%
 %% Black-box, through `parse/1`: input -> structured error, with a
-%% deterministic wall-clock ceiling that the pre-fix ~10M-allocation could
-%% not meet. A generous 200ms bound (the fix runs in single-digit ms)
+%% deterministic wall-clock ceiling an unbounded ~10M-allocation could
+%% not meet. A generous 200ms bound (validation runs in single-digit ms)
 %% keeps the test stable on slow CI while still failing hard against the
 %% unbounded allocation it replaces.
 plural_nplurals_header_dos_bounded(_Config) ->
@@ -1474,7 +1446,7 @@ plural_nplurals_header_dos_bounded(_Config) ->
     T0 = erlang:monotonic_time(microsecond),
     Result = erli18n_po:parse(Attack),
     ElapsedUs = erlang:monotonic_time(microsecond) - T0,
-    %% The exact structured PSD-009 error is preserved verbatim: only
+    %% The exact structured plural-count error is preserved verbatim: only
     %% index 0 is present, but the header declares 9_999_999 forms.
     ?assertEqual(
         {error, {plural_count_mismatch, ~"Tree", 9999999, [0]}},
@@ -1483,12 +1455,12 @@ plural_nplurals_header_dos_bounded(_Config) ->
     %% Bounded: never materializes the header-sized sequence.
     ?assert(ElapsedUs < 200000).
 
-%% Finding #17 (po-append-to-last-superlinear): a field built from MANY
-%% continuation lines must (a) join to the byte-correct concatenation and
-%% (b) build in O(total) time. The fix accumulates each continuation
-%% segment as an O(1) prepend onto a reversed list and joins once at
-%% finalization, instead of the old per-line `<<Prev/binary, Bin/binary>>`
-%% that re-copied the growing accumulator out of the record.
+%% A field built from MANY continuation lines must (a) join to the
+%% byte-correct concatenation and (b) build in O(total) time. The parser
+%% accumulates each continuation segment as an O(1) prepend onto a
+%% reversed list and joins once at finalization, rather than a per-line
+%% `<<Prev/binary, Bin/binary>>` that would re-copy the growing
+%% accumulator out of the record.
 %%
 %% Black-box, through `parse/1`: a msgid AND a msgstr each spread over
 %% thousands of continuation lines must reassemble to the exact expected

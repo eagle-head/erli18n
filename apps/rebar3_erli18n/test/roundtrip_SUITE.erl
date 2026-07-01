@@ -163,7 +163,7 @@ real_translator_file_accepted(Config) ->
     %% The body parses cleanly (erli18n_po drops the metadata but the bodies
     %% are valid).
     {ok, #{entries := Entries}} = erli18n_po:parse(Bin),
-    %% Fuzzy entry "Sign in now" is dropped by parse (PSD-001), so the live
+    %% Fuzzy entry "Sign in now" is dropped by parse, so the live
     %% body set is Hello + one item + Save (the fuzzy one excluded).
     Msgids = [element(3, E) || E <- Entries],
     ?assert(lists:member(<<"Hello">>, Msgids)),

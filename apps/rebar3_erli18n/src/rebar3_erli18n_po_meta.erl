@@ -6,11 +6,11 @@ Metadata-aware PO/POT serializer for `.pot`/`.po` catalogs.
 `erli18n_po` is the parity-verified core: its `entry()` is ONLY
 `{singular, Ctx, Msgid, Tr}` or `{plural, Ctx, Msgid, Plural, Forms}`, and
 `dump/1` emits ONLY the `msgctxt`/`msgid`/`msgid_plural`/`msgstr` block. By
-design it drops `#, fuzzy` (PSD-001) and `#~` obsolete (PSD-007) on parse,
+design it drops `#, fuzzy` and `#~` obsolete on parse,
 and carries no `#:` references or `#.`/`# ` comments. Those are exactly the
 bytes a translator's tooling and a `msgmerge` workflow depend on.
 
-This module is the NEW serializer layer that wraps `erli18n_po` for the
+This module is the serializer layer that wraps `erli18n_po` for the
 translatable block and emits all the metadata itself:
 
 - `# ` translator comments
@@ -217,8 +217,9 @@ prev_field(Key, Value) ->
 %% synthetic empty header `dump/1` always prepends AND the trailing blank
 %% line `dump/1` puts after the entry (the entry emitters here add their own
 %% separator). This is the ONLY place the body bytes are produced, so they
-%% inherit PSD-001..009 for that block. The returned block ends in exactly
-%% one `\n` (after the final `msgstr`/`msgstr[N]` line).
+%% inherit the parity-verified serialization fidelity for that block. The
+%% returned block ends in exactly one `\n` (after the final
+%% `msgstr`/`msgstr[N]` line).
 -spec body_block(body()) -> binary().
 body_block(Body) ->
     Full = erli18n_po:dump(#{header => #{raw => <<>>}, entries => [Body]}),

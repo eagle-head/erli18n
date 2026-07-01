@@ -1,8 +1,7 @@
 %%% =====================================================================
 %%% Parity harness: erli18n (subject) vs the GNU gettext CLI (oracle).
 %%%
-%%% This suite no longer shells out to `msgfmt`/`gettext`/`ngettext` at
-%%% run time. The oracle is now PRE-COMPUTED, out of band, by
+%%% The oracle is PRE-COMPUTED, out of band, by
 %%% `bin/extract-gettext-table.sh` (run inside the `gettext-extract`
 %%% Docker service against the LATEST GNU gettext). That step compiles
 %%% every scenario's `.po`, runs the real CLI, and records the expected

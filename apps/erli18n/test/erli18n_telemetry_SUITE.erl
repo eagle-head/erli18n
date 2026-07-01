@@ -224,7 +224,7 @@ telemetry_catalog_load_emits_span_start_stop(Config) ->
 
 %% Idempotent fast-path. A second
 %% `ensure_loaded` still emits the span; the stop metadata records
-%% `result => already` and `keys_loaded => 0`. RISK-012 mitigation 2.
+%% `result => already` and `keys_loaded => 0`.
 telemetry_catalog_load_already_reports_result_in_metadata(Config) ->
     ok = attach(Config, [[erli18n, catalog, load, stop]]),
     Path = fixture(Config, "minimal_en.po"),

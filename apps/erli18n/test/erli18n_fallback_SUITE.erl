@@ -1,5 +1,5 @@
 %%% =====================================================================
-%%% Common Test suite for the Phase 2 locale-fallback FACADE integration.
+%%% Common Test suite for the locale-fallback FACADE integration.
 %%%
 %%% A `pt` catalog is loaded; the suite asserts that a `pt_BR` (and its
 %%% hyphenated / mis-cased / legacy-alias forms) request:
@@ -96,7 +96,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    %% Clean slate: unload catalogs, reset locale + the Phase 2 env, then
+    %% Clean slate: unload catalogs, reset locale + the fallback env, then
     %% load the `pt` base catalog under locale "pt".
     [
         ok = erli18n_server:unload(D, L)

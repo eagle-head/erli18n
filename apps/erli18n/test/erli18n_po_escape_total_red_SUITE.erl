@@ -1,31 +1,24 @@
 %%% =====================================================================
 %%% erli18n_po_escape_total_red_SUITE
 %%%
-%%% PURPOSE: pin the TOTALITY contract of the exported, cross-package
-%%% serializer `erli18n_po:escape_string/1`. Its public `-spec` is
+%%% Pins the TOTALITY contract of the exported, cross-package serializer
+%%% `erli18n_po:escape_string/1`. Its public `-spec` is
 %%% `binary() -> binary()` and its docstring promises "every other byte
-%%% passed through unchanged" — i.e. the function is documented TOTAL over
-%%% all binaries. This suite asserts that promised behavior.
+%%% passed through unchanged" — i.e. the function is total over all
+%%% binaries. This suite asserts that behavior.
 %%%
-%%% GENERATED FROM: the po-parser test-adequacy audit, finding F2
-%%% ("TOTALITY property missing for escape_string/1 — a non-UTF-8 byte
-%%% crashes the documented-total binary()->binary() cross-package API").
+%%% The totality testcases (`escape_string_total_examples/1` and
+%%% `escape_string_total_property/1`) exercise the non-UTF-8 partition:
+%%% `escape_string/1` walks the binary with a `<<C/utf8, Rest/binary>>`
+%%% clause, so a byte-wise catch-all is what keeps it total over input
+%%% that is not valid UTF-8 (e.g. a lone <<255>>, <<254>>, a lone lead
+%%% byte <<195>>, a truncated multibyte <<226,130>>, or a trailing stray
+%%% byte <<"ok",255>>). For each such input the documented
+%%% `binary() -> binary()` contract requires a binary result.
 %%%
-%%% RED/GREEN EXPECTATION: this is a RED suite. The two totality
-%%% testcases (`escape_string_total_examples/1` and
-%%% `escape_string_total_property/1`) MUST FAIL against the current code.
-%%% The bug, proven live: the catch-all clause at erli18n_po.erl:1770 is
-%%% `escape_string(<<C/utf8, Rest/binary>>, Acc)`, so any binary holding a
-%%% byte that is not valid UTF-8 (e.g. a lone <<255>>, <<254>>, a lone
-%%% lead byte <<195>>, a truncated multibyte <<226,130>>, or a trailing
-%%% stray byte <<"ok",255>>) matches NO clause and raises
-%%% `error:function_clause` instead of returning a binary. The correct
-%%% fix (a byte-wise catch-all) is NOT implemented here; this suite only
-%%% pins the target behavior so the fix can turn it green.
-%%%
-%%% The single GREEN anchor (`escape_string_valid_passthrough/1`, clearly
-%%% marked) confirms valid bytes already pass through unchanged TODAY, so
-%%% the eventual fix must preserve that path rather than regress it.
+%%% `escape_string_valid_passthrough/1` pins the complementary direction:
+%%% valid bytes pass through unchanged, so any totality change must
+%%% preserve that path rather than regress it.
 %%% =====================================================================
 -module(erli18n_po_escape_total_red_SUITE).
 
@@ -66,22 +59,20 @@ end_per_suite(_Config) ->
     ok.
 
 %% =========================
-%% F2 — totality: concrete counter-examples
+%% totality: concrete counter-examples
 %% =========================
 
-%% F2 (RED). Each of these binaries contains a byte that is not a valid
-%% UTF-8 encoding, so the catch-all `<<C/utf8, Rest/binary>>` clause at
-%% erli18n_po.erl:1770 matches none of them and `escape_string/1` raises
-%% `error:function_clause` TODAY. Per the documented `binary() -> binary()`
-%% totality contract every call MUST instead return a binary. These
-%% assertions therefore FAIL now and will pass once a byte-wise catch-all
-%% is added.
+%% Each of these binaries contains a byte that is not a valid UTF-8
+%% encoding, so the `<<C/utf8, Rest/binary>>` walk in `escape_string/1`
+%% only stays total over them via a byte-wise catch-all. Per the
+%% documented `binary() -> binary()` totality contract every call must
+%% return a binary.
 %%
-%% This is NOT a vacuous "no-crash" oracle: `is_binary/1` would still hold
-%% for any passthrough or transcoded byte-wise fix, but it FAILS for the
-%% surviving `function_clause` mutant — the exact behavior the finding
-%% names. The non-UTF-8 partition is what distinguishes it from the
-%% already-tested valid-byte path.
+%% This is not a vacuous "no-crash" oracle: `is_binary/1` holds for any
+%% passthrough or transcoded byte-wise handling, but not for a
+%% `function_clause` failure on a non-UTF-8 byte — the exact behavior at
+%% stake. The non-UTF-8 partition is what distinguishes it from the
+%% valid-byte path.
 escape_string_total_examples(_Config) ->
     NonUtf8Inputs = [
         %% Lone 0xFF — never a valid UTF-8 byte.
@@ -105,16 +96,15 @@ escape_string_total_examples(_Config) ->
     ).
 
 %% =========================
-%% F2 — totality: property
+%% totality: property
 %% =========================
 
-%% F2 (RED). The totality law as a property: for ANY binary, the
-%% documented-total serializer must return a binary. This is currently
-%% falsifiable — PropEr will shrink to a minimal non-UTF-8 binary (e.g.
-%% <<255>>) on which `escape_string/1` raises `function_clause`, so
-%% `proper:quickcheck/2` returns a counter-example and the `?assert`
-%% fails. Once the byte-wise catch-all lands, the property holds for all
-%% 200 generated binaries.
+%% The totality law as a property: for ANY binary, the total serializer
+%% must return a binary. PropEr explores the non-UTF-8 partition
+%% (shrinking toward a minimal binary such as <<255>>), where a
+%% `<<C/utf8, ...>>`-only walk would raise `function_clause`; the
+%% byte-wise catch-all is what keeps the property holding across all
+%% generated binaries.
 escape_string_total_property(_Config) ->
     ?assert(
         proper:quickcheck(
@@ -131,15 +121,14 @@ prop_escape_string_total() ->
     ).
 
 %% =========================
-%% GREEN anchor (passes TODAY)
+%% valid-byte passthrough
 %% =========================
 
-%% GREEN. Valid UTF-8 bytes with no special escape character pass through
-%% byte-identically under the current code. This anchor is deliberately
-%% green: it guards the regression direction — the totality fix must NOT
-%% break the existing valid-byte passthrough that the audit already
-%% trusts. (The five escape substitutions \\ \" \n \t \r are owned by the
-%% separate green po suite; here we only pin plain passthrough.)
+%% Valid UTF-8 bytes with no special escape character pass through
+%% byte-identically. This pins the complementary direction: any totality
+%% change must not break valid-byte passthrough. (The five escape
+%% substitutions \\ \" \n \t \r are owned by the separate po suite; here
+%% we only pin plain passthrough.)
 escape_string_valid_passthrough(_Config) ->
     ?assertEqual(~"abc", erli18n_po:escape_string(~"abc")),
     %% A multibyte UTF-8 codepoint (é = <<195,169>>) is valid UTF-8 and

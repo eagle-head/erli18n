@@ -1,11 +1,11 @@
 %%% =====================================================================
 %%% Common Test suite for the optional web adapters (`erli18n_cowboy`,
 %%% `erli18n_elli`) and their framework-agnostic core (`erli18n_http`,
-%%% `erli18n_http_apply`) — GENERATED FROM THE TEST-ADEQUACY AUDIT to pin
-%%% the http-adapters findings that the existing suites leave unasserted.
+%%% `erli18n_http_apply`), pinning the http-adapter behaviors that the
+%%% other suites leave unasserted.
 %%%
-%%% It closes these audit gaps (one testcase per finding cluster):
-%%%   * the OBSERVABLE half of "fail-soft-AND-observable": a malformed
+%%% It covers:
+%%%   * the observable half of fail-soft-AND-observable: a malformed
 %%%     per-request `default`/`available` option emits EXACTLY ONE
 %%%     `logger:warning/2` referencing the offending key (captured here via
 %%%     an installed primary logger filter that forwards matching events to
@@ -22,9 +22,8 @@
 %%%   * two PropEr properties: `cookie_value/2` first-occurrence value-correctness
 %%%     and the `negotiate_locale_lazy/4` at-most-once / stop-at-first-hit laws.
 %%%
-%%% EXPECTATION: GREEN. Every case asserts the CURRENT, intended behavior of
-%%% the production code; the suite is expected to pass as-is and each oracle is
-%%% strengthened to FAIL under the specific mutation the finding names
+%%% Every case asserts the intended behavior of the production code, and each
+%%% oracle is strengthened to fail under the specific regression it names
 %%% (last-wins cookie, dropped/duplicated logger:warning, dropped Req/Env keys,
 %%% removed is_map guard, collapsed set_logger_metadata guard, empty-value ->
 %%% undefined, re-extract / double-force in the lazy engine).
@@ -315,7 +314,7 @@ lazy_negotiate_invariants_property(_Config) ->
 %% Properties
 %% =========================
 
-%% F15: value-correctness + first-occurrence + identity-unquote for cookie_value/2.
+%% Value-correctness + first-occurrence + identity-unquote for cookie_value/2.
 %% A header is built that contains a known `locale=V1` pair AND a later DUPLICATE
 %% `locale=V2` pair (V2 is guaranteed distinct), surrounded by non-`locale` noise.
 %% `cookie_value/2` must return V1 verbatim (first occurrence wins; the value has
@@ -340,7 +339,7 @@ prop_cookie_value_first_occurrence() ->
         end
     ).
 
-%% F16: at-most-once / stop-at-first-hit laws for negotiate_locale_lazy/4 over
+%% At-most-once / stop-at-first-hit laws for negotiate_locale_lazy/4 over
 %% arbitrary source orderings (with duplicates/empties), an adversarial per-source
 %% value map, and counter-backed Available/Default thunks. A recording Extract
 %% logs each call (in order) to the test mailbox. Asserts: never raises; result is

@@ -120,7 +120,7 @@ insert_lookup_plural(_Config) ->
         ~"tree",
         Entries
     ),
-    %% Finding #16: the raw index-based plural read is internal. These
+    %% The raw index-based plural read is internal. These
     %% insert-path rows carry NO Plural-Forms header, so the form-aware public
     %% read `lookup_plural_form/5` is a MISS (header absent -> `undefined`
     %% directly; see header_absent_plural_form_is_a_miss/1). The stored rows are
@@ -501,8 +501,8 @@ code_change_no_op(_Config) ->
 %% in `persistent_term`, which is node-global and owned by the runtime, so an
 %% `exit(Pid, kill)` of the writer cannot touch them. After the supervisor
 %% restarts the worker, every translation is still readable and the restarted
-%% writer is again a functional writer. This is strictly stronger durability
-%% than the old ETS heir handoff (no handoff-timeout failure class).
+%% writer is again a functional writer. The durability is unconditional:
+%% there is no handoff step and hence no handoff-timeout failure class.
 catalog_survives_worker_kill(_Config) ->
     ok = erli18n_server:insert_singular(
         default,
@@ -523,7 +523,7 @@ catalog_survives_worker_kill(_Config) ->
             Other -> error({erli18n_server_not_running, Other})
         end,
     Ref = monitor(process, Pid),
-    %% Abrupt, unhandleable kill — the worst case the finding describes.
+    %% Abrupt, unhandleable kill — the worst case for durability.
     exit(Pid, kill),
     receive
         {'DOWN', Ref, process, Pid, _Reason} -> ok
@@ -558,21 +558,19 @@ catalog_survives_worker_kill(_Config) ->
         )
     ).
 
-%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout):
-%% the server must no longer run the WHOLE load pipeline inside handle_call.
+%% The server does not run the WHOLE load pipeline inside handle_call.
 %% The heavy read+parse+compile runs in the caller; the server only commits
 %% a validated payload via a `{commit, Mode, Domain, Locale, Payload}'
 %% message. This case pins the structural boundary by speaking the commit
 %% protocol directly: a `{commit, ensure, ...}' with a validated payload
-%% installs the catalog, and the old whole-pipeline `{ensure_loaded, ...}'
-%% message is no longer a recognised server call (it falls into the
-%% unknown_call catch-all). Pre-fix: `{ensure_loaded, ...}' is the load
-%% message and `{commit, ...}' is unknown -> RED.
+%% installs the catalog, and the whole-pipeline `{ensure_loaded, ...}'
+%% message is not a recognised server call (it falls into the
+%% unknown_call catch-all).
 load_pipeline_runs_in_caller_only_commit_in_server(_Config) ->
     %% Build a validated payload via the public ensure_loaded path on a
     %% throwaway catalog, then read it back out of the staged form is not
     %% directly accessible — instead we assert the protocol shape: the
-    %% server treats the old whole-pipeline message as unknown.
+    %% server does not recognise a whole-pipeline message.
     ?assertEqual(
         {error, unknown_call},
         gen_server:call(
@@ -607,13 +605,11 @@ load_pipeline_runs_in_caller_only_commit_in_server(_Config) ->
         _ = file:delete(Path)
     end.
 
-%% Finding #6, tunable-timeout class. The commit timeout must be settable
-%% through `opts()` (`timeout => infinity`). Because the heavy phase no
-%% longer runs behind the mailbox, only the ms-scale commit uses the
-%% timeout; passing `infinity` must be accepted and the load must succeed.
-%% Pre-fix `opts()` has no `timeout` key (the whole call uses the implicit
-%% 5000ms) -> the option is silently ignored; this case pins that the new
-%% key is honoured by the commit call.
+%% The commit timeout is settable through `opts()` (`timeout => infinity`).
+%% Because the heavy phase does not run behind the mailbox, only the ms-scale
+%% commit uses the timeout; passing `infinity` must be accepted and the load
+%% must succeed. This case pins that the `timeout` key is honoured by the
+%% commit call.
 commit_honours_tunable_timeout(_Config) ->
     Path = write_minimal_po(),
     try
@@ -634,13 +630,12 @@ commit_honours_tunable_timeout(_Config) ->
         _ = file:delete(Path)
     end.
 
-%% Finding #16 (lookup-plural-5-exported-footgun-bypasses-form-evaluation).
-%% `lookup_plural/5` did a raw, index-based ETS lookup with NO Plural-Forms
-%% evaluation. Exporting it next to the form-aware `lookup_plural_form/5`
-%% invited callers to pass the raw count N as the form index and silently
-%% receive the wrong plural form. The fix keeps `lookup_plural/5` internal:
-%% the only supported plural read on the public surface is the form-aware
-%% `lookup_plural_form/5`. Pin the minimal public Read API here.
+%% `lookup_plural/5` is internal: it does a raw, index-based lookup with NO
+%% Plural-Forms evaluation. Exporting it next to the form-aware
+%% `lookup_plural_form/5` would invite callers to pass the raw count N as the
+%% form index and silently receive the wrong plural form. The only supported
+%% plural read on the public surface is the form-aware `lookup_plural_form/5`.
+%% Pin the minimal public Read API here.
 lookup_plural_5_not_exported(_Config) ->
     Exported = erli18n_server:module_info(exports),
     ?assertNot(lists:member({lookup_plural, 5}, Exported)),
@@ -651,12 +646,11 @@ lookup_plural_5_not_exported(_Config) ->
     ?assert(lists:member({lookup_singular, 4}, Exported)),
     ?assert(lists:member({lookup_header, 2}, Exported)).
 
-%% Finding #16, guard-consistency class. `lookup_plural_form/5` always
-%% guarded its arguments, but `lookup_singular/4` (and the now-internal
-%% `lookup_plural/5`) did not: a malformed argument returned `undefined`
-%% (a silent miss) instead of crashing. Pin that the public read takes the
-%% same `is_atom`/`is_binary` guards, so a contract break is a loud
-%% `function_clause`, never a silent wrong/empty answer.
+%% Guard-consistency contract. `lookup_singular/4` guards its arguments the
+%% same way `lookup_plural_form/5` does, so a malformed argument is a loud
+%% `function_clause` rather than a silent `undefined` miss. Pin that the
+%% public read takes the same `is_atom`/`is_binary` guards, so a contract
+%% break is never a silent wrong/empty answer.
 read_api_guards_reject_bad_args(_Config) ->
     %% The arguments below intentionally violate the published spec to
     %% exercise the runtime guards. eqwalizer would (correctly) reject them
@@ -715,8 +709,8 @@ loaded_locales_empty_when_nothing_loaded(_Config) ->
 %% N — it does NOT silently fall back to a C/Germanic form and read a row (which
 %% would surface an inserted form behind an unsupported public read). The raw
 %% rows ARE present and readable at the storage layer (`plural_row/5`); only the
-%% form-aware public read declines them. Mirrors main's lookup_plural_form/5
-%% `undefined -> undefined` arm.
+%% form-aware public read declines them. Mirrors the
+%% `erli18n_server:lookup_plural_form/5` `undefined -> undefined` arm.
 header_absent_plural_form_is_a_miss(_Config) ->
     ok = erli18n_server:insert_plural(
         default,
@@ -746,7 +740,7 @@ header_absent_plural_form_is_a_miss(_Config) ->
 plural_form(Domain, Locale, Context, Msgid, N) ->
     erli18n_server:lookup_plural_form(Domain, Locale, Context, Msgid, N).
 
-%% Finding #16: read a raw plural form row directly at the storage layer. The
+%% Read a raw plural form row directly at the storage layer. The
 %% form-aware `lookup_plural_form/5` requires a Plural-Forms header to map
 %% N -> form index; these insert-path unit cases write rows by index with NO
 %% header, so they assert the stored row directly (mirrors the row shape
@@ -765,7 +759,7 @@ plural_row(Domain, Locale, Context, Msgid, Index) ->
     end.
 
 %% Write a minimal valid .po (one singular "Hello" -> "Olá") to a unique
-%% temp path and return it. Used by the finding-#6 cases that need a real
+%% temp path and return it. Used by the cases that need a real
 %% on-disk catalog the caller-side phase can read+parse.
 write_minimal_po() ->
     Path =

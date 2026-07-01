@@ -14,7 +14,7 @@
 %%%   `((EXPR) % Nplurals + Nplurals) % Nplurals`
 %%% which is mathematically guaranteed to fall in `[0, Nplurals)`
 %%% regardless of `EXPR` (Erlang `rem` matches C99 `%` — see GNU gettext
-%%% manual §11.2.6 and PSD-008 / `erli18n_plural.erl` comments). The
+%%% manual §11.2.6 and `erli18n_plural.erl` comments). The
 %%% double-modulo handles the case where `EXPR` is negative, which Erlang
 %%% `rem` would otherwise propagate.
 %%%
@@ -46,8 +46,8 @@
 %% recursive AST consumed by `ast_to_text/1`, an `integer()` N, a `binary()`
 %% header/body, …) carries a static `-eqwalizer({nowarn_function, F/A}).`
 %% annotation — the same zero-runtime-dep pattern used in the runtime modules
-%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
-%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+%% `erli18n_server`/`erli18n_pt_store`. The static annotations replace runtime
+%% `eqwalizer` cast helpers, so the suite carries no `eqwalizer_support` dep.
 -eqwalizer({nowarn_function, prop_index_in_range/0}).
 -eqwalizer({nowarn_function, prop_compile_or_error/0}).
 -eqwalizer({nowarn_function, prop_compile_bounded/0}).
@@ -106,7 +106,7 @@ prop_index_in_range() ->
                     ),
                     false;
                 {error, {unsafe_plural_rule, _}} ->
-                    %% Layer 3 static rejection (finding #1): the
+                    %% Layer 3 static rejection: the
                     %% generator can emit a rule that is *statically*
                     %% guaranteed to fault (e.g. a literal `x / 0`
                     %% subtree). `compile/1` rejecting it fail-closed is
@@ -123,15 +123,13 @@ prop_index_in_range() ->
                     false
             catch
                 Class:Reason:Stack ->
-                    %% Finding #1 (plural-eval-throws-per-lookup-dos):
                     %% `evaluate/2` is the hot path of every ngettext
                     %% lookup and MUST be total. A malformed rule — even
                     %% one containing division/modulo by zero, now that
                     %% `/` and `%` are in the operator pool — must clamp
                     %% (to form 0 / a defined value), never crash the
                     %% caller. So ANY exception here is a property
-                    %% violation, including the `badarith` that the old
-                    %% test treated as a PASS.
+                    %% violation, including a `badarith`.
                     ct:pal(
                         "P3 evaluate/2 must be total but crashed: ~p:~p~n~p~n"
                         "Expr=~s N=~p~n",
@@ -170,7 +168,7 @@ prop_compile_or_error() ->
         end
     ).
 
-%% Finding #2 (plural-compile-superlinear-unbounded). `compile/1` runs
+%% `compile/1` runs
 %% inside the single catalog gen_server's `handle_call` on UNTRUSTED `.po`
 %% input, so a pathological-but-valid `Plural-Forms` expression must
 %% never make it superlinear or unbounded. Two regressions are guarded:
@@ -184,11 +182,10 @@ prop_compile_or_error() ->
 %% that it always returns within a strict per-call time budget with
 %% EITHER `{ok, _}` (small enough to compile) OR a structured
 %% `{error, {expr_too_long | expr_too_deep, ...}}` rejection — never a
-%% crash, never an open-ended run. The old generator capped AST depth at
-%% 4 (`c_plural_expr/1`), so it could never reach the sizes that exposed
-%% the quadratic/unbounded behaviour; this property closes that gap by
-%% generating the pathological shapes directly rather than via the AST
-%% grammar.
+%% crash, never an open-ended run. The AST grammar generator caps AST
+%% depth at 4 (`c_plural_expr/1`), so it never reaches the sizes that
+%% expose the quadratic/unbounded behaviour; this property generates the
+%% pathological shapes directly rather than via the AST grammar.
 prop_compile_bounded() ->
     ?FORALL(
         HeaderGen,
@@ -211,7 +208,7 @@ prop_compile_bounded() ->
                         is_integer(Depth), is_integer(Pos)
                     ->
                         true;
-                    %% Finding #9: a wide flat chain (e.g. `n+n+...+n`)
+                    %% A wide flat chain (e.g. `n+n+...+n`)
                     %% can stay under BOTH the byte cap and the depth cap
                     %% yet exceed the AST node-count cap; the node guard
                     %% rejecting it fail-closed is a fine outcome too.
@@ -246,13 +243,12 @@ prop_compile_bounded() ->
         end
     ).
 
-%% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath). The byte/depth
-%% caps from finding #2 do NOT bound the AST NODE COUNT: a wide flat
+%% The byte/depth caps do NOT bound the AST NODE COUNT: a wide flat
 %% operator chain (`n*n*...*n`) stays under the byte cap and at a single
 %% recursion level, yet compiles to thousands of AST nodes. `evaluate/2`
 %% then walks that whole tree — and grows an `n^k` bignum — on every
 %% ngettext lookup, with no result cache (the per-LOOKUP amplification
-%% axis, distinct from the COMPILE-time blow-up of finding #2).
+%% axis, distinct from the COMPILE-time blow-up).
 %%
 %% This property generates wide multiply chains whose node count spans
 %% both sides of ?AST_MAX_NODES (256) and asserts the post-compile
@@ -261,9 +257,7 @@ prop_compile_bounded() ->
 %% `{error, {expr_too_complex, Nodes, Max}}` (or, for the largest bodies,
 %% `{expr_too_long, _, _}` once the byte cap is also crossed). It must
 %% never return `{ok, _}` carrying an unbounded AST, and must return
-%% within a strict per-call time budget. This property CHANCELS THE
-%% CURRENT BUG: today compile accepts a 1000-factor chain and returns
-%% `{ok, _}` with ~1999 nodes.
+%% within a strict per-call time budget.
 prop_compile_node_bounded() ->
     ?FORALL(
         FactorsGen,
@@ -356,7 +350,7 @@ build_patho(bang_chain, Count) ->
 %% `n*n*...*n` with `Factors` factors. Left-associative, so it stays at a
 %% single multiplicative recursion level (under the depth cap) but its AST
 %% has 2*Factors-1 nodes — the exact shape that inflates per-lookup
-%% `evaluate/2` cost in finding #9.
+%% `evaluate/2` cost.
 -spec multiply_chain(pos_integer()) -> binary().
 multiply_chain(Factors) when Factors >= 1 ->
     Tail = binary:copy(~"*n", max(Factors - 1, 0)),
@@ -430,10 +424,10 @@ c_plural_expr(Size) ->
         {2, ?LET(E, Smaller, {paren, E})}
     ]).
 
-%% Binary operators. We INCLUDE `/` and `%` in the random pool: per
-%% finding #1 (plural-eval-throws-per-lookup-dos) the evaluator must be
-%% total, so a generated subtree like `n / (n - n)` (division by zero)
-%% must clamp to a defined value rather than raise `badarith`. The
+%% Binary operators. We INCLUDE `/` and `%` in the random pool: the
+%% evaluator must be total, so a generated subtree like `n / (n - n)`
+%% (division by zero) must clamp to a defined value rather than raise
+%% `badarith`. The
 %% property below asserts no exception escapes `evaluate/2`, so these
 %% two operators directly exercise the zero-divisor guard
 %% (`eval_div/2` / `eval_rem/2`).

@@ -4,7 +4,7 @@
 %%% Properties P1, P2, P5.
 %%%   * P1 — Roundtrip parse/dump.
 %%%   * P2 — Idempotent normalization (dump∘parse∘dump∘parse = parse).
-%%%   * P5 — ETS-key canonical equivalence (PSD-006): `{Context, Msgid}`
+%%%   * P5 — ETS-key canonical equivalence: `{Context, Msgid}`
 %%%          tuple round-trips through `parse∘dump` unchanged even when
 %%%          `Msgid` contains the EOT byte (`0x04`) that the legacy `.mo`
 %%%          format used as the context/msgid boundary.
@@ -20,7 +20,7 @@
 %%% Generator strategy: build catalogs from the inside out — first a
 %%% header with a syntactically valid `Plural-Forms` line, then a list of
 %%% entries (singular or plural). Plural entries are constrained so the
-%%% emitted indices match the header's `nplurals` (per PSD-009; otherwise
+%%% emitted indices match the header's `nplurals` (otherwise
 %%% `erli18n_po:parse/1` would refuse the catalog with
 %%% `{plural_count_mismatch, ...}`). Strings are drawn from a mixed
 %%% population of plain ASCII, UTF-8 multibyte, and `\n`/`\t`/`\"`/`\\`
@@ -158,9 +158,9 @@ prop_idempotent_normalization() ->
         end
     ).
 
-%% P5 — ETS-key canonical equivalence (PSD-006).
+%% P5 — ETS-key canonical equivalence.
 %%
-%% PSD-006 declares the runtime key as the tuple `{Context, Msgid}`
+%% The runtime key is the tuple `{Context, Msgid}`
 %% (Context = `undefined` or binary, separate from Msgid). The
 %% historical `.mo` format glues them with the EOT byte (`0x04`); if a
 %% naive refactor ever switches our parser to use the glued
@@ -170,7 +170,7 @@ prop_idempotent_normalization() ->
 %% the msgid contains EOT bytes.
 %%
 %% We do not call any internal `ets_key_from_mo_decode/1` helper (it
-%% does not exist in the implementation — and PSD-006 says it should
+%% does not exist in the implementation — and by design it should
 %% not). Instead the property exercises the same invariant from the
 %% outside: parse(dump(...)).entries preserves the tuple shape.
 prop_ets_key_canonical() ->
@@ -196,19 +196,18 @@ prop_ets_key_canonical() ->
         end
     ).
 
-%% P1b — Large single-string round trip (Finding #3 equivalence guard).
+%% P1b — Large single-string round trip (large-input equivalence guard).
 %%
-%% The Finding #3 fix replaced the right-append fold in
-%% `bins_to_binary/1` with `iolist_to_binary(lists:reverse(_))`. That
-%% function backs both the parse-side decoder (`decode_chars/2`) and the
-%% dump-side escaper (`escape_string/2`), so the swap must be byte-exact
-%% on large inputs, not just fast. This property builds a catalog whose
-%% msgid and translation are each tens of KB (well past the
-%% in-place-growth threshold where the old and new code could diverge if
-%% the materialization were wrong), dumps it, reparses it, and asserts
-%% the entries survive unchanged. It complements `prop_decode_is_linear`
-%% in the fuzz suite: that one pins the *cost*, this one pins the
-%% *result*.
+%% `bins_to_binary/1` materializes accumulated fragments with
+%% `iolist_to_binary(lists:reverse(_))`. That function backs both the
+%% parse-side decoder (`decode_chars/2`) and the dump-side escaper
+%% (`escape_string/2`), so it must be byte-exact on large inputs, not
+%% just fast. This property builds a catalog whose msgid and translation
+%% are each tens of KB (well past the in-place-growth threshold where a
+%% wrong materialization could diverge), dumps it, reparses it, and
+%% asserts the entries survive unchanged. It complements
+%% `prop_decode_is_linear` in the fuzz suite: that one pins the *cost*,
+%% this one pins the *result*.
 prop_large_string_roundtrip() ->
     ?FORALL(
         {NGen, FillerGen},
@@ -238,8 +237,8 @@ prop_large_string_roundtrip() ->
         end
     ).
 
-%% Finding #11 (po-hex-octal-escape-emits-invalid-utf8) — CLOSURE
-%% INVARIANT: parse output is always valid UTF-8.
+%% Hex/octal escape decoding — INVARIANT: parse output is always valid
+%% UTF-8.
 %%
 %% Claim: for any catalog source generated with an arbitrary charset
 %% (utf8 | latin1 | us_ascii) and arbitrary `\xHH`/`\OOO` escapes
@@ -248,12 +247,12 @@ prop_large_string_roundtrip() ->
 %% `msgid()` and `context()` in `Cat.entries` is valid UTF-8 — i.e.
 %% `unicode:characters_to_binary(B, utf8, utf8)` returns a binary.
 %%
-%% This is the invariant the bug VIOLATED: `\xFF` in a UTF-8 catalog used
-%% to make `parse` return `{ok, _}` with a translation containing the raw
-%% byte 0xFF (invalid UTF-8 despite charset=UTF-8), which crashed
-%% downstream unicode ops with badarg. The fix makes the parser either
-%% transcode the escape into valid UTF-8 or fail with a structured error;
-%% in NEITHER case may it return `{ok, _}` carrying invalid UTF-8.
+%% The failure mode this guards against: `\xFF` in a UTF-8 catalog
+%% decoding to `{ok, _}` with a translation containing the raw byte 0xFF
+%% (invalid UTF-8 despite charset=UTF-8), which crashes downstream
+%% unicode ops with badarg. The parser must either transcode the escape
+%% into valid UTF-8 or fail with a structured error; in NEITHER case may
+%% it return `{ok, _}` carrying invalid UTF-8.
 prop_parse_output_is_valid_utf8() ->
     ?FORALL(
         SrcGen,
@@ -272,21 +271,22 @@ prop_parse_output_is_valid_utf8() ->
         end
     ).
 
-%% Finding #14 (dump-drops-msgid-plural-silently) — CLOSURE INVARIANT:
-%% `dump/1` must round-trip `msgid_plural` faithfully.
+%% `msgid_plural` round trip — INVARIANT: `dump/1` must round-trip
+%% `msgid_plural` faithfully.
 %%
 %% Claim: for any well-formed plural catalog whose `.po` SOURCE declares a
 %% `msgid_plural` form text DISTINCT from the singular `msgid`, the
 %% `parse -> dump -> parse` cycle preserves that `msgid_plural` byte for
-%% byte. The bug: the parsed `entry/0' plural shape dropped `msgid_plural'
-%% entirely, so `dump/1' re-emitted the singular `msgid' in the
-%% `msgid_plural' slot — silently corrupting the plural-form source text.
+%% byte. The failure mode this guards against: a parsed `entry/0' plural
+%% shape that drops `msgid_plural' entirely, so `dump/1' re-emits the
+%% singular `msgid' in the `msgid_plural' slot — silently corrupting the
+%% plural-form source text.
 %%
-%% We assert the invariant from the OUTSIDE: parse the generated source,
+%% The invariant is asserted from the OUTSIDE: parse the generated source,
 %% dump it, and verify the dumped `.po' carries the ORIGINAL
 %% `msgid_plural' line (not the singular `msgid'). A re-parse round-trip
-%% then confirms the value survives a full cycle. Using `ru'/`pl'/`ar'
-%% style real plural rules per the finding's test note.
+%% then confirms the value survives a full cycle, using `ru'/`pl'/`ar'
+%% style real plural rules.
 prop_msgid_plural_roundtrip() ->
     ?FORALL(
         SpecGen,
@@ -303,7 +303,7 @@ prop_msgid_plural_roundtrip() ->
             case erli18n_po:parse(Src) of
                 {ok, Parsed} ->
                     %% (1) the parsed model must RETAIN the original plural
-                    %% form (the bug dropped it). (2) a full parse∘dump∘parse
+                    %% form. (2) a full parse∘dump∘parse
                     %% cycle must preserve it byte for byte. Comparing through
                     %% the parser sidesteps escaper-specific text-matching.
                     Retained = msgid_plural_of(Parsed) =:= MsgidPlural,
@@ -353,8 +353,7 @@ prop_msgid_plural_roundtrip() ->
 %% =========================
 %% A well-formed catalog with header + 0..20 entries. The header's
 %% `nplurals` count is fixed first, then entries are generated so plural
-%% entries respect that count (parser would otherwise reject them per
-%% PSD-009).
+%% entries respect that count (parser would otherwise reject them).
 valid_po() ->
     ?LET(
         NPlurals,
@@ -389,8 +388,8 @@ valid_plural(NPlurals) ->
     ?LET(
         {Ctx, Msgid, MsgidPlural, Forms},
         {valid_context(), valid_msgid(), valid_msgid(), plural_forms(NPlurals)},
-        %% Finding #14: the parsed plural entry retains `msgid_plural`
-        %% (4th element). The generator produces a concrete plural form
+        %% The parsed plural entry retains `msgid_plural` (4th element).
+        %% The generator produces a concrete plural form
         %% (reusing `valid_msgid/0`, which yields a non-empty UTF-8 binary)
         %% so `parse∘dump` is byte-exact: the parser always materializes a
         %% concrete `msgid_plural` from the source `msgid_plural` line, and
@@ -456,8 +455,8 @@ valid_msgid() ->
         maybe_inject_escapes(BaseGen, 30)
     ).
 
-%% Translation: same population as msgid but allowed empty (PSD-003 says
-%% empty msgstr is preserved as `<<>>` by the parser; lookup decides
+%% Translation: same population as msgid but allowed empty (empty
+%% msgstr is preserved as `<<>>` by the parser; lookup decides
 %% the fallback).
 valid_translation() ->
     ?LET(
@@ -502,7 +501,7 @@ valid_msgid_with_eot() ->
     ).
 
 %% Translation variant — same EOT-injection treatment as msgid, but
-%% may be empty (PSD-003).
+%% may be empty.
 valid_translation_with_eot() ->
     ?LET(
         {PrefixGen, SuffixGen},
@@ -555,7 +554,7 @@ raw_header_bin(NPlurals) ->
         "\n"
     >>.
 
-%% Finding #14 generator: a minimal plural catalog SOURCE whose
+%% Plural-source generator: a minimal plural catalog SOURCE whose
 %% `msgid_plural` form is DISTINCT from the singular `msgid`. We draw
 %% from `ru`/`pl`/`ar`-style plural rules (real, multi-form) so the round
 %% trip exercises 3..6 plural indices. The source is produced by the
@@ -612,8 +611,7 @@ msgid_plural_of(#{entries := Entries}) ->
 %% the only safe way to splice ASCII control chars into an arbitrary
 %% UTF-8 binary without splitting a multibyte sequence — a naive
 %% `binary:part/3` at a random byte offset would produce invalid UTF-8
-%% and trip the parser's `unicode:characters_to_binary/3` validation
-%% (per PSD-002).
+%% and trip the parser's `unicode:characters_to_binary/3` validation.
 maybe_inject_escapes(Bin, Probability) ->
     case rand:uniform(100) =< Probability of
         true ->
@@ -681,7 +679,7 @@ canonicalize_parsed(#{header := Header, entries := Entries}) ->
     }.
 
 %% =========================
-%% Finding #11 generators/helpers — escape injection across charsets
+%% Escape-injection generators/helpers — escapes across charsets
 %% =========================
 
 %% Generate the SOURCE BYTES of a minimal single-entry catalog whose
@@ -774,7 +772,7 @@ entry_fields_valid_utf8({plural, Ctx, Msgid, MsgidPlural, Forms}) ->
 
 %% `undefined` context is vacuously valid; otherwise round-trip the binary
 %% through the UTF-8 validator (the exact op a unicode-aware consumer runs
-%% and the op that crashed with badarg on the pre-fix raw byte).
+%% and the op that raises badarg on a raw, non-UTF-8 byte).
 is_valid_utf8(undefined) ->
     true;
 is_valid_utf8(B) when is_binary(B) ->

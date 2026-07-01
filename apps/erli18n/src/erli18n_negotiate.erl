@@ -1,7 +1,7 @@
 -module(erli18n_negotiate).
 
 -moduledoc """
-Canonicalization-aware BCP-47 locale negotiation and fallback (Phase 2).
+Canonicalization-aware BCP-47 locale negotiation and fallback.
 
 This module is the pure, total, dependency-free engine behind erli18n's
 opt-in locale-fallback chain and the `Accept-Language` negotiation helpers

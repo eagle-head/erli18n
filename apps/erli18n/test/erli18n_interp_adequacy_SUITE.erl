@@ -3,15 +3,14 @@
 %%% =====================================================================
 %%% PURPOSE
 %%% Adequacy suite for the pure `%{name}` interpolation substituter
-%%% `erli18n_interp:format/2,3`. It pins observable, currently-CORRECT
-%%% behaviour that the existing `erli18n_interp_SUITE` / `_props` leave
-%%% unasserted, killing the surviving mutants each finding names:
+%%% `erli18n_interp:format/2,3`. It pins observable, correct behaviour that
+%%% `erli18n_interp_SUITE` / `_props` leave unasserted:
 %%%
 %%%   * the strict-miss error carries the RAW BINARY name for a
 %%%     never-interned placeholder (and the ATOM form for an interned one);
 %%%   * the integer coercion arm is the ONLY `coerce/1` clause WITHOUT a
 %%%     per-value clamp, so a bignum splices un-clamped (bounded only by the
-%%%     global 65536 output cap) — this suite pins that current behaviour;
+%%%     global 65536 output cap) — this suite pins that behaviour;
 %%%   * a bogus `on_missing` value silently degrades strict -> lenient;
 %%%   * a placeholder name of EXACTLY 256 bytes degrades safely on both
 %%%     policies (read_name accepts it, the atom probe misses);
@@ -21,18 +20,13 @@
 %%%   * float values render via `float_to_binary/2` `[short]` across the
 %%%     sign / zero-sign / scientific partitions.
 %%%
-%%% This suite was GENERATED from the test-adequacy audit (findings file
-%%% group "interp", subset = everything EXCEPT the invalid-UTF-8 byte-offset
-%%% truncation findings F1/F2/F3/F4/F6/F9/F22, which live in the dedicated
-%%% RED suite `erli18n_interp_utf8_red_SUITE`). It covers F5, F7, F8, F10,
-%%% F11, F12, F13, F14, F15, F16, F17, F18, F19, F20, F21, F23, F24, F25,
-%%% F26, F27, F28, F29, F30.
+%%% Invalid-UTF-8 byte-offset truncation is pinned separately, in
+%%% `erli18n_interp_utf8_red_SUITE`.
 %%%
-%%% RED/GREEN EXPECTATION: this is a GREEN suite. Every case asserts the
-%%% CURRENT (correct) behaviour and PASSES against the code as it stands,
-%%% while each oracle is strong enough to FAIL under the mutation the finding
-%%% names (tag/term swap, dropped clamp, added clamp, fallthrough flip,
-%%% latin1 re-encode, `[short]` -> default float form).
+%%% Every case asserts the current, correct behaviour, while each oracle is
+%%% strong enough to fail under the corresponding fault (tag/term swap,
+%%% dropped clamp, added clamp, fallthrough flip, latin1 re-encode,
+%%% `[short]` -> default float form).
 %%% =====================================================================
 
 -include_lib("common_test/include/ct.hrl").
@@ -80,7 +74,7 @@ all() ->
     ].
 
 %% =====================================================================
-%% F5 + F11 + F13 + F17 + F20 — strict-miss error term shape.
+%% Strict-miss error term shape.
 %% `missing_name_term/1` (erli18n_interp.erl:406-411) returns the existing
 %% ATOM when the name is already interned, otherwise the RAW BINARY (never
 %% interns a new atom). The existing suite asserts ONLY the interned-atom
@@ -110,7 +104,7 @@ strict_miss_never_interned_carries_raw_binary_name(_Config) ->
     ).
 
 %% =====================================================================
-%% F7 + F12 + F15 + F19 + F26 — the integer coercion arm
+%% The integer coercion arm
 %% (erli18n_interp.erl:471-472 `coerce(V) when is_integer(V) ->
 %% integer_to_binary(V)`) is the ONLY `coerce/1` clause NOT wrapped in
 %% `clamp_value/1`. A bignum whose decimal text exceeds ?MAX_VALUE_BYTES
@@ -132,7 +126,7 @@ integer_value_arm_bypasses_per_value_clamp(_Config) ->
     ?assertEqual(byte_size(Full), byte_size(Out)).
 
 %% =====================================================================
-%% F8 + F16 — a bogus `on_missing` value silently degrades to lenient.
+%% A bogus `on_missing` value silently degrades to lenient.
 %% `on_missing/1` (erli18n_interp.erl:222-223) matches only the literal
 %% `strict`; any other value falls through to `lenient`, which leaves the
 %% unbound `%{x}` literal instead of raising. A mutant flipping the
@@ -152,7 +146,7 @@ bogus_on_missing_degrades_to_lenient(_Config) ->
     ).
 
 %% =====================================================================
-%% F10 — a placeholder name of EXACTLY 256 bytes. `read_name/3` rejects
+%% A placeholder name of EXACTLY 256 bytes. `read_name/3` rejects
 %% only `Len > ?MAX_NAME_BYTES` (256), so a 256-byte name is ACCEPTED;
 %% but no atom can exceed 255 bytes, so `binary_to_existing_atom/2` misses
 %% (badarg, caught). Lenient must round-trip the placeholder literally;
@@ -175,7 +169,7 @@ name_exactly_256_bytes_degrades_safely(_Config) ->
     ).
 
 %% =====================================================================
-%% F14 + F18 + F21 — a valid multibyte-UTF-8 binding value splices through
+%% A valid multibyte-UTF-8 binding value splices through
 %% BYTE-IDENTICALLY. `ensure_utf8/1` (erli18n_interp.erl:487-490) keeps
 %% already-valid UTF-8 verbatim via `unicode:characters_to_binary(Bin, utf8,
 %% utf8)`. A mutant flipping the source encoding to `latin1` would
@@ -195,7 +189,7 @@ valid_multibyte_utf8_value_splices_byte_identically(_Config) ->
     ).
 
 %% =====================================================================
-%% F27 + F29 + F30 — the per-value clamp `clamp_value/1` is shared by the
+%% The per-value clamp `clamp_value/1` is shared by the
 %% iolist arm (erli18n_interp.erl:477-478) and the unknown-term arm
 %% (erli18n_interp.erl:479-481), not just the binary arm asserted by the
 %% existing suite. An oversized iolist and an oversized `~tp`-rendered term
@@ -221,7 +215,7 @@ per_value_clamp_applies_to_iolist_and_unknown_arms(_Config) ->
     ?assertMatch(<<"{1,2,3", _/binary>>, OutTerm).
 
 %% =====================================================================
-%% F28 — float coercion across partitions. `safe_float/1`
+%% Float coercion across partitions. `safe_float/1`
 %% (erli18n_interp.erl:511-513) uses `float_to_binary(F, [short])`; the
 %% existing suite asserts only `3.5`. Pinning the sign (-0.0), zero-sign
 %% (0.0) and scientific (1.0e300 / 1.5e-10) partitions kills a mutant that
@@ -242,7 +236,7 @@ float_partitions_render_short_form(_Config) ->
     ).
 
 %% =====================================================================
-%% F24 — property over the strict-miss Name shape. For an arbitrary
+%% Property over the strict-miss Name shape. For an arbitrary
 %% unbound, syntactically-valid placeholder name, the strict error's Name is
 %% the existing ATOM if interned, otherwise the raw BINARY — exactly the
 %% two arms of `missing_name_term/1`. The expected shape is computed
@@ -293,7 +287,7 @@ prop_strict_miss_name_shape() ->
     ).
 
 %% =====================================================================
-%% F23 — property: a valid-UTF-8 binding value under the per-value cap, in
+%% Property: a valid-UTF-8 binding value under the per-value cap, in
 %% a `%`-free single-placeholder template, passes through BYTE-IDENTICALLY.
 %% `format(~"%{v}", #{v => V}) =:= V`. A latin1 re-encode mutant on
 %% `ensure_utf8/1` would double-encode any non-ASCII codepoint, so the
@@ -326,7 +320,7 @@ prop_valid_utf8_value_passthrough() ->
     ).
 
 %% =====================================================================
-%% F25 — property: the integer arm omits the per-value clamp, so a bignum
+%% Property: the integer arm omits the per-value clamp, so a bignum
 %% is spliced WHOLE and bounded only by the global 65536 output cap. For a
 %% randomised power-of-two magnitude the output equals the full decimal
 %% text when it fits, else exactly the first 65536 bytes. A mutant adding

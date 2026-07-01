@@ -152,13 +152,7 @@ who has never seen the project:
 %%  Reference: GNU gettext manual, "How Marking Works":
 %%      https://www.gnu.org/software/gettext/manual/gettext.html#How-Marking-Works
 %%
-%%  Parity goal: API surface matches `gettexter.erl` (legacy) — see
-%%  `target_business_rules.md` BR-MIGRAR-013/014/015/016/017/018. Existing
-%%  consumers should be able to rewrite `gettexter:foo(...)` →
-%%  `erli18n:foo(...)` with no other code change.
-%%
-%%  Lookup rules (R1-R6) come from BR-MIGRAR-001/002 and PSD-003. See the
-%%  per-function comments below for citations.
+%%  The per-function comments below label the lookup behavior with R1-R6.
 %% ============================================================================
 
 %% Singular lookup (R1) — gettext/dgettext/dcgettext family.
@@ -189,7 +183,7 @@ who has never seen the project:
     dcnpgettext/6
 ]).
 
-%% Interpolating `f`-suffix family (Phase 1 — named `%{name}`
+%% Interpolating `f`-suffix family (named `%{name}`
 %% interpolation). Each member delegates to its non-`f` sibling above to
 %% resolve the string, then runs `erli18n_interp:format/2` over it with a
 %% trailing `Bindings :: map()`. The plural members auto-bind `count => N`
@@ -223,8 +217,7 @@ who has never seen the project:
     dcnpgettextf/7
 ]).
 
-%% Per-process state: current locale via process dictionary (gettexter
-%% convention, BR-MIGRAR-003).
+%% Per-process state: current locale via process dictionary.
 -export([
     which_locale/0,
     setlocale/1
@@ -238,7 +231,7 @@ who has never seen the project:
     textdomain/1
 ]).
 
-%% Load orchestration passthrough (BR-MIGRAR-017/018).
+%% Load orchestration passthrough.
 -export([
     ensure_loaded/3,
     ensure_loaded/4,
@@ -256,7 +249,7 @@ who has never seen the project:
     which_keys/2
 ]).
 
-%% Locale negotiation & fallback (Phase 2). Opt-in BCP-47 canonicalization,
+%% Locale negotiation & fallback. Opt-in BCP-47 canonicalization,
 %% fallback chain, and Accept-Language negotiation; thin facade over
 %% `erli18n_negotiate`. The fallback chain itself is wired into the four
 %% lookup families' miss arms and gated by the `locale_fallback` app env.
@@ -328,8 +321,8 @@ auto-bind `count => N` (a caller-supplied `count` wins). See
 %% =========================
 
 %% Process-dictionary key for per-caller current locale. The leading
-%% `$` prefix is a gettexter convention to make keys easy to spot when
-%% inspecting a process state via `erlang:process_info(_, dictionary)`.
+%% `$` prefix makes the key easy to spot when inspecting a process state
+%% via `erlang:process_info(_, dictionary)`.
 -define(LOCALE_KEY, '$erli18n_locale').
 
 %% Application env defaults. The default domain is `default`, aligned with the
@@ -399,10 +392,10 @@ gettext(Domain, Msgid) when is_atom(Domain), is_binary(Msgid) ->
 %% `dcgettext(domain, msgid, LC_MESSAGES)` (the category argument is
 %% always LC_MESSAGES for erli18n — we do not model LC_NUMERIC etc.).
 %%
-%% R1 (BR-MIGRAR-001, PSD-003):
+%% R1:
 %%   - If lookup returns {ok, T} with T =/= <<>>, return T.
 %%   - Else (miss OR empty translation), fall back to msgid.
-%% PSD-003 makes the empty-translation case explicit: `msgstr ""` in a
+%% The empty-translation case is explicit: `msgstr ""` in a
 %% .po file means "untranslated"; the parser is supposed to drop such
 %% rows, but we keep the runtime guard for defence-in-depth — an empty
 %% binary on the wire should never reach the UI.
@@ -497,9 +490,9 @@ dcgettext(Domain, Msgid, Locale) -> gettext(Domain, Msgid, Locale).
 %% Plural lookup — ngettext family
 %% =========================
 
-%% R2 (BR-MIGRAR-002): N == 1 → msgid; else → msgid_plural. The
+%% R2: N == 1 → msgid; else → msgid_plural. The
 %% fallback runs whenever lookup returns `undefined` OR an empty
-%% translation (PSD-003). The N parameter is an arbitrary integer
+%% translation. The N parameter is an arbitrary integer
 %% (including bignum and negatives); `erli18n_plural:evaluate/2` is
 %% bignum-clean.
 -doc """
@@ -1003,7 +996,7 @@ dcnpgettext(Domain, Context, Msgid, MsgidPlural, N, Locale) ->
     npgettext(Domain, Context, Msgid, MsgidPlural, N, Locale).
 
 %% =========================
-%% Interpolating `f`-suffix family (Phase 1 — named `%{name}`)
+%% Interpolating `f`-suffix family (named `%{name}`)
 %% =========================
 %%
 %% Each `f` member is thin and additive: it DELEGATES to its non-`f`
@@ -1481,7 +1474,7 @@ dcnpgettextf(Domain, Context, Msgid, MsgidPlural, N, Locale, Bindings) ->
 %% Per-process locale state (process dictionary)
 %% =========================
 %%
-%% Per BR-MIGRAR-003 / ADR-0002, the current locale is per-caller state
+%% The current locale is per-caller state
 %% stored in the process dictionary. This mirrors thread-local storage
 %% in libc gettext (`uselocale(3)`) and is the idiomatic BEAM choice for
 %% "request-scoped" runtime state. Crucially, the dictionary is NOT
@@ -1825,7 +1818,7 @@ unload(Domain, Locale) ->
     erli18n_server:unload(Domain, Locale).
 
 %% Convention-based path resolver: <PrivDir>/locale/<Locale>/LC_MESSAGES/<Domain>.po.
-%% See BR-MIGRAR-005 / ADR-0003 (multi-tenant filesystem layout).
+%% Catalogs live under a per-tenant filesystem layout.
 -doc """
 Resolves the conventional `.po` path for the application `App`.
 
@@ -1861,8 +1854,8 @@ The return has three fixed keys:
 
 - `ets_bytes` — approximate bytes consumed by the catalog storage (already
   converted from VM words to bytes; multiplied by `erlang:system_info(wordsize)`).
-  **The field name is historical** (storage is now `persistent_term`, not ETS);
-  it is kept for backwards compatibility with the 0.3.0 return shape.
+  The field is named `ets_bytes` for return-shape stability even though the
+  storage substrate is `persistent_term`, not ETS.
 - `num_catalogs` — number of loaded `(Domain, Locale)` catalogs.
 - `num_keys` — total number of entries (keys) across all catalogs.
 
@@ -1950,7 +1943,7 @@ which_keys(Domain, Locale) ->
     erli18n_server:which_keys(Domain, Locale).
 
 %% =========================
-%% Locale negotiation & fallback (Phase 2) — public facade
+%% Locale negotiation & fallback — public facade
 %% =========================
 
 -doc """
@@ -2086,8 +2079,8 @@ Internal helper: the plural fallback shared by `ngettext/5` and `npgettext/6`
 (rule R2).
 
 Triggered when there is no usable translation — catalog not loaded, missing
-entry, or an entry present but with the form selected for `N` empty
-(PSD-003). It applies the C convention: `Msgid` when `N == 1`, `MsgidPlural`
+entry, or an entry present but with the form selected for `N` empty.
+It applies the C convention: `Msgid` when `N == 1`, `MsgidPlural`
 otherwise. Note that the decision uses raw `N` (not the evaluated plural form),
 which matches GNU's `ngettext(3)` behavior without needing the catalog. Total
 and side-effect-free.
@@ -2164,7 +2157,7 @@ emit_lookup_miss(Function, Domain, Locale, Context, Msgid) ->
     end.
 
 %% =========================
-%% Locale fallback chain (Phase 2) — internal, MISS-path only
+%% Locale fallback chain — internal, MISS-path only
 %% =========================
 %%
 %% These helpers are reached ONLY from the `_Other ->` (miss) arm of the four

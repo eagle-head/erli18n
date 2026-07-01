@@ -154,7 +154,7 @@ macro_atom(Macros, Name, Default) ->
 %% order) through the whole descent, prepending each call site exactly once.
 %% This keeps the walk O(nodes): no per-level `lists:flatten`/`++` that would
 %% re-copy the accumulated extractions at every recursion level
-%% (the old shape was O(extractions × ast-depth)). The accumulator is reversed
+%% (that shape would be O(extractions × ast-depth)). The accumulator is reversed
 %% once at the top, restoring source order.
 -spec walk_forms([term()], file:filename(), atom()) -> [extracted()].
 walk_forms(Forms, File, DefaultDomain) ->
@@ -203,7 +203,7 @@ walk_children(Children, File, DefaultDomain, Acc) ->
 
 %% Prepend a call-site result onto the reverse-order accumulator, reversing it
 %% so that after the single top-level `lists:reverse/1` the entries come out in
-%% source order. (Today a recognized call site yields 0 or 1 entries, but this
+%% source order. (A recognized call site yields 0 or 1 entries, but this
 %% stays correct for any length without assuming that invariant.)
 -spec prepend_reverse([extracted()], [extracted()]) -> [extracted()].
 prepend_reverse([], Acc) -> Acc;

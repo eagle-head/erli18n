@@ -1,18 +1,13 @@
 %%% =====================================================================
-%%% Core-runtime test-adequacy suite (erli18n facade + server + pt_store +
+%%% Core-runtime regression suite (erli18n facade + server + pt_store +
 %%% app/sup lifecycle).
 %%%
-%%% GENERATED FROM THE TEST-ADEQUACY AUDIT (group: core-runtime). Each case pins
-%%% one confirmed finding (or a tight cluster) that the existing suites reach but
-%%% never assert, and is written to KILL the surviving mutant the finding names
-%%% (erase-all-on-stop, the facade empty-translation guard, the server-boundary
-%%% crash contract, the env-bound type/range validation, the f-family count
-%%% auto-bind/override merge order, and the supervisor SupFlags/child spec).
-%%%
-%%% RED/GREEN EXPECTATION: GREEN. Every assertion below describes the CURRENT,
-%%% intended behaviour of the production code, so the whole suite is expected to
-%%% pass as-is. It would only go RED under the specific mutation each case
-%%% targets (or a genuine regression).
+%%% Each case pins one behaviour that the broader suites exercise but never
+%%% assert: erase-all-on-stop, the facade empty-translation guard, the
+%%% server-boundary crash contract, the env-bound type/range validation, the
+%%% f-family count auto-bind/override merge order, and the supervisor SupFlags
+%%% and child spec. Every assertion describes the current, intended behaviour of
+%%% the production code.
 %%%
 %%% Setup mirrors erli18n_server_SUITE: the app is started in init_per_suite and
 %%% every catalog is unloaded around each case. Several cases stop/restart the
@@ -89,12 +84,12 @@ end_per_testcase(_TC, _Config) ->
 %% Test cases
 %% =========================
 
-%% F1 / F6: stop/start must not leak stale persistent_term catalogs. After an
+%% Stop/start must not leak stale persistent_term catalogs. After an
 %% application:stop the previously loaded (default, pt_BR) catalog is gone from
 %% loaded_catalogs/0, and a re-run of ensure_loaded is a FRESH install ({ok, N}),
 %% NOT the idempotent {ok, already} that a surviving header would produce.
-%% Removing erli18n_pt_store:erase_all/0 from erli18n_app:stop/1 makes both
-%% assertions fail (the catalog and its header survive the restart).
+%% erli18n_pt_store:erase_all/0 in erli18n_app:stop/1 is what clears both the
+%% catalog and its header across the restart.
 stop_start_erases_loaded_catalogs(_Config) ->
     Path = write_minimal_po(),
     try
@@ -121,10 +116,10 @@ stop_start_erases_loaded_catalogs(_Config) ->
         _ = file:delete(Path)
     end.
 
-%% F7 / F8: the erase-all-on-stop guarantee, observed through the read path. A
-%% key that hit before the stop returns undefined after the restart, and the
-%% loaded-catalog list is empty. Deleting erase_all/0 from stop/1 leaves the
-%% node-global persistent_term catalog installed and the lookup would still hit.
+%% The erase-all-on-stop guarantee, observed through the read path. A key that
+%% hit before the stop returns undefined after the restart, and the
+%% loaded-catalog list is empty. erase_all/0 in stop/1 tears down the node-global
+%% persistent_term catalog; without it the lookup would still hit.
 stop_start_lookup_returns_undefined(_Config) ->
     ok = erli18n_server:insert_singular(
         default, ~"pt_BR", undefined, ~"Hello", ~"Olá"
@@ -141,12 +136,12 @@ stop_start_lookup_returns_undefined(_Config) ->
     ),
     ?assertEqual([], erli18n_server:loaded_catalogs()).
 
-%% F4: an empty stored translation must never surface past the facade. The store
+%% An empty stored translation must never surface past the facade. The store
 %% genuinely holds the empty binary (the read path returns {ok, <<>>}), but
 %% erli18n:gettext/3's `T =/= <<>>` guard degrades it to the source Msgid.
-%% Dropping that guard makes gettext/3 return <<>> and the assertion fails. The
-%% plural arm shows the same: with no Plural-Forms header the empty forms are
-%% never read and ngettext degrades to Msgid (N==1) / MsgidPlural (N/=1).
+%% Without that guard gettext/3 would return <<>>. The plural arm behaves the
+%% same: with no Plural-Forms header the empty forms are never read and ngettext
+%% degrades to Msgid (N==1) / MsgidPlural (N/=1).
 empty_translation_degrades_to_source(_Config) ->
     ok = erli18n_server:insert_singular(
         default, ~"pt", undefined, ~"k", ~""
@@ -164,14 +159,14 @@ empty_translation_degrades_to_source(_Config) ->
     ?assertEqual(~"file", erli18n:ngettext(default, ~"file", ~"files", 1, ~"pt")),
     ?assertEqual(~"files", erli18n:ngettext(default, ~"file", ~"files", 2, ~"pt")).
 
-%% F5: a malformed entry passes the write API's top-level shape guard but crashes
+%% A malformed entry passes the write API's top-level shape guard but crashes
 %% the shared writer in erli18n_pt_store:put_entry — a loud crash-by-contract, not
-%% a silently stored bad row. Drive it through erli18n_server (not pt_store
+%% a silently stored bad row. Driving it through erli18n_server (not pt_store
 %% directly): the caller gets the propagated server exit, the supervisor restarts
 %% the worker with a new pid, and every previously loaded catalog stays intact
-%% (persistent_term is node-global and outlives the crash). Flipping the
-%% `Idx >= 0` guard or adding a catch-all put_entry clause would let the bad row
-%% store with no crash, so the ?assertExit would fail.
+%% (persistent_term is node-global and outlives the crash). The `Idx >= 0` guard
+%% and the absence of a catch-all put_entry clause are what turn the bad row into
+%% a crash rather than a silent store.
 malformed_insert_crashes_server_catalog_survives(_Config) ->
     ok = erli18n_server:insert_singular(
         default, ~"pt_BR", undefined, ~"Hello", ~"Olá"
@@ -213,12 +208,12 @@ malformed_insert_crashes_server_catalog_survives(_Config) ->
         erli18n_server:lookup_singular(default, ~"pt_BR", undefined, ~"Bye")
     ).
 
-%% F2 / F11: a wrong-typed max_po_entries env value is a loud deployment error.
+%% A wrong-typed max_po_entries env value is a loud deployment error.
 %% With max_po_entries = not_a_number and Opts = #{} (default path taken),
-%% ensure_loaded crashes with error({invalid_erli18n_bound, not_a_number}) BEFORE
-%% any mutation — no catalog is installed (lookup_header stays undefined). This is
-%% the same loud-config contract erli18n_server_coverage_SUITE proves for the
-%% bytes cap, here for the entries cap (narrow_bound's wrong-type clause).
+%% ensure_loaded crashes with error({invalid_erli18n_bound, not_a_number}) before
+%% any store mutation — no catalog is installed (lookup_header stays undefined).
+%% This is the same loud-config contract erli18n_server_coverage_SUITE proves for
+%% the bytes cap, here for the entries cap (narrow_bound's wrong-type clause).
 invalid_max_po_entries_is_explicit_error(_Config) ->
     Path = write_minimal_po(),
     try
@@ -236,12 +231,12 @@ invalid_max_po_entries_is_explicit_error(_Config) ->
         _ = file:delete(Path)
     end.
 
-%% F10: the N >= 0 boundary of narrow_bound. A negative configured bound is out of
+%% The N >= 0 boundary of narrow_bound. A negative configured bound is out of
 %% range and crashes with error({invalid_erli18n_bound, -1}); the off-by-one
 %% neighbour 0 is ACCEPTED as a bound (no crash) — the load proceeds and is
-%% rejected by the entry cap instead ({error, {too_many_entries, 1, 0}}). Pinning
-%% both sides kills a mutated guard (N > 0 would crash on 0; N >= -1 would accept
-%% -1).
+%% rejected by the entry cap instead ({error, {too_many_entries, 1, 0}}). Both
+%% sides of the boundary matter: N > 0 would wrongly crash on 0, and N >= -1 would
+%% wrongly accept -1.
 negative_bound_rejected_zero_accepted(_Config) ->
     Path = write_minimal_po(),
     try
@@ -262,14 +257,14 @@ negative_bound_rejected_zero_accepted(_Config) ->
         _ = file:delete(Path)
     end.
 
-%% F3: the f-family Bindings parameter, count auto-bind and caller-override
+%% The f-family Bindings parameter, count auto-bind and caller-override
 %% partitions. No catalog is loaded for this locale, so the facade falls back to
 %% the Msgid/MsgidPlural (each carrying a %{count} placeholder) and interpolation
 %% still runs over it. Empty bindings substitute N (auto-bind path: bind_count
 %% merges #{count => N}); a caller-supplied count overrides N in the TEXT while N
-%% still drives plural-FORM selection (singular vs plural). Dropping the auto-bind
-%% leaves "%{count}" literal; swapping the maps:merge order makes the override
-%% case substitute N instead of 99 — either mutation fails an assertion.
+%% still drives plural-FORM selection (singular vs plural). Without the auto-bind
+%% "%{count}" stays literal; the maps:merge order is what makes the override win
+%% in the text rather than substituting N.
 ngettextf_count_autobind_and_override(_Config) ->
     Loc = ~"zz_autobind",
     %% Auto-bind: count => N is substituted from the empty map.
@@ -295,12 +290,12 @@ ngettextf_count_autobind_and_override(_Config) ->
         )
     ).
 
-%% F9 / F12 / F13: the supervisor contract is value-asserted directly from the
-%% pure, side-effect-free erli18n_sup:init([]). Pins strategy=one_for_one,
-%% intensity=5, period=10 and the single child spec (id, start, restart=permanent,
-%% shutdown=5000, type=worker, modules). Mutating intensity, period, restart
-%% flavour, or the shutdown value changes restart semantics with zero failing
-%% assertion today — each assertion below catches exactly one such mutant.
+%% The supervisor contract, value-asserted directly from the pure,
+%% side-effect-free erli18n_sup:init([]). Pins strategy=one_for_one, intensity=5,
+%% period=10 and the single child spec (id, start, restart=permanent,
+%% shutdown=5000, type=worker, modules). intensity, period, restart flavour, and
+%% the shutdown value all shape restart semantics; each assertion below pins one
+%% of them.
 supervisor_init_supflags_and_childspec(_Config) ->
     {ok, {SupFlags, ChildSpecs}} = erli18n_sup:init([]),
     ?assertEqual(one_for_one, maps:get(strategy, SupFlags)),

@@ -6,8 +6,8 @@ Internal effectful runner shared by the optional web adapters.
 This module ties the pure negotiation core (`erli18n_http:negotiate_locale/3`) to
 the per-request side effects (`erli18n:setlocale/1` plus optional `logger`
 process metadata), parameterized by a per-source candidate-extraction callback
-each adapter supplies. It is the shared body that was previously duplicated across
-`erli18n_cowboy:execute/2` and `erli18n_elli:preprocess/2`.
+each adapter supplies. It is the shared body of `erli18n_cowboy:execute/2` and
+`erli18n_elli:preprocess/2`.
 
 It makes **zero** framework calls — it never touches `cowboy_req` / `elli_request`.
 The only external module it invokes is the extraction *fun* the caller passes, and

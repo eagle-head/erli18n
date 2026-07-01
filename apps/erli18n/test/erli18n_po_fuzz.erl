@@ -1,9 +1,7 @@
 %%% =====================================================================
 %%% Fuzz testing for `erli18n_po` parser robustness.
 %%%
-%%% Parser-robustness fuzz scenarios F1..F7.
-%%% Risk traceability: `risk_register.md` RISK-014 ("parser robustness")
-%%% is materialised via F1..F7. Each scenario takes the same shape — a
+%%% Each parser-robustness scenario takes the same shape — a
 %%% PropEr `?FORALL` that asserts `erli18n_po:parse/1` always returns
 %%% `{ok, _}` or `{error, _}` and never crashes the calling process.
 %%%
@@ -18,7 +16,7 @@
 
 -include_lib("proper/include/proper.hrl").
 
-%% Properties (one per fuzz scenario F1..F7).
+%% Properties, one per fuzz scenario.
 -export([
     prop_random_bytes/0,
     prop_mutated_po/0,
@@ -39,14 +37,14 @@
 %% (`binary()`, a percentage `integer()`, …) carries a static
 %% `-eqwalizer({nowarn_function, F/0}).` annotation — the same zero-runtime-dep
 %% pattern used in the runtime modules `erli18n_server`/`erli18n_pt_store`. This
-%% replaces the former runtime `eqwalizer` cast-helper calls (and the
+%% avoids runtime `eqwalizer` cast-helper calls (and the
 %% `eqwalizer_support` dep). Only the properties that actually narrow a
 %% generator value are listed.
 -eqwalizer({nowarn_function, prop_random_bytes/0}).
 -eqwalizer({nowarn_function, prop_truncated_po/0}).
 -eqwalizer({nowarn_function, prop_end_to_end_no_supervisor_restart/0}).
 
-%% F6 `giant_msgid` size. 400KB is well past the point where the old
+%% `giant_msgid` size. 400KB is well past the point where the old
 %% Θ(n²) right-append fold cost multiple seconds per parse but trivial
 %% (low single-digit ms) for the linear `iolist_to_binary/1` path.
 -define(GIANT_MSGID_BYTES, 400_000).
@@ -60,7 +58,7 @@
 -define(LINEAR_BUDGET_US, 1_500_000).
 
 %% =========================
-%% F1 — Raw random bytes (dumb baseline)
+%% Raw random bytes (dumb baseline)
 %% =========================
 %%
 %% Generator: arbitrary `binary()`. Anything other than `{ok, _}` or
@@ -80,7 +78,7 @@ prop_random_bytes() ->
     ).
 
 %% =========================
-%% F2 — Quasi-valid PO with N random byte mutations
+%% Quasi-valid PO with N random byte mutations
 %% =========================
 %%
 %% Start from a known-good `.po` text (built from `valid_po_text/0`),
@@ -97,7 +95,7 @@ prop_mutated_po() ->
     ).
 
 %% =========================
-%% F3 — Truncated PO
+%% Truncated PO
 %% =========================
 %%
 %% Truncate the catalog at a random byte offset (uniform over the
@@ -127,7 +125,7 @@ prop_truncated_po() ->
     ).
 
 %% =========================
-%% F4 — Embedded NUL / EOT / Ctrl-Z / C1 control bytes
+%% Embedded NUL / EOT / Ctrl-Z / C1 control bytes
 %% =========================
 %%
 %% Insert a single control byte at a random byte offset. We do NOT
@@ -149,12 +147,12 @@ control_byte() ->
     oneof([0, 4, 7, 11, 12, 13, 26, 27, 16#7F, 16#80, 16#9F, 16#FF]).
 
 %% =========================
-%% F5 — Encoding mismatch (header declares X, body is Y)
+%% Encoding mismatch (header declares X, body is Y)
 %% =========================
 %%
 %% Build a PO with a valid header but swap the declared charset for one
 %% of UTF-8 / LATIN1 / SHIFT_JIS / KOI8-R. SHIFT_JIS is explicitly
-%% unsupported per PSD-002 / EX-013 — the parser must return
+%% unsupported — the parser must return
 %% `{error, {unsupported_charset, _}}` for it (asserted explicitly
 %% below).
 prop_encoding_mismatch() ->
@@ -179,7 +177,7 @@ prop_encoding_mismatch() ->
                     true;
                 {error, {unsupported_charset, _}} ->
                     %% SHIFT_JIS / KOI8-R must surface this exact
-                    %% error per PSD-002 / EX-013.
+                    %% error.
                     case Charset of
                         ~"SHIFT_JIS" -> true;
                         ~"KOI8-R" -> true;
@@ -194,7 +192,7 @@ prop_encoding_mismatch() ->
     ).
 
 %% =========================
-%% F6 — Extreme inputs (stress / pathological)
+%% Extreme inputs (stress / pathological)
 %% =========================
 %%
 %% Bounded so we never starve the CI:
@@ -219,30 +217,29 @@ build_extreme(giant_msgid) ->
     %% A single 400KB ASCII msgid. ASCII-only stays UTF-8 valid and
     %% avoids a charset-conversion path while still pushing the parser's
     %% string collector (`decode_chars/2` -> `bins_to_binary/1`). At this
-    %% size the historical right-append fold in `bins_to_binary/2` took
-    %% multiple seconds per parse (Θ(n²)); the linear materialization
-    %% stays in the low-millisecond range. `prop_decode_is_linear/0`
-    %% asserts the budget directly; this variant keeps `no_crash`
-    %% coverage at a size the old code could not survive cheaply.
+    %% size `bins_to_binary/2` materializes in linear time and stays in the
+    %% low-millisecond range; a quadratic (right-append) collector would take
+    %% multiple seconds per parse. `prop_decode_is_linear/0` asserts the
+    %% budget directly; this variant keeps the `no_crash` check at a size
+    %% that stresses the collector.
     giant_msgid_po(?GIANT_MSGID_BYTES);
 build_extreme(repeated_headers) ->
     %% N copies of `msgid "" msgstr "...."` — the parser keeps only the
-    %% first per PSD-001 (`finalize_entry` drops duplicates silently).
+    %% first (`finalize_entry` drops duplicates silently).
     Header = minimal_valid_po_header(),
     iolist_to_binary([Header, lists:duplicate(100, Header)]).
 
 %% =========================
-%% F6b — Decode cost is linear in single-string length (Finding #3)
+%% Decode cost is linear in single-string length
 %% =========================
 %%
-%% Regression guard for `po-decode-bins-to-binary-quadratic`. The PO
-%% quoted-string decoder accumulates one binary per source character
-%% and folds them into the final string via `bins_to_binary/1`. The
-%% historical fold prepended into a right-hand accumulator
-%% (`<<B/binary, Acc/binary>>`), recopying the whole accumulator on
-%% every element — Θ(n²) to materialize one n-byte string. A single
-%% large msgid/msgstr therefore stalled the loader gen_server for
-%% seconds.
+%% Pins the decode cost of the PO quoted-string decoder to linear. The
+%% decoder accumulates one binary per source character and folds them into
+%% the final string via `bins_to_binary/1`. Materializing an n-byte string
+%% must stay Θ(n): a fold that prepends into a right-hand accumulator
+%% (`<<B/binary, Acc/binary>>`) recopies the whole accumulator on every
+%% element — Θ(n²) — and a single large msgid/msgstr would stall the loader
+%% gen_server for seconds.
 %%
 %% This property parses a single ?GIANT_MSGID_BYTES msgid and asserts:
 %%   1. it parses successfully (round-trips through the decoder), and
@@ -250,11 +247,11 @@ build_extreme(repeated_headers) ->
 %%
 %% The budget is comfortably met by the linear `iolist_to_binary/1`
 %% path (single-digit ms) and comfortably blown by the quadratic fold
-%% (measured 6-9s at 400KB on OTP 28), so it is a sharp red/green line
-%% for this fix. There is no `?FORALL` generator — the input is fixed
+%% (measured 6-9s at 400KB on OTP 28), so it cleanly separates the linear
+%% path from the quadratic one. There is no `?FORALL` generator — the input is fixed
 %% and the claim is about a single deterministic measurement — but we
 %% wrap it as a PropEr property so it runs through the same
-%% `proper:quickcheck/2` harness as its F-siblings.
+%% `proper:quickcheck/2` harness as the other fuzz properties.
 prop_decode_is_linear() ->
     ?FORALL(
         N,
@@ -302,7 +299,7 @@ decoded_msgid_len(Entries) ->
     end.
 
 %% =========================
-%% F7 — End-to-end: malformed PO via `ensure_loaded` does not restart
+%% End-to-end: malformed PO via `ensure_loaded` does not restart
 %%      the supervisor tree
 %% =========================
 %%
@@ -375,18 +372,17 @@ active_child_count() ->
     end.
 
 %% =========================
-%% F8 — Unbounded `binary_to_integer` on digit runs (Finding #8)
+%% Unbounded `binary_to_integer` on digit runs
 %% =========================
 %%
-%% Regression guard for `po-plural-unbounded-binary-to-integer-bignum`.
-%% Three sites converted attacker-controlled digit runs via
-%% `binary_to_integer` BEFORE any range check:
+%% Bounds `binary_to_integer` on attacker-controlled digit runs. Three
+%% sites convert digit runs via `binary_to_integer`:
 %%   * `erli18n_po:collect_digits/2`  — the `nplurals=<digits>` field
-%%     read back out of the parsed header (no cap at all today);
+%%     read back out of the parsed header;
 %%   * `erli18n_po:parse_msgstr_index/2` — the `msgstr[<digits>]` index;
 %%   * `erli18n_plural:extract_nplurals/1` — the same `nplurals` field on
-%%     the compile path, whose `{nplurals_out_of_range, N}` rejection
-%%     echoed the ENTIRE bignum back into the error payload (log/memory
+%%     the compile path, whose `{nplurals_out_of_range, N}` rejection must
+%%     NOT echo the ENTIRE bignum back into the error payload (log/memory
 %%     amplification).
 %%
 %% Two failure classes are asserted away:
@@ -398,12 +394,12 @@ active_child_count() ->
 %%
 %% Inputs are fixed (deterministic), but we wrap them as a PropEr
 %% property so they run through the same `proper:quickcheck/2` harness as
-%% the F-siblings. Each variant carries its own assertion; the property
+%% the other fuzz properties. Each variant carries its own assertion; the property
 %% body is `true` only when every variant holds.
 -define(GIANT_DIGIT_RUN, 5000).
 %% Past the OTP `binary_to_integer` `system_limit` threshold (~1.3M
 %% decimal digits). Picking a value comfortably above it exercises the
-%% raw-exception path the fix must convert into `{error, _}`.
+%% raw-exception path the parser must convert into `{error, _}`.
 -define(SYSTEM_LIMIT_DIGIT_RUN, 1_400_000).
 %% A rejected-value payload must not echo the giant run back. 256 bytes
 %% is far above any structured `{atom, pos_integer, pos_integer}` tag
@@ -443,7 +439,7 @@ check_giant_integer_run(msgstr_index_system_limit) ->
     Po = po_with_msgstr_index(?SYSTEM_LIMIT_DIGIT_RUN),
     assert_bounded_parse(Po);
 %% A giant integer literal inside the `plural=` expression compiled via
-%% `erli18n_plural:compile/1`. The byte cap (finding #2) already bounds
+%% `erli18n_plural:compile/1`. The byte cap already bounds
 %% the run, but assert the contract holds at the module boundary too.
 check_giant_integer_run(plural_literal_giant) ->
     Header = <<
@@ -525,17 +521,16 @@ po_with_msgstr_index(DigitCount) ->
     >>.
 
 %% =========================
-%% F9 — Malformed Content-Type whitespace/colon variants (Finding #5)
+%% Malformed Content-Type whitespace/colon variants
 %% =========================
 %%
-%% Regression guard for `po-header-malformed-content-type-badmatch-crash`.
-%% Two charset-detection paths used to disagree on adversarial header
-%% spacing: the prepass required the literal `content-type:` substring
-%% (no space before the colon) and fell through to the default utf8,
-%% while `build_header`'s field parser trimmed the key and classified the
-%% charset, then crashed on a non-exhaustive `{ok,Charset} =` match when
-%% the charset was unsupported. A 200k-iteration fuzz found 83 such
-%% crashing `Content-Type` fragments.
+%% Pins the charset-detection contract under adversarial header spacing.
+%% Two paths classify the `Content-Type` charset: the prepass (which picks
+%% the charset before the full parse) and `build_header`'s field parser.
+%% They must AGREE regardless of whitespace around the colon and after
+%% `charset=`, and an unsupported charset must surface a structured error
+%% rather than defaulting to utf8 down one path while crashing on a
+%% non-exhaustive `{ok, Charset} =` match down the other.
 %%
 %% This property builds a header whose `Content-Type` line has arbitrary
 %% whitespace around the colon and after `charset=`, with either a
@@ -558,8 +553,8 @@ prop_header_content_type_whitespace_no_crash() ->
     ).
 
 %% Whitespace runs (possibly empty) injected around the colon / value.
-%% Includes spaces and tabs — both are LWSP per RFC 822 and both used to
-%% defeat the literal prepass matcher.
+%% Includes spaces and tabs — both are LWSP per RFC 822 and both stress the
+%% whitespace handling around the colon.
 header_ws() ->
     oneof([<<>>, ~" ", ~"  ", ~"\t", ~" \t "]).
 
@@ -595,7 +590,7 @@ check_spaced_content_type(Po, {Kind, _Charset}) ->
         {ok, _} when Kind =:= unsupported ->
             %% An unsupported charset must NOT silently parse as utf8 via
             %% a path divergence — it must be rejected.
-            ct:pal("finding5: unsupported charset parsed OK: ~p~n", [Po]),
+            ct:pal("unsupported charset parsed OK: ~p~n", [Po]),
             false;
         {error, {unsupported_charset, _}} when Kind =:= unsupported ->
             true;
@@ -605,12 +600,12 @@ check_spaced_content_type(Po, {Kind, _Charset}) ->
             %% contract under test is "no crash".
             true;
         Other ->
-            ct:pal("finding5: non-structured return ~p~n", [Other]),
+            ct:pal("non-structured return ~p~n", [Other]),
             false
     catch
         Class:Reason:Stack ->
             ct:pal(
-                "finding5: parse/1 crashed ~p:~p~n~p~n",
+                "parse/1 crashed ~p:~p~n~p~n",
                 [Class, Reason, Stack]
             ),
             false
