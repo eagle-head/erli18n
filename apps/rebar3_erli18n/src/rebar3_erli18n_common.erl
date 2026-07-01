@@ -1,14 +1,14 @@
 -module(rebar3_erli18n_common).
 
 -moduledoc """
-Shared plumbing for the `extract`/`merge`/`check`/`report` providers.
+Shared plumbing for the `extract`/`merge`/`check`/`report`/`compile` providers.
 
-Centralizes the parts that would otherwise be duplicated across the four
+Centralizes the parts that would otherwise be duplicated across these
 providers: the common getopt option set, project source discovery + the
 abstract-form walk, deduplication of extracted call sites into catalog
 entries (merging `#:` references), `.pot`/`.po` directory resolution, and a
 uniform `format_error/1`. Keeping this in one module makes the providers
-thin wrappers and lets a single suite cover the walk/dedup logic to 100%.
+thin wrappers and keeps the walk/dedup logic in one testable place.
 
 ## Catalog layout
 
@@ -28,6 +28,7 @@ project's extracted templates and loaded catalogs share one tree.
     runtime_lib_path/0,
     format_lib_path/1,
     maybe_log_runtime_lib_path/0,
+    entry_key/1,
     format_error/1
 ]).
 
@@ -360,6 +361,20 @@ to_meta_entry(#{
     }.
 
 %% =========================
+%% Entry keys
+%% =========================
+
+-doc """
+The `{Context, Msgid}` identity key of a parsed `.po`/`.pot` entry, ignoring
+its translation(s), plural form, and references. Singular and plural entries
+key the same way, so a catalog can be indexed by logical message regardless
+of plurality.
+""".
+-spec entry_key(erli18n_po:entry()) -> {undefined | binary(), binary()}.
+entry_key({singular, Ctx, Msgid, _Tr}) -> {Ctx, Msgid};
+entry_key({plural, Ctx, Msgid, _MsgidPlural, _Forms}) -> {Ctx, Msgid}.
+
+%% =========================
 %% Errors
 %% =========================
 
@@ -373,5 +388,39 @@ format_error({po_parse_failed, Path, Reason}) ->
     lists:flatten(io_lib:format("erli18n: failed to parse ~ts: ~p", [Path, Reason]));
 format_error({write_failed, Path, Reason}) ->
     lists:flatten(io_lib:format("erli18n: cannot write ~ts: ~p", [Path, Reason]));
+format_error({missing_keys, Diags}) when is_list(Diags) ->
+    lists:flatten(
+        io_lib:format(
+            "erli18n: ~p message(s) missing from the compiled catalog: ~p",
+            [length(Diags), Diags]
+        )
+    );
+format_error({module_name_collision, Name, Pairs}) ->
+    lists:flatten(
+        io_lib:format(
+            "erli18n: generated module name ~p collides across catalogs ~p",
+            [Name, Pairs]
+        )
+    );
+format_error({plural_compile_error_at_codegen, Domain, Locale, Reason}) ->
+    lists:flatten(
+        io_lib:format(
+            "erli18n: plural rule failed to compile for ~p/~ts at codegen: ~p",
+            [Domain, Locale, Reason]
+        )
+    );
+format_error({codegen_write_failed, Path, Reason}) ->
+    lists:flatten(
+        io_lib:format("erli18n: cannot write generated module ~ts: ~p", [Path, Reason])
+    );
+format_error({invalid_compiled_domains, Bad}) ->
+    lists:flatten(
+        io_lib:format(
+            "erli18n: {compiled_domains, [...]} must be a list of atoms; "
+            "got non-atom entr(ies): ~p (a string like \"default\" is a common "
+            "mistake — write the atom default)",
+            [Bad]
+        )
+    );
 format_error(Reason) ->
     lists:flatten(io_lib:format("erli18n: ~p", [Reason])).
