@@ -1,6 +1,6 @@
 %%% =====================================================================
 %%% Property-based tests for `erli18n_interp` — the pure `%{name}`
-%%% interpolation substituter (Phase 1 named interpolation).
+%%% interpolation substituter (named interpolation).
 %%%
 %%% `erli18n_interp:format/2` runs on the `gettextf`/`ngettextf` hot path
 %%% and carries the same totality bar as `erli18n_plural:evaluate/2`: for

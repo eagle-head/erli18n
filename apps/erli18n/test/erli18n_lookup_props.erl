@@ -149,7 +149,7 @@ prop_contextual_lookup_deterministic() ->
     ).
 
 %% Miss fallback: when no catalog is loaded, every call must return the
-%% msgid unchanged. Tests rule R1 (BR-MIGRAR-001, PSD-003).
+%% msgid unchanged. Tests rule R1.
 prop_miss_fallback_deterministic() ->
     ?FORALL(
         MsgidGen,
@@ -194,7 +194,7 @@ non_empty_msgid() ->
 
 %% Non-empty translation, mirrors msgid shape so the lookup post-cond
 %% (`R1 =:= Translation`) can be checked verbatim. Empty translation
-%% would activate the R1 fallback (PSD-003) and obscure the property.
+%% would activate the R1 fallback and obscure the property.
 non_empty_translation() ->
     ?SUCHTHAT(
         BGen,
@@ -208,7 +208,7 @@ non_empty_translation() ->
     ).
 
 %% Non-empty context for `pgettext` testing. Empty context binary `<<>>`
-%% is distinct from `undefined` per PSD-006, but we keep the generator
+%% is distinct from `undefined`, but we keep the generator
 %% simple by forcing a non-empty value — the empty case is well covered
 %% by `prop_singular_lookup_deterministic/0` (which passes `undefined`).
 non_empty_context() ->

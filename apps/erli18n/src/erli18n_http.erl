@@ -172,15 +172,14 @@ negotiate_locale(Candidates, Available, Default) when
     %% Eager-list form: the caller already holds every value, so the Available
     %% index is built once (the first non-empty candidate forces it) and Default
     %% is a constant thunk. Sources are the candidate tags in order; the extract
-    %% fun reads the matching candidate value from the supplied list, preserving
-    %% the existing skip-`undefined`/`<<>>`/malformed-entry totality.
+    %% fun reads the matching candidate value from the supplied list, keeping the
+    %% skip-`undefined`/`<<>>`/malformed-entry totality.
     Sources = [Source || {Source, _Value} <- Candidates, is_atom(Source)],
     Extract = fun(Source) -> candidate_lookup(Source, Candidates) end,
     negotiate_locale_lazy(Sources, Extract, fun() -> Available end, fun() -> Default end).
 
-%% First candidate value for `Source` in the list, or `undefined`. Mirrors the
-%% old per-element skip: a malformed (non-`{source, value}`) entry contributes no
-%% source tag and is never looked up.
+%% First candidate value for `Source` in the list, or `undefined`. A malformed
+%% (non-`{source, value}`) entry contributes no source tag and is never looked up.
 -spec candidate_lookup(source(), candidates()) -> binary() | undefined.
 candidate_lookup(Source, Candidates) ->
     case lists:keyfind(Source, 1, Candidates) of

@@ -3,7 +3,7 @@
 -moduledoc """
 Pure, total, fail-soft substituter for named `%{name}` placeholders.
 
-This is the Phase 1 interpolation engine that backs the `f`-suffix family
+This is the interpolation engine that backs the `f`-suffix family
 on `erli18n` (`gettextf`, `ngettextf`, `pgettextf`, `npgettextf` and their
 `d`/`dc` aliases). It takes a resolved translation `msgstr` plus a map of
 `Bindings` and produces the final binary with each `%{name}` replaced by
@@ -70,7 +70,7 @@ must stay total, the lenient path CLAMPS rather than raises:
 
 ## Bidi (RTL) hazard
 
-v1 does NOT auto-insert Unicode bidi isolation marks (U+2066..U+2069)
+This module does NOT auto-insert Unicode bidi isolation marks (U+2066..U+2069)
 around interpolated values. Splicing an RTL value (Arabic/Hebrew) into an
 LTR sentence — or vice versa — can therefore reorder neighbouring
 punctuation under the Unicode Bidirectional Algorithm. Callers that mix

@@ -19,7 +19,7 @@ The reader goes through neither this supervisor nor the worker:
 without blocking. This tree exists only to keep the writer alive, not to
 mediate the read hot path.
 
-## Mental model (why a single worker is enough now)
+## Mental model (why a single worker is enough)
 
 The catalogs are stored in `persistent_term` (see `erli18n_pt_store`),
 which is owned by the **runtime**, not by any process. A persistent term
@@ -28,21 +28,15 @@ the worker loses NOTHING: every loaded catalog survives untouched, and
 the restarted worker resumes serializing writes against the surviving
 terms.
 
-This is a structural simplification over the previous ETS design. ETS
-destroyed a table the instant its owner died, so the old tree needed a
-dedicated table owner holding the table as its `heir`, plus a
-`rest_for_one` topology with the owner started before the worker, so that
-a worker crash returned the table to the owner via `'ETS-TRANSFER'`
-instead of wiping every catalog (Finding #10). `persistent_term` makes
-that whole subsystem unnecessary: there is no table to own, no heir, no
-handoff, and therefore no ordering constraint between children. The tree
-collapses to a single worker under `one_for_one`.
+Because nothing owns the catalogs, the tree needs no table owner, no
+`heir`, and no handoff, and therefore no ordering constraint between
+children: a single worker under `one_for_one` is enough.
 
 ## Fixed configuration
 
 The restart intensity is `{intensity => 5, period => 10}` (at most 5
 restarts in 10 seconds before the supervisor gives up) and is hardcoded
-by a decision recorded in AMB-002 — it is not configurable via
+— it is not configurable via
 `application:get_env/2`. The single child is `permanent` with
 `shutdown => 5000`.
 
@@ -128,14 +122,14 @@ See also `init/1` for the definition of the tree this function installs.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% Supervisor intensity {5, 10} hardcoded per AMB-002.
+%% Supervisor intensity {5, 10} is hardcoded.
 %%
 %% `one_for_one' with a single worker child. The catalogs live in
 %% `persistent_term' (runtime-owned), so a crash of the worker loses no
 %% catalog and there is no owner-first ordering to preserve: the
-%% `rest_for_one' + table-owner topology that Finding #10
-%% (ets-owned-by-server-no-heir-crash-loses-all-catalogs) required under
-%% ETS is gone with the ETS storage.
+%% `rest_for_one' + table-owner topology that ETS required — where an
+%% owner with no heir would lose every catalog on a server crash — is
+%% gone with the ETS storage.
 -doc """
 The `c:supervisor:init/1` callback — defines the shape of the
 supervision tree.
@@ -153,7 +147,7 @@ and has no side effects nor error paths of its own.
   `persistent_term` and survive a worker crash untouched.
 - `intensity => 5`, `period => 10` — at most 5 restarts in 10 seconds;
   on exceeding it, the supervisor gives up and propagates the failure
-  upward. Fixed values (AMB-002), not configurable.
+  upward. Fixed values, not configurable.
 
 ## ChildSpecs
 

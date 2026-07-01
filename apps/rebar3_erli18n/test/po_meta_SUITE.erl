@@ -198,7 +198,7 @@ empty_context_emitted_undefined_omitted(_Config) ->
 %% `msgid`, `msgid_plural`, and each `msgstr[N]` — is `#~ `-prefixed. The
 %% existing `obsolete_block` covers only a singular obsolete; the plural
 %% body exercises `prefix_lines/2` over four block lines, the case the
-%% abandoned preserve SUITE pinned for PSD-007.
+%% abandoned preserve SUITE pinned.
 obsolete_plural_block(_Config) ->
     Out = rebar3_erli18n_po_meta:dump_entry(#{
         body =>

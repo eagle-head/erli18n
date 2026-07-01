@@ -1,7 +1,7 @@
 -module(erli18n_fmt_SUITE).
 
 %% Common Test suite for the `f`-suffix interpolating family on the
-%% `erli18n` facade (Phase 1 — named interpolation): `gettextf`,
+%% `erli18n` facade (named %{name} interpolation): `gettextf`,
 %% `ngettextf`, `pgettextf`, `npgettextf` and their `d`/`dc` aliases.
 %%
 %% Each `f` member must RESOLVE exactly like its non-`f` sibling (same

@@ -261,8 +261,8 @@ cookie_name(_Opts) -> <<"locale">>.
 %% the three edges this module calls: the `-ignore_xref` / `-dialyzer` module
 %% attributes near the top (mirrored by the root `rebar.config`
 %% `{xref_ignores,...}` for the umbrella run). ELP resolves `cowboy_req` from the
-%% test-profile dependency, so the per-call-site lint suppressions ELP once needed
-%% are no longer required. Every other call in this module stays under the full
+%% test-profile dependency, so it needs no per-call-site lint suppressions at
+%% these edges. Every other call in this module stays under the full
 %% xref / dialyzer / eqwalizer checks.
 
 -spec header(binary(), req()) -> binary() | undefined.

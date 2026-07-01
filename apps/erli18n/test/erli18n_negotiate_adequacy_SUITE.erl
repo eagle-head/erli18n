@@ -1,13 +1,13 @@
 %%% =====================================================================
-%%% Test-adequacy Common Test suite for `erli18n_negotiate` — the pure
-%%% Phase 2 canonicalization / fallback-chain / Accept-Language engine.
+%%% Common Test suite for `erli18n_negotiate` — the pure locale
+%%% negotiation, canonicalization, fallback-chain, and Accept-Language
+%%% engine.
 %%%
-%%% GENERATED FROM THE TEST-ADEQUACY AUDIT. This suite is additive: it
-%%% does NOT duplicate the behavior already pinned by
-%%% `erli18n_negotiate_SUITE` / `erli18n_negotiate_props`; it adds the
-%%% specific VALUE oracles the audit flagged as "reached but not pinned"
-%%% (surviving covered mutants) plus the documented negative contracts and
-%%% totality properties that had no coverage:
+%%% This suite complements `erli18n_negotiate_SUITE` /
+%%% `erli18n_negotiate_props`: rather than repeat the behavior they already
+%%% pin, it adds the specific VALUE oracles for paths that are exercised but
+%%% whose exact result is otherwise unasserted, plus the documented negative
+%%% contracts and totality properties:
 %%%
 %%%   * q-value fraction guard boundary (`byte_size(Frac) =< 3`): an
 %%%     over-precision fraction (`q=0.1234`, `q=0.0000`) must CLAMP to full
@@ -26,9 +26,8 @@
 %%%   * a differential shape-parity oracle against cowlib's
 %%%     `cow_http_hd:parse_accept_language/1` (a test-profile dependency).
 %%%
-%%% EXPECTATION: GREEN. Every assertion encodes the CURRENT documented and
-%%% implemented behavior of `erli18n_negotiate`; the suite is expected to
-%%% pass against the production source as it stands.
+%%% Every assertion encodes the CURRENT documented and implemented behavior
+%%% of `erli18n_negotiate`.
 %%% =====================================================================
 -module(erli18n_negotiate_adequacy_SUITE).
 
@@ -87,15 +86,16 @@ all() ->
     ].
 
 %% =====================================================================
-%% q-value fraction guard boundary (F1, F2, F3, F8, F11; remediation of F18)
+%% q-value fraction guard boundary
 %%
 %% `qval_to_milli(<<"0.", Frac/binary>>) when byte_size(Frac) =< 3` is the
 %% ONLY thing routing a fraction into the 0..3-byte `pad3/1`. A fraction of
 %% 4+ digits FAILS the guard and clamps to full weight (1000) via the
 %% catch-all — it must NOT be dropped and must NOT crash. Pinning the
-%% min-1 (3-digit -> real value) and max+1 (4-digit -> 1000) cases kills a
-%% `=< 3` -> `=< 4` widening (which would `function_clause` in `pad3/1`) and
-%% a `=< 3` -> `=< 2` narrowing (which would clamp a valid 3-digit fraction).
+%% min-1 (3-digit -> real value) and max+1 (4-digit -> 1000) cases guards
+%% against widening the guard to `=< 4` (which would `function_clause` in
+%% `pad3/1`) or narrowing it to `=< 2` (which would clamp a valid 3-digit
+%% fraction).
 %% =====================================================================
 qvalue_fraction_over_three_digits_clamps(_Config) ->
     %% 3-digit fraction (max IN-grammar) goes through the real value path.
@@ -124,12 +124,12 @@ qvalue_fraction_over_three_digits_clamps(_Config) ->
     ok.
 
 %% =====================================================================
-%% q-value VALUE property biased to 0/1/2/3/4/5-digit fractions (F21)
+%% q-value VALUE property biased to 0/1/2/3/4/5-digit fractions
 %%
 %% Asserts the COMPUTED milli value (not merely output shape) against an
 %% independent reference, with a generator biased to the guard boundary, so
 %% the documented `0.NNN` -> milli mapping and the load-bearing `=< 3` guard
-%% are pinned rather than merely reached.
+%% are pinned to their exact values.
 %% =====================================================================
 qvalue_fraction_value_property(_Config) ->
     ?assert(
@@ -142,13 +142,13 @@ qvalue_fraction_value_property(_Config) ->
 
 %% =====================================================================
 %% find_q/1 non-q parameter recursion + `[] -> 1000` base
-%% (F4, F5, F9, F12, F15; remediation of F18)
 %%
 %% A param-bearing element whose parameter is NOT a `q` must resolve to the
 %% absent-q default (1000) via the `_ -> find_q(Rest)` skip and the
-%% `find_q([]) -> 1000` base. Were the base mutated to 0, every param-bearing
-%% range lacking an explicit q would drop (q=0 -> finalize skip) — so a VALUE
-%% assertion on the `de;charset=utf-8 -> 1000` cases catches it.
+%% `find_q([]) -> 1000` base. If the base returned 0 instead, every
+%% param-bearing range lacking an explicit q would drop (q=0 -> finalize
+%% skip) — the VALUE assertions on the `de;charset=utf-8 -> 1000` cases pin
+%% against that.
 %% =====================================================================
 find_q_non_q_param_and_base(_Config) ->
     %% Non-q param, no q at all: base case `find_q([]) -> 1000`.
@@ -186,14 +186,13 @@ find_q_non_q_param_and_base(_Config) ->
 
 %% =====================================================================
 %% to_locale_list/2 per-consumed-cell ?MAX_RANGES budget off-by-one
-%% (F6, F13, F16, F26; remediation of F18)
 %%
 %% Init budget = ?MAX_RANGES (32). Every inspected cell decrements it, and
 %% `to_locale_list(_, 0) -> []` short-circuits BEFORE the next cell is
 %% inspected. So 31 leading wildcards leave the 32nd cell (`pt`) reachable
 %% with budget 1 (resolves), but 32 leading wildcards drive budget to 0 so
-%% `pt` is never inspected (errors). Pinning BOTH sides kills an
-%% init-31/init-33 or a `(_,0)`->`(_,1)` base off-by-one.
+%% `pt` is never inspected (errors). Pinning BOTH sides guards against an
+%% init-31/init-33 miscount or a `(_,0)`->`(_,1)` base off-by-one.
 %% =====================================================================
 negotiate_max_ranges_budget_boundary(_Config) ->
     Pt = ~"pt",
@@ -204,16 +203,15 @@ negotiate_max_ranges_budget_boundary(_Config) ->
     ok.
 
 %% =====================================================================
-%% override_chain/3 is_binary override filter (F7, F10, F14, F17;
-%% remediation of F18)
+%% override_chain/3 is_binary override filter
 %%
 %% The head guard only checks `is_list(Overrides)`; the
 %% `[canonicalize(X) || X <- Overrides, is_binary(X)]` filter is the SOLE
 %% defense against a non-binary override reaching binary-only
 %% `canonicalize/1`. A non-binary entry must be silently dropped and the call
-%% must never raise. Removing the filter makes the atom/integer entries
-%% `function_clause`, so the `?assertEqual` (which also asserts no-raise)
-%% dies under that mutation.
+%% must never raise. Without the filter the atom/integer entries would
+%% `function_clause`; the `?assertEqual` (which also asserts no-raise) pins
+%% that they are dropped.
 %% =====================================================================
 override_chain_filters_non_binary_entries(_Config) ->
     %% Atom in the middle is dropped; binaries canonicalized in order.
@@ -241,12 +239,13 @@ override_chain_filters_non_binary_entries(_Config) ->
     ok.
 
 %% =====================================================================
-%% override_chain/3 order-preserving deduplication (F24)
+%% override_chain/3 order-preserving deduplication
 %%
 %% The documented "Order-preserving deduplicated" contract, exercised through
 %% the public entry with a duplicate-PRODUCING input (override duplicates the
-%% canonical locale; default duplicates a chain entry). A no-op `dedup`
-%% mutation changes the result, so the value assertion catches it.
+%% canonical locale; default duplicates a chain entry). If `dedup` were a
+%% no-op the result would carry duplicates; the value assertion pins the
+%% deduplicated shape.
 %% =====================================================================
 override_chain_dedup_contract(_Config) ->
     %% Override duplicates the canonicalized locale -> single `de`, then `en`.
@@ -260,7 +259,7 @@ override_chain_dedup_contract(_Config) ->
     ok.
 
 %% =====================================================================
-%% canonicalize/1 documented negative contract (F22, F25, F27, F28)
+%% canonicalize/1 documented negative contract
 %%
 %% `canonicalize(Tag) when is_binary(Tag)` is the only clause; a non-binary
 %% argument is a programmer error that must raise `function_clause`. Pinning
@@ -274,7 +273,7 @@ canonicalize_non_binary_raises_function_clause(_Config) ->
     ok.
 
 %% =====================================================================
-%% parse_accept_language/1 documented negative contract (F23)
+%% parse_accept_language/1 documented negative contract
 %%
 %% `parse_accept_language(Bin) when is_binary(Bin)` is the only clause; a
 %% non-binary argument (a string/list, or `undefined`) at the HTTP trust
@@ -286,7 +285,7 @@ parse_accept_language_non_binary_raises_function_clause(_Config) ->
     ok.
 
 %% =====================================================================
-%% fallback_chain/2 standalone totality property (F20)
+%% fallback_chain/2 standalone totality property
 %%
 %% For any binary Locale and any binary|undefined Default, `fallback_chain/2`
 %% returns a non-empty, bounded (=< ?MAX_CHAIN = 8), all-binary list whose
@@ -305,7 +304,7 @@ fallback_chain_total_property(_Config) ->
     ok.
 
 %% =====================================================================
-%% override_chain/3 standalone totality property (F29)
+%% override_chain/3 standalone totality property
 %%
 %% For any binary Locale, ANY Overrides list (binaries mixed with atoms and
 %% integers), and any binary|undefined Default, `override_chain/3` returns a
@@ -323,7 +322,7 @@ override_chain_total_property(_Config) ->
     ok.
 
 %% =====================================================================
-%% Differential shape-parity with cowlib (F19)
+%% Differential shape-parity with cowlib
 %%
 %% The module doc promises the output shape matches cowlib's
 %% `cow_http_hd:parse_accept_language/1` so a Cowboy app may feed either into

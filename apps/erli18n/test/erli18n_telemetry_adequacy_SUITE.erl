@@ -3,35 +3,28 @@
 %%% =====================================================================
 %%% erli18n_telemetry_adequacy_SUITE
 %%%
-%%% Purpose: adequacy-hardening suite for `erli18n_telemetry`. It pins the
-%%% observable return/emission contracts that the existing
-%%% `erli18n_telemetry_SUITE` reaches but never asserts, so that the
-%%% surviving mutants named in the test-adequacy audit are killed:
+%%% Purpose: pins the observable return/emission contracts of
+%%% `erli18n_telemetry` — the return atoms and emitted events that exercising
+%%% the module reaches, asserted directly:
 %%%
 %%%   * span/3 exception contract — a raising Fun emits exactly one
 %%%     `[...,exception]` event (kind/reason/stacktrace), zero `[...,stop]`,
 %%%     and the exception re-propagates.
 %%%   * memory_warning_check/1 return atoms asserted DIRECTLY
 %%%     (not_warned / rate_limited / warned), including:
-%%%       - strict `>` threshold boundary (Bytes == Threshold -> not_warned;
-%%%         kills the `> -> >=` mutant),
+%%%       - strict `>` threshold boundary (Bytes == Threshold -> not_warned),
 %%%       - absent `ets_bytes` key -> defaults to 0 -> not_warned,
 %%%       - below-threshold -> not_warned,
 %%%       - second crossing within the window -> rate_limited,
-%%%       - window == 0 -> every crossing re-emits (two `warned`, two events;
-%%%         kills the `< -> =<` window-boundary mutant),
+%%%       - window == 0 -> every crossing re-emits (two `warned`, two events),
 %%%       - `domain_locales_sample` clamped to exactly 10 with > 10 catalogs.
 %%%   * Sticky-positive / no-negative-cache detection — a mid-flight
 %%%     `application:start(telemetry)` is picked up on the next emit (a `false`
 %%%     detection is NOT negatively cached).
 %%%   * function_clause / badmatch failure shapes of emit/3 and span/3.
 %%%
-%%% This suite was GENERATED from the test-adequacy audit (findings F1..F24).
-%%%
-%%% RED/GREEN expectation: GREEN. Every testcase is expected to PASS against
-%%% the current production source. telemetry is an optional dependency present
-%%% in the test profile and is booted in init_per_suite, mirroring
-%%% erli18n_telemetry_SUITE.
+%%% telemetry is an optional dependency present in the test profile and is
+%%% booted in init_per_suite, mirroring erli18n_telemetry_SUITE.
 %%% =====================================================================
 
 -include_lib("common_test/include/ct.hrl").
@@ -189,7 +182,7 @@ write_minimal_po(Config) ->
     Path.
 
 %% Run Fun with telemetry deliberately unloaded from the VM, then restore.
-%% Mirrors the production no-op story (cache reset + module purge + path
+%% Mirrors the production no-op path (cache reset + module purge + path
 %% removal + ensure_loaded observing `{error, nofile}`).
 with_telemetry_unloaded(Fun) ->
     ok = erli18n_telemetry:reset_caches(),
@@ -214,14 +207,13 @@ with_telemetry_unloaded(Fun) ->
     end.
 
 %% =========================
-%% F1, F12 — span/3 exception contract
+%% span/3 exception contract
 %% =========================
 
 %% A raising Fun on the telemetry-LOADED path must route through
 %% telemetry:span/3 and emit exactly one `[...,exception]` event carrying
 %% kind/reason/stacktrace, emit ZERO `[...,stop]`, and re-propagate the
-%% original error. Kills any mutant that swaps exception->stop or swallows
-%% the raise.
+%% original error.
 span_exception_emits_exception_and_reraises(Config) ->
     ok = attach(Config, [
         [erli18n, catalog, load, start],
@@ -247,11 +239,11 @@ span_exception_emits_exception_and_reraises(Config) ->
     ?assert(is_list(maps:get(stacktrace, ExcMeta))).
 
 %% =========================
-%% F4, F8, F13 — strict `>` threshold boundary
+%% strict `>` threshold boundary
 %% =========================
 
 %% Bytes == Threshold must NOT fire (strict `>`): returns the atom not_warned
-%% and emits zero events. Kills the `> -> >=` mutant (which would `warned`).
+%% and emits zero events.
 memory_warning_threshold_boundary_not_warned(Config) ->
     application:set_env(erli18n, memory_warning_threshold, 1000),
     erli18n_telemetry:reset_caches(),
@@ -265,7 +257,7 @@ memory_warning_threshold_boundary_not_warned(Config) ->
     ?assertEqual(0, length(captured_for(Config, [erli18n, catalog, memory_warning]))).
 
 %% =========================
-%% F2, F23 — below-threshold not_warned (asserted directly)
+%% below-threshold not_warned (asserted directly)
 %% =========================
 
 %% The module's own doctest input (#{ets_bytes => 1024} under the default
@@ -280,7 +272,7 @@ memory_warning_below_threshold_not_warned(Config) ->
     ?assertEqual(0, length(captured_for(Config, [erli18n, catalog, memory_warning]))).
 
 %% =========================
-%% F11, F18, F22 — absent ets_bytes key defaults to 0 -> not_warned
+%% absent ets_bytes key defaults to 0 -> not_warned
 %% =========================
 
 %% A malformed snapshot lacking the `ets_bytes` key degrades safely: the
@@ -296,7 +288,7 @@ memory_warning_absent_ets_bytes_not_warned(Config) ->
     ?assertEqual(0, length(captured_for(Config, [erli18n, catalog, memory_warning]))).
 
 %% =========================
-%% F3, F9 — second within-window crossing returns rate_limited
+%% second within-window crossing returns rate_limited
 %% =========================
 
 %% First crossing warns; a second crossing within the 60s window returns the
@@ -321,13 +313,13 @@ memory_warning_second_crossing_rate_limited(Config) ->
     ?assertEqual(1, length(captured_for(Config, [erli18n, catalog, memory_warning]))).
 
 %% =========================
-%% F5, F14, F17 — window == 0 degenerate (every crossing re-emits)
+%% window == 0 degenerate (every crossing re-emits)
 %% =========================
 
 %% With the window set to 0, `(Now - Last) < 0` is always false, so EVERY
 %% crossing re-emits: two `warned` returns and two events. In the common
-%% same-second case this also kills the `< -> =<` boundary mutant (which would
-%% turn the second call into rate_limited / a single event).
+%% same-second case this also pins the strict `<` window boundary: `=<` would
+%% turn the second call into rate_limited / a single event.
 memory_warning_window_zero_reemits(Config) ->
     application:set_env(erli18n, memory_warning_threshold, 1),
     application:set_env(erli18n, memory_warning_rate_limit_seconds, 0),
@@ -348,12 +340,13 @@ memory_warning_window_zero_reemits(Config) ->
     ?assertEqual(2, length(captured_for(Config, [erli18n, catalog, memory_warning]))).
 
 %% =========================
-%% F6, F10, F15 — domain_locales_sample clamped to exactly 10
+%% domain_locales_sample clamped to exactly 10
 %% =========================
 
 %% With more than 10 distinct catalogs loaded, the emitted
-%% `domain_locales_sample` has length EXACTLY 10 (not the catalog count). Kills
-%% the `lists:sublist(Pairs, 10)` cap (a missing/altered cap would yield 12).
+%% `domain_locales_sample` has length EXACTLY 10 (not the catalog count),
+%% pinning the `lists:sublist(Pairs, 10)` cap: a missing or altered cap would
+%% yield 12.
 %% Loads happen under the default high threshold so the loader does not pre-emit
 %% and consume the rate-limit anchor; the threshold is lowered and the cache
 %% reset only afterwards, just before the direct (warned) check.
@@ -380,14 +373,14 @@ domain_locales_sample_capped_at_ten(Config) ->
     ?assertEqual(10, length(Sample)).
 
 %% =========================
-%% F7, F16, F20, F24 — mid-flight enable: `false` is not negatively cached
+%% mid-flight enable: `false` is not negatively cached
 %% =========================
 
 %% With telemetry absent and the loaded-cache unset, the first emit observes
 %% `false`, no-ops, and writes NO negative cache. Bringing telemetry up
 %% mid-flight (without an intervening reset_caches) must make the very next emit
-%% detect it and deliver the event. A mutant that negatively caches `false`
-%% (persistent_term:put(?LOADED_KEY, false)) is killed both by the
+%% detect it and deliver the event. Negatively caching `false`
+%% (persistent_term:put(?LOADED_KEY, false)) is ruled out both by the
 %% `undefined` cache assertion and by the delivered-event assertion.
 mid_flight_telemetry_enable_picked_up(Config) ->
     ok = erli18n_telemetry:reset_caches(),
@@ -436,7 +429,7 @@ mid_flight_telemetry_enable_picked_up(Config) ->
     end.
 
 %% =========================
-%% F19 — mistyped arguments raise function_clause
+%% mistyped arguments raise function_clause
 %% =========================
 
 %% emit/3 and span/3 are single guarded clauses; wrong-typed arguments must
@@ -452,7 +445,7 @@ emit_and_span_function_clause_on_mistyped_args(_Config) ->
     ).
 
 %% =========================
-%% F21 — span/3 no-op path: non-tuple Fun return crashes with badmatch
+%% span/3 no-op path: non-tuple Fun return crashes with badmatch
 %% =========================
 
 %% On the telemetry-absent path, span/3 binds `{Result, _StopMetadata} = Fun()`

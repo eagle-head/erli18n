@@ -10,9 +10,9 @@ translated vs untranslated, and prints a deterministic table. An entry is
 "translated" when its `msgstr` (singular) or every plural form is non-empty;
 `#, fuzzy` entries are reported separately because `erli18n_po:parse` drops
 them by default — so the count reflects what the RUNTIME would actually
-serve, matching PSD-001.
+serve.
 
-The output format is fixed (and asserted byte-for-byte in CT):
+The output format is fixed and exact:
 
 ```
 erli18n translation report
@@ -54,7 +54,7 @@ init(State) ->
         {desc,
             "For each domain and locale, parse the .po and report how many entries are "
             "translated vs missing. Counts reflect what the runtime serves (fuzzy entries are "
-            "dropped on load, per PSD-001)."}
+            "dropped on load)."}
     ]),
     {ok, rebar3_erli18n_host:add_provider(State, Provider)}.
 
@@ -77,7 +77,7 @@ format_error(Reason) ->
     rebar3_erli18n_common:format_error(Reason).
 
 %% =========================
-%% Report construction (pure, CT-asserted)
+%% Report construction (pure)
 %% =========================
 
 -spec locale_filter(rebar3_erli18n_host:state()) -> all | string().

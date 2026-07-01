@@ -1,14 +1,14 @@
 %%% =====================================================================
-%%% Common Test runner for `erli18n_po` fuzz scenarios (F1..F7).
+%%% Common Test runner for `erli18n_po` fuzz scenarios.
 %%%
 %%% Each scenario runs `proper:quickcheck/2` with 500 generated inputs.
 %%% That number matches the minimum-runs-per-PR floor in CI; the nightly
 %%% CI run is expected to bump this via a CT config override but the
 %%% default is the release-blocking baseline.
 %%%
-%%% F7 (end-to-end against `ensure_loaded`) is intentionally given the
-%%% same numtests as the parser-isolated scenarios — the file I/O
-%%% overhead per iteration is small (sub-millisecond) and the
+%%% The end-to-end scenario (against `ensure_loaded`) is intentionally
+%%% given the same numtests as the parser-isolated scenarios — the file
+%%% I/O overhead per iteration is small (sub-millisecond) and the
 %%% supervisor-invariant check is fast.
 %%% =====================================================================
 -module(erli18n_fuzz_SUITE).
@@ -79,10 +79,10 @@ fuzz_encoding_mismatch(_Config) ->
     run(erli18n_po_fuzz:prop_encoding_mismatch()).
 
 fuzz_extreme_inputs(_Config) ->
-    %% Bumped numtests down for F6 — each variant builds a 100KB+
-    %% binary in memory, and 500 iterations across three variants is
-    %% sufficient to surface any obvious super-linear blowup. Pinned
-    %% explicitly so the rationale stays visible.
+    %% numtests is kept low for the extreme-inputs scenario — each variant
+    %% builds a 100KB+ binary in memory, and 500 iterations across three
+    %% variants is sufficient to surface any obvious super-linear blowup.
+    %% Pinned explicitly so the rationale stays visible.
     Result =
         proper:quickcheck(
             erli18n_po_fuzz:prop_extreme_inputs(),
@@ -91,11 +91,11 @@ fuzz_extreme_inputs(_Config) ->
     ?assert(Result =:= true).
 
 fuzz_decode_is_linear(_Config) ->
-    %% F6b — Finding #3 regression guard. The property measures a single
-    %% large-msgid parse against an absolute wall-clock budget, so a
+    %% Regression guard for linear decode time. The property measures a
+    %% single large-msgid parse against an absolute wall-clock budget, so a
     %% handful of iterations is plenty (and each builds a 400KB blob).
-    %% The quadratic predecessor blew the budget by 4-6x; the linear
-    %% decoder clears it by orders of magnitude.
+    %% A quadratic decoder blows the budget by 4-6x; the linear decoder
+    %% clears it by orders of magnitude.
     Result =
         proper:quickcheck(
             erli18n_po_fuzz:prop_decode_is_linear(),
@@ -104,9 +104,10 @@ fuzz_decode_is_linear(_Config) ->
     ?assert(Result =:= true).
 
 fuzz_end_to_end(_Config) ->
-    %% F7 uses temp files + ensure_loaded — also slightly more
-    %% expensive per iteration, so we cap at 200 (still far above the
-    %% 100-iteration noise floor where bugs typically surface).
+    %% The end-to-end scenario uses temp files + ensure_loaded — also
+    %% slightly more expensive per iteration, so numtests caps at 200
+    %% (still far above the 100-iteration noise floor where bugs typically
+    %% surface).
     Result =
         proper:quickcheck(
             erli18n_po_fuzz:prop_end_to_end_no_supervisor_restart(),
@@ -115,13 +116,12 @@ fuzz_end_to_end(_Config) ->
     ?assert(Result =:= true).
 
 fuzz_giant_integer_runs(_Config) ->
-    %% F8 — Finding #8 regression guard
-    %% (po-plural-unbounded-binary-to-integer-bignum). Each variant is a
-    %% deterministic fixed input (giant / system_limit-sized digit runs),
-    %% so a handful of iterations exercises every `oneof/1` branch.
-    %% Building a 1.4M-digit blob per iteration is the cost driver, so we
-    %% keep numtests modest while staying well above the per-variant
-    %% coverage floor.
+    %% Regression guard for unbounded binary_to_integer on plural forms
+    %% (bignum blow-up). Each variant is a deterministic fixed input
+    %% (giant / system_limit-sized digit runs), so a handful of iterations
+    %% exercises every `oneof/1` branch. Building a 1.4M-digit blob per
+    %% iteration is the cost driver, so numtests stays modest while
+    %% remaining well above the per-variant coverage floor.
     Result =
         proper:quickcheck(
             erli18n_po_fuzz:prop_giant_integer_runs_bounded(),
@@ -130,10 +130,10 @@ fuzz_giant_integer_runs(_Config) ->
     ?assert(Result =:= true).
 
 fuzz_header_content_type_whitespace(_Config) ->
-    %% F9 — Finding #5 regression guard
-    %% (po-header-malformed-content-type-badmatch-crash). The generator
-    %% space is small (a handful of whitespace/charset combos), so the
-    %% default 500 iterations covers it densely.
+    %% Regression guard for malformed Content-Type headers (a badmatch
+    %% crash on stray whitespace). The generator space is small (a handful
+    %% of whitespace/charset combos), so the default 500 iterations covers
+    %% it densely.
     run(erli18n_po_fuzz:prop_header_content_type_whitespace_no_crash()).
 
 %% =========================

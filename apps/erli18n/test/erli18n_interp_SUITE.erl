@@ -1,7 +1,7 @@
 -module(erli18n_interp_SUITE).
 
 %% Common Test suite for the pure `%{name}` interpolation substituter
-%% `erli18n_interp` (Phase 1 — named interpolation). The substituter is
+%% `erli18n_interp` (named interpolation). The substituter is
 %% TOTAL and fail-soft: malformed `msgstr` bytes or missing bindings must
 %% degrade gracefully, never crash a lookup (same bar as `erli18n_po`).
 
@@ -345,7 +345,7 @@ cap_oversized_name_is_literal(_Config) ->
     Msg = <<"%{", LongName/binary, "}">>,
     ?assertEqual(Msg, erli18n_interp:format(Msg, #{})).
 
-%% Regression (sec-1): many UNBOUND placeholders on the lenient path must
+%% Many UNBOUND placeholders on the lenient path must
 %% keep the accumulated output within the cap. Each `%{<256-byte-name>}` is
 %% emitted literally; ~2000 of them would be ~518000 bytes uncapped.
 cap_output_bounded_on_unbound_placeholders(_Config) ->

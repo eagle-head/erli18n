@@ -1,5 +1,5 @@
 %%% =====================================================================
-%%% Common Test suite for `erli18n_negotiate` — the pure Phase 2
+%%% Common Test suite for `erli18n_negotiate` — the pure BCP-47
 %%% canonicalization / fallback-chain / Accept-Language negotiation engine.
 %%%
 %%% The module holds no state, so these cases need no running application:
@@ -209,7 +209,7 @@ fallback_chain_oversized_is_opaque(_Config) ->
     {Micros, ChainNoDef} = timer:tc(fun() -> erli18n_negotiate:fallback_chain(Huge, undefined) end),
     ?assertEqual([Huge], ChainNoDef),
     ?assertEqual([Huge, ~"en"], erli18n_negotiate:fallback_chain(Huge, ~"en")),
-    %% Bounded: well under a second even at 16 KB (pre-fix this was ~600 ms).
+    %% Bounded: well under a second even at 16 KB (a per-level scan would be ~600 ms).
     ?assert(Micros < 200000),
     ok.
 

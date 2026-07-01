@@ -10,7 +10,7 @@ groups the resulting entries by domain, deduplicates by `{Context, Msgid}`
 (merging each duplicate's `#:` references in source order), and serializes
 each domain to `priv/gettext/<Domain>.pot` via `rebar3_erli18n_po_meta`.
 
-The `.pot` is the extraction template: every `msgstr` is empty (PSD-003),
+The `.pot` is the extraction template: every `msgstr` is empty,
 references are emitted as `#:` lines, and the keys are the source strings
 (source-string-as-key). Dynamic (non-literal) call sites produce no entry,
 so the template never carries a key the code cannot actually request.

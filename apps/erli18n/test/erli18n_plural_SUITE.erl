@@ -3,9 +3,8 @@
 %% Common Test suite for erli18n_plural — the recursive-descent evaluator
 %% for the GNU gettext `Plural-Forms:` header expression.
 %%
-%% Each test case carries the source-of-truth design citation in its
-%% docstring so failures point straight at the spec that motivated the
-%% behaviour (PSD-004, PSD-008, BR-DESCARTAR-003, paradigm §E3).
+%% Each test case cites the GNU gettext / CLDR behaviour it pins, so a
+%% failure points straight at the spec that motivates it.
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -63,19 +62,18 @@
     compile_rejects_excessive_nesting/1,
     validate_against_cldr_unknown_locale_is_noop/1,
     compile_rejects_statically_unsafe_rule/1,
-    %% Finding #2 (plural-compile-superlinear-unbounded): the parser must
-    %% bound expression byte-length and recursion depth, and compile in
-    %% linear time even on adversarial-but-trivial input.
+    %% The parser bounds expression byte-length and recursion depth, and
+    %% compiles in linear time even on adversarial-but-trivial input.
     compile_rejects_oversized_expr/1,
     compile_rejects_deeply_nested_expr/1,
     compile_pathological_input_is_linear/1,
-    %% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath): even within the
-    %% byte cap, a wide flat operator chain (`n*n*...*n`) builds an AST with
-    %% thousands of nodes that `evaluate/2` walks (and whose bignum grows)
-    %% on EVERY ngettext call. The node-count cap rejects it at compile.
+    %% Even within the byte cap, a wide flat operator chain (`n*n*...*n`)
+    %% builds an AST with thousands of nodes that `evaluate/2` walks (and
+    %% whose bignum grows) on EVERY ngettext call. The node-count cap
+    %% rejects it at compile.
     compile_rejects_complex_expr/1,
     compile_accepts_real_world_rules_under_node_cap/1,
-    %% Coverage additions — header malformed paths
+    %% Header malformed paths
     empty_nplurals_value/1,
     empty_plural_value/1,
     no_trailing_semicolon/1,
@@ -87,7 +85,7 @@
     header_newline_delim/1,
     header_cr_delim/1,
     header_semicolon_delim_no_space/1,
-    %% Coverage additions — parser syntax errors
+    %% Parser syntax errors
     ternary_missing_colon/1,
     unknown_identifier_after_n/1,
     unexpected_char_at_primary/1,
@@ -96,7 +94,7 @@
     peek2_with_single_byte_remaining/1,
     relational_lt_single_byte/1,
     relational_gt_single_byte/1,
-    %% Coverage additions — CLDR + validation paths
+    %% CLDR + validation paths
     validate_against_unknown_locale_is_ok/1,
     validate_against_cldr_with_bad_header/1,
     cldr_rule_hyphen_region_unknown/1
@@ -148,7 +146,7 @@ all() ->
         compile_pathological_input_is_linear,
         compile_rejects_complex_expr,
         compile_accepts_real_world_rules_under_node_cap,
-        %% Coverage additions
+        %% Edge cases: malformed headers, parser errors, CLDR paths
         empty_nplurals_value,
         empty_plural_value,
         no_trailing_semicolon,
@@ -267,8 +265,8 @@ compile_russian_complex(_Config) ->
     ?assertEqual(2, erli18n_plural:evaluate(C, 25)),
     ?assertEqual(0, erli18n_plural:evaluate(C, 101)).
 
-%% PSD-008: degenerate plural (`nplurals=1; plural=0;`) — used by
-%% ja/zh/ko/vi/th — must round-trip and return 0 for any N.
+%% Degenerate plural (`nplurals=1; plural=0;`) — used by ja/zh/ko/vi/th —
+%% must round-trip and return 0 for any N.
 compile_japanese_degenerate(_Config) ->
     C = compile_ok(ja()),
     ?assertEqual(1, maps:get(nplurals, C)),
@@ -280,7 +278,7 @@ compile_japanese_degenerate(_Config) ->
     ].
 
 %% =========================
-%% Bignum support (scenario 7 of 09-edge-cases.feature)
+%% Bignum support
 %% =========================
 
 %% N = 2^31 (just past int32 boundary).
@@ -304,8 +302,8 @@ bignum_huge(_Config) ->
 %% Fallback rule
 %% =========================
 
-%% PSD-004 / GNU manual: when a .po has no Plural-Forms header at all,
-%% the C/English Germanic default applies.
+%% GNU manual: when a .po has no Plural-Forms header at all, the
+%% C/English Germanic default applies.
 fallback_rule_returns_c_default(_Config) ->
     ?assertEqual(
         ~"nplurals=2; plural=n != 1;",
@@ -329,7 +327,7 @@ cldr_rule_known_locales(_Config) ->
     ?assertEqual(~"0", JaExpr).
 
 cldr_rule_unknown_locale(_Config) ->
-    %% A locale guaranteed not to be in the v0.1 table.
+    %% A locale guaranteed not to be in the CLDR table.
     ?assertEqual(undefined, erli18n_plural:cldr_rule(~"xx")),
     ?assertEqual(undefined, erli18n_plural:cldr_rule(~"zz_QQ")).
 
@@ -340,9 +338,9 @@ cldr_rule_with_region(_Config) ->
         erli18n_plural:cldr_rule(~"pt_BR")
     ).
 
-%% Decision: when the region tag is unknown, fall back to the base
-%% language tag. pt_AO is not in the table but pt is — return the pt
-%% rule. Documented in src/erli18n_plural.erl on `cldr_rule/1`.
+%% When the region tag is unknown, fall back to the base language tag.
+%% pt_AO is not in the table but pt is — return the pt rule. Documented
+%% in src/erli18n_plural.erl on `cldr_rule/1`.
 cldr_rule_with_region_fallback(_Config) ->
     {ok, BaseExpr} = erli18n_plural:cldr_rule(~"pt"),
     ?assertMatch(
@@ -387,12 +385,12 @@ validate_against_cldr_divergence(_Config) ->
     ?assertEqual(eng(), Hdr),
     ?assert(is_binary(Cldr)).
 
-%% Finding #17: the load path keeps the header AST already compiled by
-%% `compile/1` and must reuse it for the (informational) CLDR divergence
-%% check. `validate_against_cldr_ast/2` takes the compiled bundle and is
-%% the variant the loader calls — it must agree, case for case, with the
+%% The load path keeps the header AST already compiled by `compile/1` and
+%% reuses it for the (informational) CLDR divergence check.
+%% `validate_against_cldr_ast/2` takes the compiled bundle and is the
+%% variant the loader calls — it must agree, case for case, with the
 %% binary-string `validate_against_cldr/2` for ok, divergence, and
-%% unknown-locale outcomes (header always wins at runtime, PSD-004).
+%% unknown-locale outcomes (header always wins at runtime).
 validate_against_cldr_ast_matches_binary_api(_Config) ->
     Cases = [
         %% {Locale, HeaderBinary}
@@ -427,8 +425,8 @@ validate_against_cldr_ast_matches_binary_api(_Config) ->
 
 %% Both APIs return the divergence payload with the locale and two binary
 %% rule strings; the AST variant must surface the same locale and the same
-%% header binary (the `raw` field of the compiled bundle). We compare the
-%% shape that the loader actually consumes.
+%% header binary (the `raw` field of the compiled bundle). This compares
+%% the shape that the loader actually consumes.
 normalise_divergence(ok) ->
     ok;
 normalise_divergence({warning, {plural_divergence, Loc, _Hdr, _Cldr}}) ->
@@ -438,23 +436,20 @@ normalise_divergence({warning, {plural_divergence, Loc, _Hdr, _Cldr}}) ->
     %% the dedicated tests above.)
     {warning, plural_divergence, Loc}.
 
-%% Finding #17 (core regression): the loader already compiled the header
-%% via `compile/1` and the CLDR table is a static constant — so checking
-%% divergence with the COMPILED bundle must NOT recompile the header a
-%% second time, nor compile a CLDR rule on the hot path. We trace every
-%% call to `erli18n_plural:compile/1` while running the AST-based check and
-%% assert ZERO further compiles happen. Against the pre-fix code (which has
-%% no AST variant and re-parses through `split_rule -> compile`), this test
-%% cannot even compile/link the call — and once the variant exists but is
-%% naive, the trace count is non-zero. The fixed code precomputes the CLDR
-%% ASTs and reuses the passed-in bundle, so the count is 0.
+%% The loader already compiled the header via `compile/1` and the CLDR
+%% table is a static constant — so checking divergence with the COMPILED
+%% bundle must NOT recompile the header a second time, nor compile a CLDR
+%% rule on the hot path. This traces every call to
+%% `erli18n_plural:compile/1` while running the AST-based check and asserts
+%% ZERO further compiles happen. Precomputing the CLDR ASTs and reusing the
+%% passed-in bundle keeps the count at 0.
 validate_against_cldr_ast_no_recompile(_Config) ->
     %% Divergent case for a CLDR-listed locale exercises the full compare
     %% path (both nplurals and expr are inspected, CLDR side is consulted).
     {ok, Compiled} = erli18n_plural:compile(eng()),
-    %% Warm any one-time memoised CLDR-AST table BEFORE we start counting,
+    %% Warm any one-time memoised CLDR-AST table BEFORE counting starts,
     %% so the first-load amortised cost is not attributed to the per-load
-    %% divergence check we are measuring.
+    %% divergence check being measured.
     _ = erli18n_plural:validate_against_cldr_ast(~"pt_BR", Compiled),
     Count = count_plural_compiles(fun() ->
         erli18n_plural:validate_against_cldr_ast(~"pt_BR", Compiled)
@@ -570,7 +565,7 @@ operator_precedence_arithmetic(_Config) ->
     ?assertEqual(14, erli18n_plural:evaluate(C2, 0)).
 
 %% Left-associativity for `-`: 1 - 2 - 3 must be -4 not 2.
-%% (NPlurals must be > result; we declare 1000 which is the cap.)
+%% (NPlurals must be > result; 1000 is the cap.)
 operator_associativity(_Config) ->
     %% Use small calculation that produces a non-negative form index.
     %% 10 - 5 - 2 = 3 (left-assoc) vs 7 (right-assoc).
@@ -682,12 +677,12 @@ whitespace_tolerance(_Config) ->
     ?assertEqual(1, erli18n_plural:evaluate(C, 2)).
 
 %% A malformed .po that produces a form index outside [0, NPlurals)
-%% must NOT crash the caller — per finding #1 (plural-eval-throws-per-
-%% lookup-dos), `evaluate/2` is the hot path of every ngettext lookup,
-%% so it has to be total. The reference runtime (GNU libintl
-%% `dcigettext.c` / `plural_lookup`) clamps an out-of-range index to
-%% form 0 ("this should never happen" -> clamp, NOT crash) rather than
-%% raising. We mirror that: any value outside [0, NPlurals) clamps to 0.
+%% must NOT crash the caller — `evaluate/2` is the hot path of every
+%% ngettext lookup, so it has to be total. The reference runtime (GNU
+%% libintl `dcigettext.c` / `plural_lookup`) clamps an out-of-range index
+%% to form 0 ("this should never happen" -> clamp, NOT crash) rather than
+%% raising. This evaluator mirrors that: any value outside [0, NPlurals)
+%% clamps to 0.
 form_out_of_range_clamps_to_zero(_Config) ->
     %% Header declares 2 forms but `n + 4` returns 4 at N=0 — out of
     %% range. The rule depends on `n`, so it is NOT statically rejected
@@ -705,8 +700,8 @@ form_out_of_range_clamps_to_zero(_Config) ->
     ?assertEqual(2, erli18n_plural:evaluate(CNeg, 3)).
 
 %% Division / modulo by zero in an untrusted plural rule must NOT raise
-%% `badarith` in the caller (finding #1, failure mode (a)). The total
-%% evaluator coerces a zero divisor to a defined result (C UB pinned to
+%% `badarith` in the caller. The total evaluator coerces a zero divisor
+%% to a defined result (C UB pinned to
 %% 0) so the lookup degrades gracefully instead of killing the request
 %% process. The whole expression result is still clamped into range.
 divide_by_zero_clamps_no_crash(_Config) ->
@@ -757,7 +752,7 @@ evaluate_checked_reports_anomalies(_Config) ->
     %% And the same rules return {ok, Index} where well-defined.
     ?assertEqual({ok, 1}, erli18n_plural:evaluate_checked(CDiv, 15)).
 
-%% Layer 3 (static rejection at load): a rule that is STATICALLY
+%% Static rejection at load: a rule that is STATICALLY
 %% guaranteed to fault — a literal division by zero or a constant form
 %% provably out of range — is rejected by `compile/1` with a structured
 %% `{unsafe_plural_rule, _}` error, so the poisoned catalog is refused
@@ -779,7 +774,7 @@ compile_rejects_statically_unsafe_rule(_Config) ->
     ).
 
 %% =========================
-%% Finding #2 — compile is O(n) and bounded (plural-compile-superlinear)
+%% compile is O(n) and bounded
 %% =========================
 
 %% A `Plural-Forms` expression whose byte-length exceeds the parser cap
@@ -804,7 +799,7 @@ compile_rejects_oversized_expr(_Config) ->
 %% A deeply nested expression (within the byte cap) that would otherwise
 %% recurse unbounded — `(((...n...)))` — is rejected with a structured
 %% `{expr_too_deep, Depth, Pos}` error, bounding parser (and downstream
-%% evaluator) stack growth. We keep the body under the byte cap so the
+%% evaluator) stack growth. The body stays under the byte cap so the
 %% depth guard, not the length guard, is what fires.
 compile_rejects_deeply_nested_expr(_Config) ->
     %% 600 nested parens around `n` is ~1201 bytes (< 2048 cap) but far
@@ -820,22 +815,23 @@ compile_rejects_deeply_nested_expr(_Config) ->
         erli18n_plural:compile(Header)
     ).
 
-%% Regression for the O(n^2) `skip_ws_st/1` equality match: compiling a
-%% large-but-trivial VALID expression must stay within a generous linear
-%% time budget. Before the fix a ~390 KB expression froze the parser for
-%% seconds; a regression to the quadratic match would blow this budget by
-%% orders of magnitude. With the finding #9 node cap (?AST_MAX_NODES =
-%% 256) the largest expression that still compiles to `{ok, _}` is a
-%% 128-term chain (255 nodes); we use exactly that — the biggest valid
-%% input — so the parser still runs the full O(n) per-token scan rather
-%% than short-circuiting on a length/node guard, and assert it returns
-%% well under 50 ms. (Larger byte inputs are covered by
+%% Guards the O(n) `skip_ws_st/1` scan: compiling a large-but-trivial
+%% VALID expression must stay within a generous linear time budget. A
+%% quadratic full-binary `=:=` in that scan would freeze the parser for
+%% seconds on a ~390 KB expression, blowing this budget by orders of
+%% magnitude. With the node cap (?AST_MAX_NODES = 256) the largest
+%% expression that still compiles to `{ok, _}` is a 128-term chain (255
+%% nodes); this uses exactly that — the biggest valid input — so the
+%% parser still runs the full O(n) per-token scan rather than
+%% short-circuiting on a length/node guard, and asserts it returns well
+%% under 50 ms. (Larger byte inputs are covered by
 %% `compile_rejects_complex_expr` / `compile_rejects_oversized_expr`,
 %% which assert the fail-closed rejection also returns quickly.)
 compile_pathological_input_is_linear(_Config) ->
-    %% `n+n+...+n` (no leading whitespace) is the exact shape that
-    %% triggered the quadratic full-binary `=:=` in skip_ws_st/1. 128
-    %% terms => 2*128-1 = 255 AST nodes, the most the node cap permits.
+    %% `n+n+...+n` (no leading whitespace) is the worst case for
+    %% `skip_ws_st/1`: a naive full-binary `=:=` whitespace check would be
+    %% quadratic on it. 128 terms => 2*128-1 = 255 AST nodes, the most the
+    %% node cap permits.
     Terms = 128,
     Body = repeat_join(~"n", ~"+", Terms),
     ?assert(byte_size(Body) =< 2048),
@@ -850,7 +846,7 @@ compile_pathological_input_is_linear(_Config) ->
     ).
 
 %% =========================
-%% Finding #9 — compile bounds AST node count (plural-bignum-cpu-dos)
+%% compile bounds AST node count
 %% =========================
 
 %% A wide, flat operator chain (`n*n*...*n`) stays UNDER the byte cap and
@@ -859,8 +855,8 @@ compile_pathological_input_is_linear(_Config) ->
 %% `evaluate/2` would walk that whole tree — and grow an `n^k` bignum — on
 %% EVERY ngettext call (uncached per-lookup amplification). The node-count
 %% cap (`?AST_MAX_NODES`) rejects it at compile time with a structured
-%% `{expr_too_complex, Nodes, Max}` error, complementing finding #2's byte
-%% and depth caps. The real-world most-complex rule (Russian/Arabic) has
+%% `{expr_too_complex, Nodes, Max}` error, complementing the byte and
+%% depth caps. The real-world most-complex rule (Russian/Arabic) has
 %% ~39 nodes, so the cap leaves generous headroom for any legitimate rule.
 compile_rejects_complex_expr(_Config) ->
     %% 1000-factor multiply chain: ~1999 bytes (< 2048 byte cap) and a
@@ -1098,7 +1094,7 @@ relational_gt_single_byte(_Config) ->
 %% =========================
 
 %% A locale with no CLDR entry yields `ok` from validate_against_cldr
-%% (we cannot validate, so we do not warn).
+%% (nothing authoritative to validate against, so no warning).
 validate_against_unknown_locale_is_ok(_Config) ->
     ?assertEqual(
         ok,
@@ -1182,8 +1178,7 @@ compile_rejects_overcomplex_expr(_Config) ->
 %% parsed expression, not just the top level. A constant division by zero buried
 %% in either operand of a binop, or in a ternary's condition/then/else, is
 %% rejected; a wholly safe expression is traversed end-to-end and compiles. Each
-%% input below pins one branch of the operand walk so the coverage is
-%% deterministic rather than relying on the random property generators.
+%% input below exercises one branch of the operand walk.
 static_div_zero_walks_all_operands(_Config) ->
     Unsafe = {error, {unsafe_plural_rule, {division_by_zero, '/'}}},
     %% `/` | `%` binop, LEFT operand carries the static `1/0`.

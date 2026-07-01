@@ -1,6 +1,6 @@
 %%% =====================================================================
-%%% Property-based tests for `erli18n_negotiate` — the pure Phase 2
-%%% canonicalization / fallback / Accept-Language engine.
+%%% Property-based tests for `erli18n_negotiate` — the pure locale
+%%% negotiation canonicalization / fallback / Accept-Language engine.
 %%%
 %%% Properties:
 %%%   * P-CANON-TOTAL — over arbitrary tag bytes (including oversized,
@@ -36,8 +36,8 @@
 %% `iolist_to_binary/1`, a byte fed to a `<<...>>` literal, the list fed to
 %% `lists:sublist/2`) carries a static `-eqwalizer({nowarn_function, F/A}).`
 %% annotation — the same zero-runtime-dep pattern used in the runtime modules
-%% `erli18n_server`/`erli18n_pt_store`. This replaces the former runtime
-%% `eqwalizer` cast-helper calls (and the `eqwalizer_support` dep).
+%% `erli18n_server`/`erli18n_pt_store`. This keeps the suite free of a runtime
+%% `eqwalizer` cast helper (and of the `eqwalizer_support` dep).
 -eqwalizer({nowarn_function, prop_canonicalize_is_total/0}).
 -eqwalizer({nowarn_function, prop_canonicalize_idempotent/0}).
 -eqwalizer({nowarn_function, prop_separator_equivalence/0}).

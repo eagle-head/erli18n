@@ -26,13 +26,13 @@ index in `[0, NPlurals)`.
   PATH) interprets that bundle per call. The catalog loader compiles
   ONCE and keeps the bundle; each `ngettext`/`npgettext` calls only
   `evaluate/2`.
-- **Runtime source-of-truth is the `.po` header** (PSD-004). The embedded
+- **Runtime source-of-truth is the `.po` header**. The embedded
   CLDR table (`cldr_rule/1`, one row per GNU gettext / CLDR locale) does NOT take part in the hot
   path: it is consulted only at load time to emit divergence warnings
   (`validate_against_cldr/2`) and as a fallback when the header is missing
   (`fallback_rule/0`).
 - **Trusted vs untrusted.** The header expression comes from a tenant's
-  `.po` — UNTRUSTED input (ADR-0003, see `SECURITY.md`). The
+  `.po` — UNTRUSTED input (see `SECURITY.md`). The
   `cldr_data/0` table is a static module literal — TRUSTED. That is why
   `compile/1` is fail-closed and hardened, while `cldr_compiled_table/0`
   assumes every row compiles.
@@ -43,7 +43,7 @@ index in `[0, NPlurals)`.
   module-scoped singleton under a fixed key, built once per node and never
   invalidated (`cldr_data/0` is constant).
 
-## Anti-DoS hardening (ADR-0003)
+## Anti-DoS hardening
 
 The attack surface is the `.po` expression. The defenses ALL live in
 `compile/1` (cold), so that `evaluate/2` (hot) stays O(1)-bounded by
@@ -115,25 +115,25 @@ anomaly (log/alert) uses `evaluate_checked/2`, which returns it as data.
 %% source data: cldr-json/cldr-core/supplemental/plurals.json in
 %% https://github.com/unicode-org/cldr-json).
 %%
-%% Design source-of-truth:
+%% Design rationale:
 %%
-%%   * PSD-004 (po_semantics_decisions.md) — the `.po` `Plural-Forms` header
+%%   * The `.po` `Plural-Forms` header
 %%     is the runtime source-of-truth; CLDR is consulted only at load-time
 %%     for divergence warnings, and as fallback when the header is absent.
 %%     Therefore `evaluate/2` is the **hot path** and must never touch CLDR.
 %%
-%%   * PSD-008 (po_semantics_decisions.md) — degenerate plural rules
+%%   * Degenerate plural rules
 %%     (`nplurals=1; plural=0;`, used by ja/zh/ko/vi/th) must round-trip
 %%     through compile/evaluate as a literal integer expression. The
 %%     grammar therefore accepts integer literals as valid primary terms.
 %%
-%%   * BR-DESCARTAR-003 (discard_log.md) — the GNU Plural-Forms evaluation
+%%   * The GNU Plural-Forms evaluation
 %%     capability is preserved from the legacy `gettexter_plural` module.
 %%     The Yecc/Leex/erl_syntax/erl_eval pipeline (~231 LOC) is dropped,
 %%     but the C-truthy operator semantics and recursive walker shape are
 %%     refactored here into a single recursive-descent parser + interpreter.
 %%
-%%   * paradigm_decision.md §E3 — hybrid wrapper: local recursive-descent
+%%   * Hybrid wrapper: local recursive-descent
 %%     evaluator in the hot path; CLDR table only out of the hot path.
 %%
 %% Implementation notes:
@@ -146,19 +146,18 @@ anomaly (log/alert) uses `evaluate_checked/2`, which returns it as data.
 %%   * Modulo (`%`) uses Erlang `rem`, which matches C99 truncation toward
 %%     zero — the only behaviour `.po` plural rules ever rely on.
 %%   * Division by zero in untrusted `.po` input is handled, not
-%%     propagated (finding #1, plural-eval-throws-per-lookup-dos):
+%%     propagated:
 %%     `evaluate/2` is TOTAL on the per-request hot path. A zero divisor
 %%     is pinned to 0 (`eval_div/2` / `eval_rem/2`) and an out-of-range
 %%     form is clamped to 0, matching GNU libintl's `dcigettext.c`
 %%     instead of raising `badarith`. Statically-faulty rules are
 %%     rejected up front by `compile/1`; `evaluate_checked/2` surfaces
 %%     the anomaly as data for callers that want to observe it.
-%%   * CLDR data ships inline (one row per GNU gettext / CLDR locale, see `cldr_rule/1`), but the
-%%     `cldr_data/0` rows are no longer maintained by hand: they are
-%%     generated between the `BEGIN/END GENERATED CLDR TABLE` markers by
-%%     `bin/gen-plural-table.escript` from the committed seed table
-%%     `apps/erli18n/priv/gettext/plural_forms.eterm`. The inline literal
-%%     is still what the runtime reads (small, dependency-free, reviewable
+%%   * CLDR data ships inline (one row per GNU gettext / CLDR locale, see `cldr_rule/1`); the
+%%     `cldr_data/0` rows are generated between the `BEGIN/END GENERATED CLDR
+%%     TABLE` markers by `bin/gen-plural-table.escript` from the committed seed
+%%     table `apps/erli18n/priv/gettext/plural_forms.eterm`. The inline literal
+%%     is what the runtime reads (small, dependency-free, reviewable
 %%     data surface); the seed + generator give a single source of truth
 %%     and a diffable target for `bin/extract-gettext-table.sh`, which
 %%     produces the same `{Locale, NPlurals, PluralExpr}` shape from the
@@ -231,13 +230,13 @@ See `compile/1` for what triggers each one.
     | {missing_nplurals, binary()}
     | {missing_plural_expr, binary()}
     | {nplurals_out_of_range, integer()}
-    %% Layer 3 (finding #1): a rule that is STATICALLY guaranteed to
+    %% Layer 3: a rule that is STATICALLY guaranteed to
     %% fault — a literal division/modulo by zero, or a constant form
     %% index provably outside [0, NPlurals) — is rejected at load time
     %% so the poisoned catalog is refused by `ensure_loaded` rather than
     %% loading as `{ok, _}` and crashing every later lookup.
     | {unsafe_plural_rule, plural_eval_error()}
-    %% Finding #2 (plural-compile-superlinear-unbounded): the parser
+    %% The parser
     %% runs on untrusted `.po` input inside the catalog gen_server's
     %% `handle_call`. An expression longer than `?PLURAL_EXPR_MAX_BYTES`
     %% or nested deeper than `?PLURAL_EXPR_MAX_DEPTH` is rejected
@@ -245,14 +244,14 @@ See `compile/1` for what triggers each one.
     %% superlinear/unbounded and freeze the server.
     | {expr_too_long, Size :: non_neg_integer(), Max :: pos_integer()}
     | {expr_too_deep, Depth :: pos_integer(), Position :: non_neg_integer()}
-    %% Finding #9 (plural-bignum-cpu-dos-evaluate-hotpath): the byte and
+    %% The byte and
     %% depth caps above do not bound the AST NODE COUNT, so a wide flat
     %% operator chain (`n*n*...*n`) can still compile to thousands of
     %% nodes that `evaluate/2` walks — growing an `n^k` bignum — on every
     %% lookup. An AST above `?AST_MAX_NODES` is rejected fail-closed so
     %% the per-lookup cost stays O(1)-bounded by construction.
     | {expr_too_complex, Nodes :: pos_integer(), Max :: pos_integer()}
-    %% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): the
+    %% The
     %% `nplurals=<digits>` run is capped by DIGIT COUNT before any
     %% `binary_to_integer` materialises the bignum. The rejected value is
     %% deliberately kept OUT of the payload (only the digit count and the
@@ -325,7 +324,7 @@ like C99); `/` and `%` by zero are coerced to 0 on the hot path.
 -define(NPLURALS_MAX, 1000).
 
 %% Maximum number of decimal digits accepted for the `nplurals=<digits>`
-%% field (finding #8, po-plural-unbounded-binary-to-integer-bignum). The
+%% field. The
 %% range check is `[1, ?NPLURALS_MAX=1000]`, so 4 digits already covers
 %% every legal value; 7 leaves generous headroom for realistic indices
 %% while keeping the bignum tiny. Capping by digit COUNT *before*
@@ -334,8 +333,7 @@ like C99); `/` and `%` by zero are coerced to 0 on the hot path.
 %% reaching the >=~1.3M-digit `error:system_limit` path.
 -define(MAX_INT_DIGITS, 7).
 
-%% Bounds for the `Plural-Forms` expression itself (finding #2,
-%% plural-compile-superlinear-unbounded). `?NPLURALS_MAX` bounds the
+%% Bounds for the `Plural-Forms` expression itself. `?NPLURALS_MAX` bounds the
 %% form COUNT, not the expression SIZE, so without these the parser is
 %% unbounded in both byte-length and recursion depth on untrusted input.
 %%
@@ -349,8 +347,8 @@ like C99); `/` and `%` by zero are coerced to 0 on the hot path.
 -define(PLURAL_EXPR_MAX_BYTES, 2048).
 -define(PLURAL_EXPR_MAX_DEPTH, 64).
 
-%% Bound on the number of nodes in the compiled plural AST (finding #9,
-%% plural-bignum-cpu-dos-evaluate-hotpath). Complements the byte/depth
+%% Bound on the number of nodes in the compiled plural AST. Complements
+%% the byte/depth
 %% caps above, which do NOT bound the node count: a wide, flat operator
 %% chain (`n*n*...*n`) stays under both — it is left-associative, so it
 %% does not nest the parser, and ~1000 factors fit inside 2048 bytes —
@@ -407,7 +405,7 @@ Relevant structural rejections:
 Edge cases: redundant parentheses and whitespace are absorbed by the
 parser; `n` is the ONLY allowed identifier (`nx` or `m` become a
 `syntax_error`); degenerate rules `plural=0` (ja/zh/ko/vi/th) compile as
-an integer literal (PSD-008). A rule that fails only for a specific N
+an integer literal. A rule that fails only for a specific N
 (e.g. `n/(n-5)`) is NOT rejected here — that is left to the dynamic clamp
 of `evaluate/2`.
 
@@ -449,10 +447,10 @@ compile(Header) when is_binary(Header) ->
 %% Apply the two load-time validation barriers to a successfully parsed
 %% AST and, on success, materialise the `plural_compiled()` bundle.
 %%
-%%   * Layer 3 (finding #1): reject rules that are STATICALLY guaranteed
+%%   * Layer 3: reject rules that are STATICALLY guaranteed
 %%     to fault (literal div/mod by zero, constant out-of-range form)
 %%     before they can be stored and crash every later lookup.
-%%   * Node-count cap (finding #9): reject an AST above `?AST_MAX_NODES`
+%%   * Node-count cap: reject an AST above `?AST_MAX_NODES`
 %%     so a wide flat chain cannot make `evaluate/2` walk thousands of
 %%     nodes (and grow a large bignum) on every lookup. Run once here at
 %%     load time, never on the hot path.
@@ -481,8 +479,8 @@ compile_validated(Header, NPlurals, Ast) ->
 %% gettext .po rules are all defined over non-negative N. We pass N
 %% through unchanged so the rule's own semantics decide.
 %%
-%% TOTALITY (finding #1, plural-eval-throws-per-lookup-dos). `.po` input
-%% is untrusted (ADR-0003) and this function runs in the CALLER process
+%% TOTALITY. `.po` input
+%% is untrusted and this function runs in the CALLER process
 %% on every `ngettext`/`npgettext` lookup, so it MUST NOT raise. Two
 %% failure modes that a malformed rule could otherwise trigger are
 %% neutralised here, matching the GNU libintl runtime:
@@ -639,7 +637,7 @@ case-sensitive; region tags fall back to the base language when the region
 itself is not listed (e.g. `fr_BE` -> `fr`, since `fr_BE` has no row of
 its own in the table).
 
-A lookup/observability function — NOT on the hot path (PSD-004: the `.po`
+A lookup/observability function — NOT on the hot path (the `.po`
 header is the runtime source-of-truth). The embedded table (`cldr_data/0`)
 carries one row per locale the GNU gettext / CLDR seed defines. Both `_` and
 `-` separators are accepted in the fallback to the base language.
@@ -683,13 +681,13 @@ cldr_rule(Locale) when is_binary(Locale) ->
 %% Compare a `.po` header expression against the CLDR canonical rule for
 %% the given locale. Returns `ok` if the parsed ASTs are structurally
 %% identical (whitespace-insensitive) or `{warning, _}` if they diverge
-%% in a way that would affect runtime form selection. Per PSD-004 the
-%% header always wins at runtime — this only produces observability.
+%% in a way that would affect runtime form selection. The header
+%% always wins at runtime — this only produces observability.
 %%
 -doc """
 Compares the plural expression of header `HeaderRule` (raw form) against
 the CLDR canonical rule of `Locale`, producing only observability — at
-runtime the header always wins (PSD-004).
+runtime the header always wins.
 
 Compiles `HeaderRule` ONCE and delegates to `validate_against_cldr_ast/2`.
 Returns `ok` when the `(nplurals, expr)` ASTs are structurally equal
@@ -735,10 +733,9 @@ validate_against_cldr(Locale, HeaderRule) when
         {ok, Compiled} ->
             validate_against_cldr_ast(Locale, Compiled);
         {error, _} ->
-            %% An unparseable header has no AST to compare. Before
-            %% finding #17 this still produced a `{warning, _}` for a
-            %% CLDR-listed locale (the header could not match the
-            %% canonical rule), so preserve that observable behaviour.
+            %% An unparseable header has no AST to compare, but for a
+            %% CLDR-listed locale it still cannot match the canonical
+            %% rule, so it produces a `{warning, _}` for that locale.
             case cldr_compiled(Locale) of
                 undefined -> ok;
                 #{raw := CldrRaw} -> {warning, {plural_divergence, Locale, HeaderRule, CldrRaw}}
@@ -762,7 +759,7 @@ validate_against_cldr(Locale, HeaderRule) when
 -doc """
 AST-based variant of `validate_against_cldr/2`: takes the ALREADY compiled
 bundle (`plural_compiled()`) and compares it against the CLDR rule of
-`Locale` without recompiling anything (finding #17).
+`Locale` without recompiling anything.
 
 Reuses the header AST as-is and takes the CLDR side from a memoised table
 of compiled bundles, so no rule is re-parsed at load. Returns `ok` if the
@@ -771,7 +768,7 @@ otherwise `{warning, {plural_divergence, Locale, HeaderRaw, CldrRaw}}`,
 with the raw header (the bundle's `raw` field) and the raw CLDR
 expression.
 
-This is the PREFERRED form in the loader (finding #17): since the bundle
+This is the PREFERRED form in the loader: since the bundle
 was already compiled by `compile/1` at load, it avoids the second
 `compile/1` that `validate_against_cldr/2` would do, and the CLDR side
 comes from the `persistent_term` cache (`cldr_compiled_table/0`), not
@@ -852,7 +849,7 @@ extract_nplurals(Header) ->
                 0 ->
                     {error, {missing_nplurals, Header}};
                 D when D > ?MAX_INT_DIGITS ->
-                    %% Finding #8: cap by DIGIT COUNT before
+                    %% Cap by DIGIT COUNT before
                     %% `binary_to_integer` materialises the bignum, and
                     %% keep the rejected value OUT of the payload (only
                     %% the digit count + cap are reported) to avoid
@@ -970,7 +967,7 @@ take_until_semicolon_or_end(Bin, N) ->
 
 -spec parse_expr_bin(binary()) ->
     {ok, ast()} | {error, compile_error()}.
-%% Finding #2: reject an over-long expression BEFORE parsing it, so a
+%% Reject an over-long expression BEFORE parsing it, so a
 %% multi-KB adversarial rule never reaches the recursive descent.
 parse_expr_bin(ExprBin) when byte_size(ExprBin) > ?PLURAL_EXPR_MAX_BYTES ->
     {error, {expr_too_long, byte_size(ExprBin), ?PLURAL_EXPR_MAX_BYTES}};
@@ -987,14 +984,14 @@ parse_expr_bin(ExprBin) ->
     catch
         throw:{syntax_error, Reason, Pos} ->
             {error, {syntax_error, Reason, Pos}};
-        %% Finding #2: recursion-depth guard tripped — fail closed with a
+        %% Recursion-depth guard tripped — fail closed with a
         %% structured error rather than parsing an unbounded-depth tree.
         throw:{expr_too_deep, Depth, Pos} ->
             {error, {expr_too_deep, Depth, Pos}}
     end.
 
 %% `Depth` is propagated through every recursive-descent clause and
-%% checked at each new nesting level (finding #2). It bounds both the
+%% checked at each new nesting level. It bounds both the
 %% parser's stack and — because the AST it builds is no deeper than the
 %% recursion — the hot-path `eval_ast/2` walker's stack per lookup.
 parse_expr(St, Depth) when Depth > ?PLURAL_EXPR_MAX_DEPTH ->
@@ -1196,7 +1193,7 @@ parse_primary(St0, Depth) ->
 %% Parser state helpers
 %% =========================
 
-%% Finding #2 (plural-compile-superlinear-unbounded): dispatch on a
+%% Dispatch on a
 %% `byte_size/1` comparison, NOT a full-binary `=:=` match. `skip_ws/1`
 %% only ever strips a leading prefix, so when nothing is consumed the
 %% result is byte-for-byte equal and `byte_size(Rest) =:= byte_size(Src)`
@@ -1356,7 +1353,7 @@ apply_binop('>', L, R) -> L > R;
 apply_binop('<=', L, R) -> L =< R;
 apply_binop('>=', L, R) -> L >= R.
 
-%% Total division / modulo (finding #1, Layer 1). A zero divisor is C
+%% Total division / modulo (Layer 1). A zero divisor is C
 %% undefined behaviour; rather than let Erlang `div`/`rem` raise
 %% `badarith` in the caller process, we pin the result to 0 — the
 %% expression result is still clamped into range afterwards. Real `.po`
@@ -1371,7 +1368,7 @@ eval_rem(_L, 0) -> 0;
 eval_rem(L, R) -> L rem R.
 
 %% =========================
-%% Checked interpreter (finding #1, Layer 2)
+%% Checked interpreter (Layer 2)
 %% =========================
 %%
 %% Mirror of `eval_ast/2` that surfaces the two unsafe conditions as
@@ -1449,7 +1446,7 @@ apply_binop_checked('%', _L, 0) -> {error, {division_by_zero, '%'}};
 apply_binop_checked(Op, L, R) -> {ok, apply_binop(Op, L, R)}.
 
 %% =========================
-%% Static safety validation (finding #1, Layer 3)
+%% Static safety validation (Layer 3)
 %% =========================
 %%
 %% Reject — at compile/load time — rules that are STATICALLY guaranteed
@@ -1466,7 +1463,7 @@ apply_binop_checked(Op, L, R) -> {ok, apply_binop(Op, L, R)}.
 %%     [0, NPlurals) — selects a non-existent form for all N.
 
 -doc """
-Static safety barrier of `compile/1` (Layer 3, finding #1): rejects at
+Static safety barrier of `compile/1` (Layer 3): rejects at
 LOAD only what is provably faulty for EVERY N, so the poisoned catalog is
 refused instead of loading as `{ok, _}` and crashing every lookup.
 
@@ -1581,11 +1578,11 @@ is_constant({binop, _Op, L, R}) -> is_constant(L) andalso is_constant(R);
 is_constant({ternary, C, T, E}) -> is_constant(C) andalso is_constant(T) andalso is_constant(E).
 
 %% =========================
-%% AST node-count cap (finding #9, plural-bignum-cpu-dos-evaluate-hotpath)
+%% AST node-count cap
 %% =========================
 %%
 %% Reject — at compile/load time — an AST whose node count exceeds
-%% `?AST_MAX_NODES`. The byte and depth caps from finding #2 do not bound
+%% `?AST_MAX_NODES`. The byte and depth caps do not bound
 %% the node count, so a wide flat operator chain (`n*n*...*n`, ~2000 nodes
 %% inside the 2048-byte cap, at a single recursion level) would otherwise
 %% be installed and walked by `evaluate/2` — growing an `n^k` bignum — on
@@ -1794,13 +1791,12 @@ base_locale(Locale) ->
 %%
 %% Divergence is checked structurally on the parsed ASTs (nplurals + expr
 %% AST), so it is whitespace and paren-noise insensitive — `(n != 1)`
-%% matches `n != 1`. Finding #17: the loader already compiled the header
+%% matches `n != 1`. The loader already compiled the header
 %% AST, so `validate_against_cldr_ast/2` reuses it; the CLDR side is taken
 %% from a one-time MEMOISED table of compiled bundles (`cldr_compiled/1`)
-%% instead of re-parsing the canonical rule on every load. This removes
-%% the second header compile (and the per-load CLDR synthesise+compile +
-%% linear scans) that the old `ast_equivalent/split_rule` path incurred,
-%% and decouples divergence from the plural-compile O(n^2) bug (a
+%% instead of re-parsing the canonical rule on every load. This avoids a
+%% second header compile (and any per-load CLDR synthesise+compile +
+%% linear scans), so divergence checking recompiles no rule per load (a
 %% pathological header is compiled once, not twice).
 
 %% persistent_term key for the memoised CLDR AST table. The table is a
@@ -1811,8 +1807,8 @@ base_locale(Locale) ->
 %% Compiled CLDR bundle for a locale, with region fallback identical to
 %% `cldr_rule/1` (`fr_BE` -> `fr`). Returns the same `plural_compiled()`
 %% shape as `compile/1` so the AST can be compared directly; `raw` carries
-%% the CLDR canonical EXPRESSION binary (matching the old
-%% `validate_against_cldr/2` warning payload, which used `cldr_rule/1`'s
+%% the CLDR canonical EXPRESSION binary (matching the
+%% `validate_against_cldr/2` warning payload, which uses `cldr_rule/1`'s
 %% expr). `undefined` when neither the locale nor its base is in the table.
 -spec cldr_compiled(binary()) -> plural_compiled() | undefined.
 cldr_compiled(Locale) when is_binary(Locale) ->
@@ -1883,8 +1879,8 @@ build_cldr_compiled_table() ->
             case compile(Header) of
                 {ok, #{nplurals := NC, expr := Ast}} ->
                     %% Store the raw CLDR EXPRESSION (not the synthesised
-                    %% header) as `raw`, to match the legacy warning
-                    %% payload that surfaced `cldr_rule/1`'s expr.
+                    %% header) as `raw`, to match the warning
+                    %% payload that surfaces `cldr_rule/1`'s expr.
                     Acc#{Locale => #{nplurals => NC, expr => Ast, raw => Expr}}
             end
         end,

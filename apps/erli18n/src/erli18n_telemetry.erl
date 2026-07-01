@@ -125,8 +125,8 @@ true
 %%
 %%    * Provide a rate-limited memory-warning check used by the loader
 %%      to emit `[erli18n, catalog, memory_warning]` at most once per
-%%      configured window (RISK-011 mitigation 2: "once per crossing
-%%      event, not on every tick").
+%%      configured window ("once per crossing event, not on every
+%%      tick").
 %%
 %%  References:
 %%
@@ -337,7 +337,7 @@ event_lookup_fuzzy_skip() ->
 
 -doc """
 Name of the **locale fallback** event: `[erli18n, locale, fallback]`. Emitted
-(Phase 2) when an exact-locale lookup MISSES but the opt-in canonicalization-
+when an exact-locale lookup MISSES but the opt-in canonicalization-
 aware fallback chain resolves the translation from a less-specific or
 canonicalized locale (`pt_BR` → `pt`). The low-frequency, interesting signal
 "a non-exact locale served a translation" — distinct from a true

@@ -5,7 +5,7 @@ Parser and serializer for the GNU gettext PO/POT format.
 
 Reads a `.po`/`.pot` catalog (text) and returns a structured `parsed_catalog()`;
 `dump/1` is the inverse path. All the logic is hand-rolled recursive descent,
-dependency-free, honoring the nine PO-semantics decisions (PSD-001..009).
+dependency-free, honoring the nine PO-semantics decisions.
 
 ## What it does and what problem it solves
 
@@ -13,18 +13,18 @@ Turns the raw bytes of a `.po` into data the rest of the library consumes
 (`erli18n_server` calls this module at the start of the load pipeline). The nine
 decisions in one sentence each:
 
-- PSD-001: `#, fuzzy` entries are dropped by default (parity with `msgfmt`).
-- PSD-002: the `Content-Type` charset is normalized to `utf8 | latin1 | us_ascii`.
-- PSD-003: an empty translation (`<<>>`) is preserved; the fallback is the
+- `#, fuzzy` entries are dropped by default (parity with `msgfmt`).
+- the `Content-Type` charset is normalized to `utf8 | latin1 | us_ascii`.
+- an empty translation (`<<>>`) is preserved; the fallback is the
   responsibility of whoever does the lookup, not the parser.
-- PSD-004: `Plural-Forms` is preserved raw; only `nplurals` is extracted here.
-- PSD-005: a UTF-8 BOM is stripped silently before any processing.
-- PSD-006: `msgctxt` is a separate field, never byte-glued to the `msgid`.
-- PSD-007: obsolete entries (`#~`) are dropped.
-- PSD-008: a degenerate plural (`nplurals=1`) is accepted; `validate_plural_indices/3`
+- `Plural-Forms` is preserved raw; only `nplurals` is extracted here.
+- a UTF-8 BOM is stripped silently before any processing.
+- `msgctxt` is a separate field, never byte-glued to the `msgid`.
+- obsolete entries (`#~`) are dropped.
+- a degenerate plural (`nplurals=1`) is accepted; `validate_plural_indices/3`
   treats `nplurals=1` as a valid index set (`[0]`), parity with the
   Asian rules (ja/zh/ko/vi/th).
-- PSD-009: the `msgstr[N]` index set is validated against `nplurals`.
+- the `msgstr[N]` index set is validated against `nplurals`.
 
 ## Mental model
 
@@ -151,13 +151,13 @@ differs from the original at that point. See `dump/1` for the detail.
     entries := [entry()]
 }.
 
-%% Per PSD-002: charset normalized to one of utf8 | latin1 | us_ascii.
-%% Per PSD-004: plural_forms preserved raw for downstream evaluator.
+%% Charset normalized to one of utf8 | latin1 | us_ascii.
+%% plural_forms preserved raw for downstream evaluator.
 -doc """
 Catalog header, already reconciled.
 
-`charset` is the normalized atom (PSD-002). `plural_forms` is the RAW string of
-the `Plural-Forms` field (PSD-004): this module does NOT evaluate it — only
+`charset` is the normalized atom. `plural_forms` is the RAW string of
+the `Plural-Forms` field: this module does NOT evaluate it — only
 `erli18n_plural` does; here it is preserved for downstream. `content_type` is
 the raw value of the field of the same name. `raw` is the entire `msgstr` text
 of the header, used by `dump/1` to re-emit the header faithfully. A catalog
@@ -171,9 +171,9 @@ the other fields empty.
     raw => binary()
 }.
 
-%% Per PSD-006: context is a separate field, never byte-glued with msgid.
+%% Context is a separate field, never byte-glued with msgid.
 %%
-%% Finding #14 (dump-drops-msgid-plural-silently): the plural shape retains
+%% The plural shape retains
 %% the `msgid_plural` form text so `dump/1` can re-emit it faithfully. A
 %% catalog with no explicit `msgid_plural` (only a singular `msgid` plus
 %% `msgstr[N]` lines — unusual but accepted) carries `undefined`, and the
@@ -182,14 +182,14 @@ the other fields empty.
 A catalog entry, in one of two shapes.
 
 `{singular, Context, Msgid, Translation}` — a 1:1 translation. `Context` is
-`undefined` (no `msgctxt`) or a binary. `Translation` may be `<<>>` (PSD-003:
-the empty value is preserved, it does not become a fallback here).
+`undefined` (no `msgctxt`) or a binary. `Translation` may be `<<>>` (the empty
+value is preserved, it does not become a fallback here).
 
 `{plural, Context, Msgid, MsgidPlural, Forms}` — a translation with plurals.
 `MsgidPlural` is the plural form from the source or `undefined` (degenerate
 case: only `msgstr[N]` without an explicit `msgid_plural`). `Forms` is a list
 `[{plural_index(), translation()}]` ORDERED by index, validated against
-`nplurals` (PSD-009).
+`nplurals`.
 """.
 -type entry() ::
     {singular, context(), msgid(), translation()}
@@ -214,7 +214,7 @@ Structured parse error — the only "normal" failure mode of the public API.
 - `{charset_conversion, Label, Detail}` — the bytes do not match the declared
   charset (e.g. invalid UTF-8, a byte outside US-ASCII).
 - `{plural_count_mismatch, Msgid, Expected, Got}` — the `msgstr[N]` indices do
-  not form exactly `[0..Expected-1]` (PSD-009).
+  not form exactly `[0..Expected-1]`.
 - `{syntax_error, Line, Reason}` — malformed line; `Reason` is `term()` and
   also carries the escape-decode errors (e.g. `escape_invalid_utf8`,
   `octal_escape_out_of_range`) without widening the exported tuple.
@@ -225,16 +225,14 @@ Structured parse error — the only "normal" failure mode of the public API.
     | {charset_conversion, binary(), term()}
     | {plural_count_mismatch, msgid(), Expected :: non_neg_integer(), Got :: [non_neg_integer()]}
     %% The `Reason` of a `{syntax_error, Line, Reason}` is `term()`, so the
-    %% escape-decode failures introduced for finding #11
-    %% (po-hex-octal-escape-emits-invalid-utf8) — `escape_error()` below —
-    %% travel inside this envelope without widening the exported tuple
-    %% shape.
+    %% escape-decode failures — `escape_error()` below — travel inside
+    %% this envelope without widening the exported tuple shape.
     | {syntax_error, Line :: pos_integer(), Reason :: term()}
     | {file_error, file_read_error()}.
 
-%% Normalized charset (PSD-002), reused as the code space in which `\xHH`
-%% / `\OOO` escape bytes are interpreted before being transcoded to UTF-8
-%% (finding #11). Mirrors the `charset` key of `header_map/0`.
+%% Normalized charset, reused as the code space in which `\xHH`
+%% / `\OOO` escape bytes are interpreted before being transcoded to UTF-8.
+%% Mirrors the `charset` key of `header_map/0`.
 -type charset() :: utf8 | latin1 | us_ascii.
 
 %% A chunk produced while decoding one quoted string, BEFORE the
@@ -246,9 +244,9 @@ Structured parse error — the only "normal" failure mode of the public API.
 %% whole-string charset conversion.
 -type chunk() :: {utf8, binary()} | {raw, byte()}.
 
-%% Structured escape-decode errors (finding #11). Emitted as the `Reason`
-%% of a `{syntax_error, Line, Reason}`; restores the UTF-8 gate as a true
-%% guarantee (no `{ok, _}` carrying invalid UTF-8) and gives parity with
+%% Structured escape-decode errors. Emitted as the `Reason`
+%% of a `{syntax_error, Line, Reason}`; they keep the UTF-8 gate a true
+%% guarantee (no `{ok, _}` carrying invalid UTF-8) and give parity with
 %% msgfmt's "invalid multibyte sequence" rejection.
 %% `Rest` is whatever `unicode:characters_to_binary/3` hands back as the
 %% undecodable tail — documented as `unicode:chardata()` (it may be a deep
@@ -266,7 +264,7 @@ Structured parse error — the only "normal" failure mode of the public API.
 
 %% Accumulator for a single entry being built line-by-line.
 %%
-%% Finding #17 (po-append-to-last-superlinear): each string field is built
+%% Each string field is built
 %% as a REVERSED list of segments (`[binary()]`, newest first) while the
 %% entry's lines stream in, never as a growing binary. A continuation line
 %% prepends ONE segment in O(1) (`append_to_last/2`); the whole field is
@@ -305,7 +303,7 @@ Structured parse error — the only "normal" failure mode of the public API.
     entries = [] :: [entry()],
     header :: undefined | header_map(),
     nplurals :: undefined | non_neg_integer(),
-    %% Declared catalog charset (finding #11). Defaults to utf8 so any
+    %% Declared catalog charset. Defaults to utf8 so any
     %% legacy internal call building a `#pst{}` without it keeps the prior
     %% already-UTF-8 behaviour. Threaded into every `decode_quoted_string`
     %% call site so `\xHH`/`\OOO` escape bytes are transcoded through the
@@ -314,8 +312,7 @@ Structured parse error — the only "normal" failure mode of the public API.
 }).
 
 %% Maximum number of decimal digits accepted for an attacker-controlled
-%% integer run before `binary_to_integer` is called (finding #8,
-%% po-plural-unbounded-binary-to-integer-bignum). Two sites read such
+%% integer run before `binary_to_integer` is called. Two sites read such
 %% runs out of untrusted `.po` input: the `nplurals=<digits>` header
 %% cross-check (`collect_digits/2`) and the `msgstr[<digits>]` index
 %% (`parse_msgstr_index/2`). Both cap the run by DIGIT COUNT first, so a
@@ -358,18 +355,18 @@ Parses a PO catalog from a binary, honoring `Opts`.
 
 `Bin` is the raw content of the `.po`; `Opts` is a `parse_opts()` — today only
 `include_fuzzy => boolean()` (default `false`: entries marked `#, fuzzy` are
-dropped, parity with `msgfmt`). The flow: (1) silent strip of the UTF-8 BOM
-(PSD-005); (2) a prepass that extracts the charset from the `Content-Type`
+dropped, parity with `msgfmt`). The flow: (1) silent strip of the UTF-8 BOM;
+(2) a prepass that extracts the charset from the `Content-Type`
 header via the same field reconciler as `build_header/1`, ensuring that prepass
-and builder never diverge (finding #5 — closes the `badmatch` on a
-`Content-Type ` with a space before the `:`); (3) normalizes the entire body to
+and builder never diverge — otherwise a `Content-Type ` with a space before the
+`:` makes them disagree and crash with a `badmatch`; (3) normalizes the entire body to
 UTF-8 in the discovered charset; (4) line-by-line parse with the charset
 threaded so `\\xHH`/`\\OOO` escapes are transcoded through the right code space.
 
 Returns `{ok, parsed_catalog()}` (`#{header => header_map(), entries =>
 [entry()]}`) or `{error, parse_error()}`. Without an explicit header, it
 synthesizes an empty header with charset `utf8`. Accepts LF, CRLF and lone-CR
-line endings (finding #15).
+line endings.
 
 Parameters:
 - `Bin` — raw content of the `.po`/`.pot`. Treated as UNTRUSTED: an
@@ -399,9 +396,9 @@ See `parse/1` (defaults), `parse_file/2` (from disk) and `dump/1`.
 -spec parse(binary(), parse_opts()) ->
     {ok, parsed_catalog()} | {error, parse_error()}.
 parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
-    %% Per PSD-005: strip UTF-8 BOM silently before any other processing.
+    %% Strip UTF-8 BOM silently before any other processing.
     Stripped = strip_bom(Bin),
-    %% Per PSD-002: header determines charset, so first pass extracts header
+    %% Header determines charset, so first pass extracts header
     %% bytes (raw, treating as latin1-compatible 7-bit ASCII — header is
     %% always ASCII-safe per GNU spec). The second pass uses the discovered
     %% charset to convert the entire body.
@@ -409,7 +406,7 @@ parse(Bin, Opts) when is_binary(Bin), is_map(Opts) ->
         {ok, Charset} ->
             case normalize_input(Stripped, Charset) of
                 {ok, Utf8Bin} ->
-                    %% Finding #11: thread the discovered charset into the
+                    %% Thread the discovered charset into the
                     %% body parse so escape bytes can be transcoded through
                     %% it instead of being spliced raw.
                     do_parse(Utf8Bin, Charset, Opts);
@@ -478,7 +475,7 @@ Emits the header block first (`msgid ""` / `msgstr ""` plus the header `raw`,
 or a minimal header `Content-Type: text/plain; charset=UTF-8` when the `raw` is
 empty or absent) and then each entry. `singular` entries produce
 `msgctxt`/`msgid`/`msgstr`; `plural` entries re-emit the retained
-`msgid_plural` (finding #14 — when it is `undefined`, the singular `msgid`
+`msgid_plural` (when it is `undefined`, the singular `msgid`
 is used as a stand-in) and one `msgstr[N]` line per form. The strings are
 re-escaped (`\\\\`, `\\"`, `\\n`, `\\t`, `\\r`) so that `parse(dump(C))`
 preserves the catalog. A total function: it always returns a `binary()`.
@@ -525,10 +522,10 @@ dump(#{header := Header, entries := Entries}) ->
     <<HeaderBin/binary, EntriesBin/binary>>.
 
 %% =========================
-%% Charset detection and conversion (PSD-002)
+%% Charset detection and conversion
 %% =========================
 
-%% Per PSD-005: BOM strip is the first thing the parser does. Already
+%% BOM strip is the first thing the parser does. Already
 %% silent — no logging, no flag.
 strip_bom(<<16#EF, 16#BB, 16#BF, Rest/binary>>) -> Rest;
 strip_bom(Bin) when is_binary(Bin) -> Bin.
@@ -541,7 +538,7 @@ strip_bom(Bin) when is_binary(Bin) -> Bin.
 %% ASCII-safe, so reading it byte-by-byte is correct regardless of the
 %% declared charset.
 %%
-%% Finding #16 (INFO): the header's `msgstr` lines are decoded here AND
+%% The header's `msgstr` lines are decoded here AND
 %% again in the main pass. This second decode is INHERENT, not a
 %% workaround: the body charset is only knowable after the header has been
 %% read, and the line-by-line parse must run over the already-transcoded
@@ -549,7 +546,7 @@ strip_bom(Bin) when is_binary(Bin) -> Bin.
 %% construction. The cost is bounded: it is the HEADER only (one block,
 %% ASCII-safe, a handful of short lines per the GNU spec), not the catalog
 %% body, so there is no structural single-decode win to be had without
-%% regressing charset detection. Left as-is deliberately.
+%% regressing charset detection.
 extract_header_charset(Bin) ->
     case extract_header_msgstr(Bin) of
         {ok, HeaderText} -> charset_from_header(HeaderText);
@@ -653,31 +650,28 @@ consume_continuations([Line | Rest] = All, Acc) ->
 %% B/binary>>`, with a single reference). With the accumulator on the
 %% right the whole `Acc` is re-copied on every element -> Θ(n²) to build
 %% one n-byte string, so a single large msgid/msgstr stalled the loader
-%% gen_server for seconds (Finding #3,
-%% `po-decode-bins-to-binary-quadratic`). `iolist_to_binary/1` does the
+%% gen_server for seconds. `iolist_to_binary/1` does the
 %% same job in two linear passes (reverse + BIF) with one allocation —
 %% strictly better above a few dozen bytes. `[binary()]` is a subtype of
 %% `iolist()`, so the `-spec` is preserved and eqwalizer-friendly.
 %%
-%% Finding #17: `append_to_last/2` now ALSO accumulates continuation
+%% `append_to_last/2` ALSO accumulates continuation
 %% segments as a reversed `[binary()]` list and routes them through THIS
 %% same join (via `finalize_buffers/1`), so the per-field build is
-%% genuinely O(total). The previous comment claimed `append_to_last/2`'s
-%% left-accumulator binary append was "already O(total)" — it was not: the
-%% growing accumulator lived inside the `#po_st{}` record (more than one
+%% genuinely O(total). A left-accumulator binary append would not be: the
+%% growing accumulator lives inside the `#po_st{}` record (more than one
 %% reference), defeating the runtime's in-place append optimization and
-%% making a many-continuation field super-linear. Both paths now share
+%% making a many-continuation field super-linear. Both paths share
 %% this single linear join.
 -spec bins_to_binary([binary()]) -> binary().
 bins_to_binary(Bins) when is_list(Bins) ->
     iolist_to_binary(lists:reverse(Bins)).
 
-%% Per PSD-002: accept utf8 (and aliases), latin1 / iso-8859-1, us-ascii.
+%% Accept utf8 (and aliases), latin1 / iso-8859-1, us-ascii.
 %% Case-insensitive match per RFC 2978 (charset names are
 %% case-insensitive). Anything else: hard fail.
 %%
-%% Finding #5 (po-header-malformed-content-type-badmatch-crash): this
-%% prepass MUST agree with `build_header/1` on every input, or an
+%% This prepass MUST agree with `build_header/1` on every input, or an
 %% adversarial header (e.g. `Content-Type : ...; charset=Shift_JIS` with
 %% a space before the colon) makes the two paths disagree — the prepass
 %% defaulting to utf8 while `build_header` classifies and crashes on a
@@ -826,7 +820,7 @@ fresh_entry(Ln) ->
 %% Line splitting that handles LF, CRLF and lone-CR line endings. We fold
 %% CRLF -> LF first, then any remaining lone CR (0x0D, classic-Mac style)
 %% -> LF, before splitting on LF. This matches `msgfmt -c`, which accepts
-%% all three newline conventions (Finding #15). Folding CRLF first ensures
+%% all three newline conventions. Folding CRLF first ensures
 %% a CRLF is never turned into two separate line breaks.
 split_lines(Bin) ->
     Norm0 = binary:replace(Bin, ~"\r\n", ~"\n", [global]),
@@ -861,7 +855,7 @@ parse_lines([Line | Rest], Ln, Cur, St) ->
         fuzzy_flag ->
             parse_lines(Rest, Ln + 1, Cur#po_st{fuzzy = true}, St);
         obsolete ->
-            %% Per PSD-007: obsolete lines are skipped entirely, but they
+            %% Obsolete lines are skipped entirely, but they
             %% can span multiple lines forming a fake entry. Mark the
             %% current entry as obsolete so it is discarded on flush.
             parse_lines(Rest, Ln + 1, Cur#po_st{obsolete = true}, St);
@@ -896,7 +890,7 @@ handle_string_field(Field, Content, Rest, Ln, Cur, St) ->
             {error, {syntax_error, Ln, Reason}}
     end.
 
-%% Finding #17: each string field starts life as a one-element REVERSED
+%% Each string field starts life as a one-element REVERSED
 %% segment list (`[Bin]`), so a later continuation just prepends (O(1)) and
 %% the whole field joins once at finalization. The `last_field` tag drives
 %% which buffer `append_to_last/2` extends.
@@ -927,12 +921,12 @@ set_field({msgstr, Idx}, Bin, Cur) ->
         last_field = {msgstr, Idx}
     }.
 
-%% Finding #17 (po-append-to-last-superlinear): append ONE continuation
+%% Append ONE continuation
 %% segment by PREPENDING it to the field's reversed segment list (O(1)),
 %% never by re-copying a growing binary. The field is joined into a binary
 %% exactly once, later, in `finalize_buffers/1`, so building an n-byte
 %% field over many continuation lines is genuinely O(n) total instead of
-%% the old Θ(n²).
+%% a Θ(n²) re-copy.
 append_to_last(Cur, Bin) ->
     %% classify_line only emits {continuation, _} when last_field =/= undefined
     %% (orphan continuations are intercepted as {syntax_error,
@@ -980,7 +974,7 @@ is_empty_entry(_) ->
 %% Entry finalization
 %% =========================
 
-%% Finding #17: flatten the per-field reversed segment buffers
+%% Flatten the per-field reversed segment buffers
 %% (`[binary()]`, built O(1)-per-continuation) back into single binaries
 %% EXACTLY ONCE, here at the finalization boundary, before any of the
 %% `finalize_entry_flat/2` clauses pattern-match on `msgid = undefined` /
@@ -1021,7 +1015,7 @@ flatten_field(undefined) -> undefined;
 flatten_field(Segs) when is_list(Segs) -> bins_to_binary(Segs).
 
 finalize_entry_flat(#po_st{obsolete = true}, St) ->
-    %% Per PSD-007: drop obsolete entries silently.
+    %% Drop obsolete entries silently.
     {ok, St};
 finalize_entry_flat(#po_st{msgid = undefined}, St) ->
     %% No msgid in this block — nothing to emit (trailing blank lines,
@@ -1042,7 +1036,7 @@ finalize_entry_flat(#po_st{msgid = <<>>}, St) ->
 finalize_entry_flat(Cur, St) ->
     case Cur#po_st.fuzzy andalso not St#pst.include_fuzzy of
         true ->
-            %% Per PSD-001: fuzzy entries dropped by default.
+            %% Fuzzy entries dropped by default.
             {ok, St};
         false ->
             emit_entry(Cur, St)
@@ -1065,7 +1059,7 @@ emit_entry(
             undefined -> <<>>;
             _ -> Msgstr
         end,
-    %% Per PSD-003: parser preserves <<>> as translation; fallback is
+    %% Parser preserves <<>> as translation; fallback is
     %% lookup's responsibility.
     Entry = {singular, Ctx, Msgid, Translation},
     {ok, St#pst{entries = [Entry | St#pst.entries]}};
@@ -1078,14 +1072,14 @@ emit_entry(
     },
     St
 ) ->
-    %% Per PSD-009: validate index set against nplurals from the header
+    %% Validate index set against nplurals from the header
     %% (when known). If the header is absent or has no nplurals, accept
     %% any index set.
     SortedPlurals = lists:keysort(1, Plurals),
     Indices = [I || {I, _} <- SortedPlurals],
     case validate_plural_indices(Msgid, St#pst.nplurals, Indices) of
         ok ->
-            %% Finding #14: retain `msgid_plural` so `dump/1` re-emits the
+            %% Retain `msgid_plural` so `dump/1` re-emits the
             %% real plural-form source text instead of substituting `Msgid`.
             Entry = {plural, Ctx, Msgid, MsgidPlural, SortedPlurals},
             {ok, St#pst{entries = [Entry | St#pst.entries]}};
@@ -1094,7 +1088,7 @@ emit_entry(
     end.
 
 -doc """
-(Internal, maintainer — PSD-009.) Validates the `msgstr[N]` index set of a
+(Internal, maintainer.) Validates the `msgstr[N]` index set of a
 plural entry against the header's `Nplurals`.
 
 If `Nplurals` is `undefined` (no header, or a header without a usable `nplurals`),
@@ -1104,10 +1098,10 @@ it ACCEPTS any set — a deliberate fail-open, matched with the fail-open of
 `{error, {plural_count_mismatch, Msgid, Nplurals, Indices}}`, which bubbles up as
 a `parse_error()`.
 
-Anti-DoS (finding #1, po-plural-nplurals-seq-allocation-dos): `Nplurals` is
+Anti-DoS: `Nplurals` is
 attacker-controlled — `collect_digits/2` only caps the DIGIT COUNT, so the
 header may legitimately declare `nplurals=9999999`. The validation MUST NOT
-size any list by that value (the old `lists:seq(0, Nplurals - 1)` allocated a
+size any list by that value (`lists:seq(0, Nplurals - 1)` would allocate a
 ~10M-element list, ~80MB, for a 158-byte `.po`). Instead it checks the two
 conditions that `Indices =:= lists:seq(0, Nplurals - 1)` decomposes into,
 without ever materializing the expected sequence: (1) the present set is a
@@ -1116,7 +1110,7 @@ present in the file, not the header; and (2) that length equals `Nplurals`. A
 genuine count mismatch still yields the EXACT same
 `{plural_count_mismatch, Msgid, Nplurals, Indices}` payload, in O(length(Indices)).
 """.
-%% Per PSD-009: index set must be exactly [0, 1, ..., Nplurals-1].
+%% Index set must be exactly [0, 1, ..., Nplurals-1].
 validate_plural_indices(_Msgid, undefined, _Indices) ->
     ok;
 validate_plural_indices(Msgid, Nplurals, Indices) ->
@@ -1136,14 +1130,13 @@ validate_plural_indices(Msgid, Nplurals, Indices) ->
 %% Header parsing
 %% =========================
 
-%% Finding #5 (po-header-malformed-content-type-badmatch-crash):
-%% `build_header/1` is now TOTAL — it returns `{error, parse_error()}`
+%% `build_header/1` is TOTAL — it returns `{error, parse_error()}`
 %% instead of crashing on an unsupported charset. The charset is
 %% reconciled through `field_charset/1`, the SAME path the prepass uses,
 %% so in practice the prepass has already short-circuited an unsupported
-%% charset before we get here. Returning the structured error (rather
-%% than the old non-exhaustive `{ok,Charset} =` match) closes the
-%% badmatch class for good: any future divergence degrades to a clean
+%% charset before we get here. Returning the structured error rather
+%% than a non-exhaustive `{ok,Charset} =` match keeps the badmatch
+%% class closed: any divergence degrades to a clean
 %% `{error, _}` propagated by `finalize_entry/2`, never an uncaught
 %% exception that terminates the loader gen_server.
 -spec build_header(binary()) -> {ok, header_map()}.
@@ -1208,7 +1201,7 @@ classify_charset_from_content_type(ContentType) ->
             end
     end.
 
-%% Per PSD-004: nplurals parsed eagerly for cross-check with msgstr[N]
+%% nplurals parsed eagerly for cross-check with msgstr[N]
 %% indices. The full Plural-Forms expression is preserved raw for
 %% downstream evaluation.
 nplurals_from_header(#{plural_forms := <<>>}) ->
@@ -1235,7 +1228,7 @@ extract_nplurals_value(Bin) ->
             collect_digits(After, <<>>)
     end.
 
-%% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): cap the
+%% Cap the
 %% digit run by COUNT before `binary_to_integer`. This is a tolerant
 %% cross-check of the header's `nplurals=` value (used only to validate
 %% plural-form counts downstream), so an over-long run is treated as "no
@@ -1293,7 +1286,7 @@ classify_raw_line(<<"msgstr", Rest/binary>>) ->
         {ok, Content} -> {msgstr, Content};
         {ok, Idx, Content} -> {msgstr_n, Idx, Content};
         %% Prepass only extracts the header charset; a malformed or
-        %% over-long msgstr index (finding #8) is irrelevant here and is
+        %% over-long msgstr index is irrelevant here and is
         %% treated like any other unclassified line.
         {error, _} -> other;
         error -> other
@@ -1307,7 +1300,7 @@ classify_raw_line(_) ->
 classify_line(<<>>, _Cur) ->
     blank;
 classify_line(<<"#~", _Rest/binary>>, _Cur) ->
-    %% Per PSD-007: any line starting with #~ is part of an obsolete
+    %% Any line starting with #~ is part of an obsolete
     %% entry. We mark the entry as obsolete; downstream skips it.
     %% Body content is irrelevant — the entire entry is dropped on flush.
     obsolete;
@@ -1351,7 +1344,7 @@ classify_line(<<"msgstr", Rest/binary>>, _Cur) ->
     case classify_msgstr(Rest) of
         {ok, Content} -> {msgstr, Content};
         {ok, Idx, Content} -> {msgstr_n, Idx, Content};
-        %% Finding #8: an over-long `msgstr[<digits>]` index surfaces a
+        %% An over-long `msgstr[<digits>]` index surfaces a
         %% structured reason so the parse fails closed with a precise
         %% diagnostic instead of crashing on a giant `binary_to_integer`.
         {error, Reason} -> {syntax_error, Reason};
@@ -1388,7 +1381,7 @@ classify_msgstr(Rest) ->
         error -> error
     end.
 
-%% Finding #8 (po-plural-unbounded-binary-to-integer-bignum): cap the
+%% Cap the
 %% `msgstr[<digits>]` index run by DIGIT COUNT before `binary_to_integer`
 %% builds the bignum. An over-long run is surfaced as a structured
 %% `{error, {index_too_long, Max}}` (the rejected run is kept OUT of the
@@ -1446,7 +1439,7 @@ trim_leading_ws(Bin) -> Bin.
 decode_quoted_string(Bin) ->
     decode_quoted_string(Bin, utf8).
 
-%% Finding #11 — two-phase decode (mirrors the GNU gettext lexer):
+%% Two-phase decode (mirrors the GNU gettext lexer):
 %% phase 1 walks the quoted string emitting tagged `chunk()`s (literal
 %% UTF-8 text vs. raw escape bytes); phase 2 (`reassemble_field/2`)
 %% transcodes contiguous raw runs through the declared charset, so
@@ -1573,7 +1566,7 @@ decode_octal_escape(R, Acc, _N) ->
     end.
 
 %% =========================
-%% Phase 2: charset->UTF-8 transcode of escape bytes (finding #11)
+%% Phase 2: charset->UTF-8 transcode of escape bytes
 %% =========================
 
 %% Takes the reversed chunk list from `decode_chars/2`, groups contiguous
@@ -1662,7 +1655,7 @@ is_only_trailing_ws(_) ->
     false.
 
 %% =========================
-%% Dumper (for P1/P2 roundtrip properties)
+%% Dumper (for roundtrip properties)
 %% =========================
 
 dump_header(#{raw := <<>>} = _Header) ->
@@ -1694,12 +1687,12 @@ dump_entry({singular, Ctx, Msgid, Translation}) ->
 dump_entry({plural, Ctx, Msgid, MsgidPlural, Plurals}) ->
     CtxBin = dump_msgctxt(Ctx),
     MsgidBin = dump_field(~"msgid", Msgid),
-    %% Finding #14 (dump-drops-msgid-plural-silently): emit the RETAINED
-    %% `msgid_plural` form text. The parsed `entry/0` now carries it
+    %% Emit the RETAINED
+    %% `msgid_plural` form text. The parsed `entry/0` carries it
     %% verbatim, so `parse∘dump` preserves the plural source. When the
     %% source had no explicit `msgid_plural` (carried as `undefined`), we
-    %% fall back to the singular `Msgid` — the only sensible stand-in, and
-    %% the historical behaviour for that degenerate case.
+    %% fall back to the singular `Msgid` — the only sensible stand-in for
+    %% that degenerate case.
     PluralIdSrc =
         case MsgidPlural of
             undefined -> Msgid;

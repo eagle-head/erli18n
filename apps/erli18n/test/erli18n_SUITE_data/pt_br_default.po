@@ -10,7 +10,7 @@ msgstr "Olá"
 msgid "Goodbye"
 msgstr "Adeus"
 
-# An entry with msgstr "" — per PSD-003 the parser drops it, so a
+# An entry with msgstr "" — the parser drops it, so a
 # lookup for "Untranslated" misses and falls back to the msgid.
 msgid "Untranslated"
 msgstr ""

@@ -7,7 +7,7 @@ Extraction keys every recognized call site by `{Name, Arity}` and reads the
 literal-bearing argument slots from a data-driven table. Keying by arity is
 mandatory: the `d`/`dc` families put `Domain` in the FIRST argument, which
 shifts `Context`/`Msgid`/`MsgidPlural` one slot right relative to the bare
-family, and the Phase 1 `f`-family APPENDS a trailing `Bindings` map that
+family, and the interpolating `f`-family APPENDS a trailing `Bindings` map that
 the spec ignores for msgid extraction (the leading slots are identical to
 the non-`f` sibling).
 
@@ -64,7 +64,7 @@ lookup(Name, Arity) ->
 The full `{Name, Arity} => slots()` table for the erli18n facade.
 
 Covers the `gettext`/`ngettext`/`pgettext`/`npgettext` families, their
-`d`/`dc` variants, and the Phase 1 interpolating `f`-family — roughly fifty
+`d`/`dc` variants, and the interpolating `f`-family — roughly fifty
 arities in all.
 
 The table is a single literal map, so the compiler builds it once and every
@@ -112,7 +112,7 @@ spec() ->
         {dcnpgettext, 6} => #{domain => 1, context => 2, msgid => 3, plural => 4, kind => plural},
 
         %% =========================
-        %% Phase 1 interpolating `f`-family
+        %% Interpolating `f`-family
         %% =========================
         %%
         %% Every member appends a trailing `Bindings` map. The leading slots

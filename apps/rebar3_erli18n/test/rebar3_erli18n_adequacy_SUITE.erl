@@ -2,32 +2,24 @@
 -module(rebar3_erli18n_adequacy_SUITE).
 
 -moduledoc """
-Test-adequacy backfill for the rebar3_erli18n plugin providers.
+Regression tests for the rebar3_erli18n plugin providers.
 
-Generated from the plugin test-adequacy audit (findings F1..F33). Each case
-pins ONE confirmed finding (or a tight cluster of duplicate findings) that the
-existing `providers_SUITE`/`extract_SUITE`/`po_meta_SUITE`/`jaro_SUITE` left
-unasserted, and is crafted to KILL the specific surviving mutant the finding
-names — primarily:
+Each case pins one behavior that `providers_SUITE`, `extract_SUITE`,
+`po_meta_SUITE`, and `jaro_SUITE` leave unasserted:
 
-- `lists:all` -> `lists:any` at `prv_report.erl:216` (a partially-translated
-  plural must count as UNtranslated);
-- the `fuzzy_one` nomatch branch at `prv_merge.erl:245` (a brand-new msgid
-  carries NO `#, fuzzy` and NO `#|`);
-- the exact-carryover reference refresh at `prv_merge.erl:211-213`;
-- the integer binary-segment Unicode-scalar bounds at
-  `extract_forms.erl:355-362`;
-- the multibyte `chars_to_binary` normalization at `extract_forms.erl:369`;
-- the `is_dir(LC_MESSAGES)` locale filter at `prv_report.erl:168-174`;
-- the jaro empty/identical/unicode contract at `jaro.erl:80-86`.
+- a partially-translated plural (`msgstr[0]` non-empty, `msgstr[1]` empty)
+  counts as UNtranslated in the report;
+- a brand-new msgid merged into a fresh locale carries NO `#, fuzzy` and NO
+  `#|` previous-msgid line;
+- an exact carryover refreshes its `#:` references to the new call site;
+- the integer binary-segment Unicode-scalar bounds in the extractor;
+- multibyte `chars_to_binary` normalization of literal msgids;
+- the `is_dir(LC_MESSAGES)` locale filter in the report;
+- the jaro empty/identical/unicode contract.
 
-RED/GREEN expectation: GREEN for every case EXCEPT the two write-failure
-fault-injection cases (`extract_write_failure_returns_error`,
-`merge_write_failure_returns_error`). Those assert the documented structural
-`{error, _}` contract; the production code currently hard-matches `ok =
-file:write_file(...)`, so on a non-root host they CRASH (badmatch) instead of
-returning `{error, _}` and the assertion FAILS RED — surfacing the bug. On a
-root host the directory-permission injection cannot block the write, so they
+Two cases assert the documented structural `{error, _}` write-failure contract
+by injecting a directory-permission fault. When the fault cannot be applied
+(for example, running as root, where permissions do not block the write) they
 `{skip, ...}` cleanly. This mirrors the `providers_SUITE` rebar3-state harness
 and the `po_meta_SUITE` msgfmt skip-guard idiom.
 """.
@@ -178,12 +170,10 @@ msgids(Entries) ->
 %% Tests
 %% =========================
 
-%% F1/F2/F5/F8/F10/F16: a PARTIALLY-translated plural (`msgstr[0]` non-empty,
-%% `msgstr[1]` empty) MUST count as UNtranslated. This kills the
-%% `lists:all -> lists:any` mutant at prv_report.erl:216: `lists:all` over
-%% [{0,<<"um gato">>},{1,<<>>}] is false (correct -> 0/1), whereas `lists:any`
-%% would be true (wrong -> 1/1). The existing report_counts_translated_plural
-%% fills BOTH forms and only ever asserts 1/1, so it cannot see this.
+%% A PARTIALLY-translated plural (`msgstr[0]` non-empty, `msgstr[1]` empty)
+%% counts as UNtranslated: every plural form must be filled for the entry to
+%% count as translated. Over [{0,<<"um gato">>},{1,<<>>}] the report yields
+%% 0/1, not 1/1.
 report_partial_plural_counts_untranslated(Config) ->
     write_consumer(
         Config,
@@ -222,12 +212,10 @@ report_partial_plural_counts_untranslated(Config) ->
         Text
     ).
 
-%% F3/F9/F11: the fuzzy_one nomatch branch (prv_merge.erl:245). A brand-new
-%% msgid merged into a fresh/empty locale (Removed=[], best_match -> nomatch)
-%% must be emitted as a plain untranslated entry with NEITHER a `#, fuzzy` flag
-%% NOR a `#|` previous-msgid line. A mutant that injected `flags => [fuzzy]` or
-%% `previous => ...` on the nomatch branch would survive every existing merge
-%% test (none assert the ABSENCE of those lines on a first merge).
+%% The fuzzy_one nomatch branch. A brand-new msgid merged into a fresh/empty
+%% locale (Removed=[], best_match -> nomatch) is emitted as a plain
+%% untranslated entry with NEITHER a `#, fuzzy` flag NOR a `#|` previous-msgid
+%% line. This pins the ABSENCE of those lines on a first merge.
 merge_new_msgid_no_fuzzy_no_previous(Config) ->
     write_consumer(Config, greet_module([<<"Hello">>])),
     {ok, _} = rebar3_erli18n_prv_extract:do(state(Config, [])),
@@ -240,13 +228,10 @@ merge_new_msgid_no_fuzzy_no_previous(Config) ->
     ?assertEqual(nomatch, binary:match(Bytes, <<"#, fuzzy">>)),
     ?assertEqual(nomatch, binary:match(Bytes, <<"#|">>)).
 
-%% F12/F22/F30: exact-carryover refreshes the `#:` references (prv_merge.erl
-%% :211-213 takes Refs from the FRESH PotE). Translate a msgid, MOVE its call
-%% site to a later line, re-extract and re-merge: the carried-over entry keeps
-%% its translation AND its `#:` reference reflects the NEW line. A mutant
-%% emitting `references => []` drops the `:8` line; one reusing the stale refs
-%% keeps `:3`. Either way this case fails; the existing merge tests never
-%% relocate a call site, so they cannot see it.
+%% Exact carryover refreshes the `#:` references: the merge takes references
+%% from the FRESH PotE. Translate a msgid, MOVE its call site to a later line,
+%% re-extract and re-merge: the carried-over entry keeps its translation AND
+%% its `#:` reference reflects the NEW line (`:8`), never the stale `:3`.
 merge_exact_refreshes_references(Config) ->
     %% Call site on line 3.
     write_consumer(
@@ -286,12 +271,10 @@ merge_exact_refreshes_references(Config) ->
     ?assertNotEqual(nomatch, binary:match(After, <<"myapp_strings.erl:8">>)),
     ?assertEqual(nomatch, binary:match(After, <<"myapp_strings.erl:3">>)).
 
-%% F13/F17/F23/F24/F25/F27/F29: the jaro empty/identical/unicode contract
-%% (jaro.erl:80-86). similarity(<<>>,<<>>) is the documented 1.0; an empty
-%% needle yields a defined nomatch (no crash); a multibyte UTF-8 candidate is
-%% scored by CODE POINT (the exact "café" scores 1.0, "cafe" strictly less)
-%% and the deterministic pick is order-independent. The entire jaro_SUITE uses
-%% only ASCII non-empty inputs, so none of these boundaries are exercised.
+%% The jaro empty/identical/unicode contract. similarity(<<>>,<<>>) is the
+%% documented 1.0; an empty needle yields a defined nomatch (no crash); a
+%% multibyte UTF-8 candidate is scored by CODE POINT (the exact "café" scores
+%% 1.0, "cafe" strictly less) and the deterministic pick is order-independent.
 jaro_empty_identical_and_unicode(_Config) ->
     %% Two empty strings are fully similar (documented contract).
     ?assertEqual(1.0, rebar3_erli18n_jaro:similarity(<<>>, <<>>)),
@@ -315,17 +298,14 @@ jaro_empty_identical_and_unicode(_Config) ->
         rebar3_erli18n_jaro:best_match(<<"café"/utf8>>, [<<"café"/utf8>>, <<"cafe">>])
     ).
 
-%% F4/F7/F14/F19: the integer binary-segment Unicode-scalar guard
-%% (extract_forms.erl:355-362). The four valid-range boundaries 0, 16#10FFFF,
-%% 16#D7FF, 16#E000 must ACCEPT (their scalar round-trips into the extracted
-%% msgid bytes); the surrogate 16#DFFF and the over-range 16#110000 must SKIP.
-%% Because an accepted out-of-range/surrogate value would raise `badarg` on
-%% `<<Int/utf8>>` and ABORT the whole scan, "scan returns {ok,...} and the
-%% sibling literal still extracts" kills the bound-flip mutants (`=< 16#10FFFE`,
-%% `< 16#D7FF`, `> 16#E000`, `> 16#DFFE`, `=< 16#110000`, `> 0`). The mixed
-%% string+integer segment (`<<"A", 16#E9/utf8, "z">>`) also pins the fold over
-%% heterogeneous segments. extract_SUITE tests only `<<65,66,67>>` (mid-range)
-%% and `<<16#D800>>` (one surrogate).
+%% The integer binary-segment Unicode-scalar guard. The four valid-range
+%% boundaries 0, 16#10FFFF, 16#D7FF, 16#E000 ACCEPT (their scalar round-trips
+%% into the extracted msgid bytes); the surrogate 16#DFFF and the over-range
+%% 16#110000 SKIP. An accepted out-of-range/surrogate value would raise
+%% `badarg` on `<<Int/utf8>>` and ABORT the whole scan, so a completed scan
+%% whose sibling literal still extracts confirms every boundary is classified
+%% correctly. The mixed string+integer segment (`<<"A", 16#E9/utf8, "z">>`)
+%% also pins the fold over heterogeneous segments.
 extract_integer_segment_unicode_bounds(Config) ->
     Src = <<
         "-module(segmsg).\n"
@@ -355,14 +335,11 @@ extract_integer_segment_unicode_bounds(Config) ->
     %% The sibling literal still extracts -> the scan ran past every skip.
     ?assert(lists:member(<<"sibling">>, Ms)).
 
-%% F6/F15/F26: multibyte literal-string msgid normalization
-%% (extract_forms.erl:329-330 / :369). A non-ASCII binary literal
-%% (`<<"café"/utf8>>`) AND a non-ASCII charlist (`"café"`) must both normalize
-%% to the exact source UTF-8 bytes (<<99,97,102,195,169>>), with no mojibake
-%% (a latin1-vs-utf8 corruption would double-encode the é). Every asserted
-%% msgid in extract_SUITE is ASCII, so the multibyte branch of chars_to_binary
-%% is never observably exercised. The fixture carries a `coding: utf-8`
-%% directive so epp decodes the é to one code point.
+%% Multibyte literal-string msgid normalization. A non-ASCII binary literal
+%% (`<<"café"/utf8>>`) AND a non-ASCII charlist (`"café"`) both normalize to
+%% the exact source UTF-8 bytes (<<99,97,102,195,169>>), with no mojibake (a
+%% latin1-vs-utf8 corruption would double-encode the é). The fixture carries a
+%% `coding: utf-8` directive so epp decodes the é to one code point.
 extract_multibyte_literal_msgid(Config) ->
     Src = <<
         "%% coding: utf-8\n"
@@ -379,12 +356,11 @@ extract_multibyte_literal_msgid(Config) ->
     ?assertEqual(2, length(Ms)),
     ?assert(lists:all(fun(M) -> M =:= Expected end, Ms)).
 
-%% F28/F31/F32: the `is_dir(LC_MESSAGES)` locale filter (prv_report.erl
-%% :168-174). A stray sibling directory under the catalog root that lacks an
-%% LC_MESSAGES subdir must NOT appear as a locale row. Because the filter sorts
-%% locales and "NOTALOCALE" < "pt_BR", a dropped filter would surface a phantom
-%% "(no catalog)" row BEFORE pt_BR, so the byte-exact block assertion fails.
-%% Every existing all-locales report test only ever has the pt_BR dir present.
+%% The `is_dir(LC_MESSAGES)` locale filter. A stray sibling directory under the
+%% catalog root that lacks an LC_MESSAGES subdir does NOT appear as a locale
+%% row. The filter sorts locales and "NOTALOCALE" < "pt_BR", so a dropped
+%% filter would surface a phantom "(no catalog)" row BEFORE pt_BR and break the
+%% byte-exact block assertion.
 report_excludes_stray_non_locale_dir(Config) ->
     write_consumer(Config, greet_module([<<"Hello">>])),
     {ok, _} = rebar3_erli18n_prv_extract:do(state(Config, [])),
@@ -410,12 +386,12 @@ report_excludes_stray_non_locale_dir(Config) ->
         Text
     ).
 
-%% F33: the extract -> check pipeline round-trip invariant. Extraction writes
-%% each `.pot` via `po_meta:dump(entries_to_pot(...))`; check recomputes the
+%% The extract -> check pipeline round-trip invariant. Extraction writes each
+%% `.pot` via `po_meta:dump(entries_to_pot(...))`; check recomputes the
 %% identical bytes and compares. Over a project mixing every call-site shape
 %% (bare/domained/contextual/plural/f-family across two domains), a fresh
-%% extract followed immediately by check must return `{ok, _}` (no drift) in
-%% BOTH full and `--names-only` modes — the documented no-false-drift contract.
+%% extract followed immediately by check returns `{ok, _}` (no drift) in BOTH
+%% full and `--names-only` modes — the documented no-false-drift contract.
 extract_check_round_trip(Config) ->
     write_consumer(
         Config,
@@ -437,12 +413,10 @@ extract_check_round_trip(Config) ->
     {ok, _} = rebar3_erli18n_prv_check:do(state(Config, [])),
     {ok, _} = rebar3_erli18n_prv_check:do(state(Config, [{names_only, true}])).
 
-%% F18: the po_meta dump differential oracle. `dump/1` over a catalog mixing
-%% singular+plural bodies, unicode msgids/translations, `#:` references, `#.`
-%% extracted comments and a `#|` previous-msgid must produce GNU-valid PO bytes
-%% that `msgfmt --check` accepts. Skips cleanly when msgfmt is absent (mirrors
-%% po_meta_SUITE/erli18n_parity_SUITE). Broadens the existing
-%% msgmerge_accepts_output (singular ASCII only) across the metadata domain.
+%% The po_meta dump oracle. `dump/1` over a catalog mixing singular+plural
+%% bodies, unicode msgids/translations, `#:` references, `#.` extracted comments
+%% and a `#|` previous-msgid produces GNU-valid PO bytes that `msgfmt --check`
+%% accepts. Skips cleanly when msgfmt is absent.
 po_meta_dump_roundtrip_msgfmt(Config) ->
     case os:find_executable("msgfmt") of
         false ->
@@ -492,14 +466,11 @@ po_meta_dump_roundtrip_msgfmt(Config) ->
             ?assert(string:find(Result, "EXIT=0") =/= nomatch)
     end.
 
-%% F20 (M26 write-failure, expected RED): when the destination `.pot` cannot be
-%% written, extract `do/1` is spec'd to return `{error, string()}`. Here the
-%% target `priv/gettext/default.pot` already exists as a DIRECTORY, so
-%% `file:write_file(..., Bytes)` returns `{error, eisdir}`. The production code
-%% (`ok = file:write_file(Path, Bytes)`, prv_extract.erl:85) hard-matches `ok`,
-%% so it badmatch-CRASHES instead of returning the structured error -> this
-%% assertion FAILS RED, surfacing the bug. The orchestrator should confirm the
-%% red status.
+%% When the destination `.pot` cannot be written, extract `do/1` returns
+%% `{error, string()}`. Here the target `priv/gettext/default.pot` already
+%% exists as a DIRECTORY, so `file:write_file(..., Bytes)` returns
+%% `{error, eisdir}`, and `do/1` must surface that as a structured error rather
+%% than crash on a hard `ok = file:write_file(...)` match.
 extract_write_failure_returns_error(Config) ->
     write_consumer(Config, greet_module([<<"Hello">>])),
     %% Pre-create the target .pot path as a directory (write -> eisdir).
@@ -507,15 +478,13 @@ extract_write_failure_returns_error(Config) ->
     ok = filelib:ensure_path(PotAsDir),
     ?assertMatch({error, _}, rebar3_erli18n_prv_extract:do(state(Config, []))).
 
-%% F21 (write-failure, expected RED on a non-root host): when the target `.po`
-%% cannot be written, merge `do/1` is spec'd to return `{error, string()}`. The
-%% locale is brand-new so read_old hits enoent and returns an empty catalog (so
-%% the WRITE path is reached, not the read path the existing
-%% merge_po_path_unreadable covers). The LC_MESSAGES dir is made read-only so
-%% `file:write_file(Path, ...)` returns `{error, eacces}`. The production code
-%% (`ok = file:write_file(...)`, prv_merge.erl:130) hard-matches `ok` and
-%% badmatch-CRASHES -> the assertion FAILS RED. On a root host the permission
-%% cannot block the write, so the case skips cleanly.
+%% When the target `.po` cannot be written, merge `do/1` returns
+%% `{error, string()}`. The locale is brand-new so read_old hits enoent and
+%% returns an empty catalog, so the WRITE path is reached rather than the read
+%% path. The LC_MESSAGES dir is made read-only so `file:write_file(Path, ...)`
+%% returns `{error, eacces}`, and `do/1` must surface that as a structured
+%% error rather than crash on a hard `ok = file:write_file(...)` match. On a
+%% root host the permission cannot block the write, so the case skips cleanly.
 merge_write_failure_returns_error(Config) ->
     write_consumer(Config, greet_module([<<"Hello">>])),
     {ok, _} = rebar3_erli18n_prv_extract:do(state(Config, [])),
@@ -528,7 +497,7 @@ merge_write_failure_returns_error(Config) ->
     case file:write_file(Probe, <<>>) of
         {error, _} ->
             %% Non-root: writes into Dir are genuinely blocked. Restore the
-            %% mode via `after` so a badmatch CRASH (the current bug) cannot
+            %% mode via `after` so a badmatch crash cannot
             %% leave the dir unwritable for priv_dir teardown.
             try
                 Result = rebar3_erli18n_prv_merge:do(state(Config, [{locale, "pt_BR"}])),
@@ -542,7 +511,7 @@ merge_write_failure_returns_error(Config) ->
             {skip, "running as root: directory permissions do not block writes"}
     end.
 
-%% Coverage for the `filelib:ensure_path/1` FAILURE arm of extract's `write_pots/2`:
+%% Exercises the `filelib:ensure_path/1` FAILURE arm of extract's `write_pots/2`:
 %% point `--pot-dir` at a path nested UNDER a regular file, so the pot dir cannot
 %% be created. extract `do/1` must surface `{error, _}` (the structured
 %% write_failed error), not crash — distinct from the eisdir write-failure above,
@@ -558,7 +527,7 @@ extract_pot_dir_unwritable_returns_error(Config) ->
         rebar3_erli18n_prv_extract:do(state(Config, [{pot_dir, BlockedPotDir}]))
     ).
 
-%% Coverage for the `filelib:ensure_dir/1` FAILURE arm of merge's `write_po/2`
+%% Exercises the `filelib:ensure_dir/1` FAILURE arm of merge's `write_po/2`
 %% (distinct from the `file:write_file` eacces arm above). The LOCALE dir is made
 %% read-only so `ensure_dir` cannot CREATE the `LC_MESSAGES` subdir — yet the `.po`
 %% itself is genuinely absent, so `read_old` returns `enoent` (a brand-new locale,

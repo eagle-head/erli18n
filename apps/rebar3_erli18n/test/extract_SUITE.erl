@@ -221,13 +221,12 @@ variable_binary_segment_skipped(Config) ->
 
 surrogate_segment_skipped(Config) ->
     %% `gettext(<<16#D800>>)` carries a literal integer segment that is a UTF-16
-    %% surrogate code point. `<<16#D800/utf8>>` raises `badarg`, so before the
-    %% guard fix the whole scan ABORTED on a stacktrace. The fix makes the
-    %% surrogate segment non-resolvable, so the call site is SKIPPED like any
-    %% other non-constant msgid and the scan completes. This case therefore
-    %% asserts BOTH that the scan does not crash (extract_shapes returns) AND
-    %% that the surrogate call site produced no entry, while the sibling
-    %% literal-shape call sites in the same module still extract.
+    %% surrogate code point. `<<16#D800/utf8>>` raises `badarg`, so the scanner
+    %% treats the surrogate segment as non-resolvable; the call site is SKIPPED
+    %% like any other non-constant msgid and the scan completes. This case
+    %% therefore asserts BOTH that the scan does not crash (extract_shapes
+    %% returns) AND that the surrogate call site produced no entry, while the
+    %% sibling literal-shape call sites in the same module still extract.
     Entries = extract_shapes(Config),
     %% The surrogate call site yields nothing: no entry whose msgid contains a
     %% surrogate scalar value (which would be impossible in a valid binary

@@ -184,9 +184,8 @@ query_str(Req) ->
     %% The RAW query string (everything after `?`, percent-escapes intact).
     %% `elli_request:query_str/1` is total — it splits the stored `raw_path` on
     %% `?` and never decodes — so a malformed percent-escape can never raise here;
-    %% the fail-soft decoding happens in `erli18n_http:query_value/2`. This
-    %% replaces `elli_request:get_arg_decoded/3`, whose URI decoder raises on a
-    %% malformed escape (the reason its wrapper previously needed a try/catch);
-    %% feeding the raw query to the total core parser removes that raising edge, so
-    %% no try/catch is needed and the seam stays symmetric with the Cowboy adapter.
+    %% the fail-soft decoding happens in `erli18n_http:query_value/2`. Using the raw
+    %% query rather than `elli_request:get_arg_decoded/3`, whose URI decoder raises on
+    %% a malformed escape, keeps the total core parser as the only decoder, so no
+    %% try/catch is needed and the seam stays symmetric with the Cowboy adapter.
     elli_request:query_str(Req).

@@ -3,8 +3,8 @@
 %%% =====================================================================
 %%% PURPOSE
 %%% Pin the documented "coerced output is ALWAYS valid UTF-8" invariant of
-%%% `erli18n_interp:format/2,3` against its two BYTE-OFFSET truncation
-%%% sites, both of which currently cut a multibyte UTF-8 codepoint in half:
+%%% `erli18n_interp:format/2,3` at its two BYTE-OFFSET truncation sites,
+%%% neither of which may cut a multibyte UTF-8 codepoint in half:
 %%%
 %%%   * the per-value clamp `clamp_value/1`
 %%%     (erli18n_interp.erl:530-531) at ?MAX_VALUE_BYTES = 8192, and
@@ -12,21 +12,16 @@
 %%%     (erli18n_interp.erl:443-446) at ?MAX_OUTPUT_BYTES = 65536.
 %%%
 %%% Both caps are powers of two; a 3-byte codepoint (e.g. U+20AC "€")
-%%% divides neither evenly, so a raw `binary:part/3` cut lands inside a
-%%% codepoint and emits a dangling lead/continuation byte (invalid UTF-8)
+%%% divides neither evenly, so a raw `binary:part/3` cut would land inside
+%%% a codepoint and emit a dangling lead/continuation byte (invalid UTF-8)
 %%% that downstream cowboy/elli would serialise as a corrupt response body.
+%%% Truncation must instead back off to a codepoint boundary.
 %%%
-%%% This suite was GENERATED from the test-adequacy audit (findings file
-%%% group "interp", subset = invalid-UTF-8 truncation: F1, F2, F3, F4, F6,
-%%% F9, F22).
-%%%
-%%% RED/GREEN EXPECTATION: this is a RED suite. Every truncation testcase
-%%% asserts the CORRECT target behaviour (output is well-formed UTF-8 and
-%%% byte-bounded by its cap) and therefore FAILS against the current code,
-%%% which returns invalid UTF-8. They will PASS once truncation backs off
-%%% to a codepoint boundary. The `ascii_truncation_control_stays_valid`
-%%% case is a GREEN control: pure-ASCII truncation is already valid and
-%%% must stay exact across the fix (guards against over-truncation).
+%%% Every truncation testcase asserts that the output is well-formed UTF-8
+%%% and byte-bounded by its cap. The `ascii_truncation_control_stays_valid`
+%%% case pins the complementary bound: pure-ASCII truncation is already
+%%% valid and stays exact, so the codepoint-boundary backoff must not
+%%% over-truncate an all-ASCII run.
 %%% =====================================================================
 
 -include_lib("common_test/include/ct.hrl").
@@ -60,28 +55,30 @@ all() ->
     ].
 
 %% =====================================================================
-%% F1 + F3 — per-value clamp (clamp_value/1, :530-531) splits a 3-byte
+%% Per-value clamp (clamp_value/1, :530-531) must not split a 3-byte
 %% codepoint. ?MAX_VALUE_BYTES = 8192 = 2730*3 + 2, so cutting a run of
-%% U+20AC at byte 8192 lands two bytes into the 2731st codepoint, dropping
-%% its third byte and leaving a dangling <<226,130>> (invalid UTF-8).
-%% Target: the clamped value is still well-formed UTF-8 (and <= 8192 bytes).
+%% U+20AC at byte 8192 would land two bytes into the 2731st codepoint,
+%% dropping its third byte and leaving a dangling <<226,130>> (invalid
+%% UTF-8). The clamped value must still be well-formed UTF-8 (and <= 8192
+%% bytes).
 %% =====================================================================
 value_clamp_multibyte_stays_valid_utf8(_Config) ->
     %% U+20AC "€" encodes to exactly 3 UTF-8 bytes.
     Euro = <<"€"/utf8>>,
-    %% F3 input: 3000 copies = 9000 bytes -> clamped at byte 8192 (mid-cp).
+    %% 3000 copies = 9000 bytes -> clamped at byte 8192 (mid-codepoint).
     Out3000 = erli18n_interp:format(~"%{v}", #{v => binary:copy(Euro, 3000)}),
     assert_valid_utf8_within(Out3000, 8192),
-    %% F1 input: 5000 copies = 15000 bytes -> same per-value clamp boundary.
+    %% 5000 copies = 15000 bytes -> same per-value clamp boundary.
     Out5000 = erli18n_interp:format(~"%{v}", #{v => binary:copy(Euro, 5000)}),
     assert_valid_utf8_within(Out5000, 8192).
 
 %% =====================================================================
-%% F4 — output cap (append_and_check/2, :443-446) splits a 3-byte
+%% Output cap (append_and_check/2, :443-446) must not split a 3-byte
 %% codepoint. A 90000-byte literal run of U+20AC (the template IS the text,
 %% no bindings) is truncated to ?MAX_OUTPUT_BYTES = 65536 = 21845*3 + 1, so
-%% byte 65536 is a lone lead byte of the 21846th codepoint (invalid UTF-8).
-%% Target: the truncated output is still well-formed UTF-8 (and <= 65536).
+%% byte 65536 would be a lone lead byte of the 21846th codepoint (invalid
+%% UTF-8). The truncated output must still be well-formed UTF-8 (and
+%% <= 65536).
 %% =====================================================================
 output_cap_multibyte_stays_valid_utf8(_Config) ->
     Euro = <<"€"/utf8>>,
@@ -90,12 +87,12 @@ output_cap_multibyte_stays_valid_utf8(_Config) ->
     assert_valid_utf8_within(Out, 65536).
 
 %% =====================================================================
-%% F2 + F6 + F9 + F22 — property: for a binary built from a repeated 3-byte
-%% codepoint of random (cap-exceeding) length, BOTH truncation paths (the
-%% per-value clamp via "%{v}", and the output cap via a literal run) must
-%% return well-formed UTF-8 bounded by their respective caps. A byte-offset
-%% cut of a 3-byte run at 8192/65536 always lands mid-codepoint, so this
-%% property FAILS now and PASSES once truncation backs off to a boundary.
+%% Property: for a binary built from a repeated 3-byte codepoint of random
+%% (cap-exceeding) length, BOTH truncation paths (the per-value clamp via
+%% "%{v}", and the output cap via a literal run) must return well-formed
+%% UTF-8 bounded by their respective caps. A byte-offset cut of a 3-byte
+%% run at 8192/65536 always lands mid-codepoint, so truncation must back
+%% off to a codepoint boundary.
 %% =====================================================================
 truncation_preserves_utf8_property(_Config) ->
     ?assert(
@@ -142,11 +139,11 @@ prop_truncation_preserves_utf8() ->
     ).
 
 %% =====================================================================
-%% GREEN control — pure-ASCII truncation is ALWAYS valid UTF-8 (every byte
-%% is its own codepoint) and the cap byte sizes are exact. This passes
-%% before AND after the fix; it pins that the codepoint-boundary backoff
-%% must NOT over-truncate ASCII (the value clamp must still land on 8192
-%% and the output cap on 65536 for an all-ASCII run).
+%% Pure-ASCII truncation is ALWAYS valid UTF-8 (every byte is its own
+%% codepoint) and the cap byte sizes are exact. This pins that the
+%% codepoint-boundary backoff must NOT over-truncate ASCII (the value
+%% clamp must still land on 8192 and the output cap on 65536 for an
+%% all-ASCII run).
 %% =====================================================================
 ascii_truncation_control_stays_valid(_Config) ->
     AsciiVal = binary:copy(<<$z>>, 9000),
@@ -194,6 +191,7 @@ valid_and_bounded(Bin, Cap) ->
 %% Codepoints in U+0800..U+FFFF (excluding surrogates) encode to exactly 3
 %% UTF-8 bytes. Because both caps (8192, 65536) are powers of two and 3
 %% divides neither, a byte-offset cut of a run of these ALWAYS lands
-%% mid-codepoint — the precise condition that yields invalid UTF-8 today.
+%% mid-codepoint — the precise condition a raw byte-offset cut would
+%% render as invalid UTF-8, which the truncator must back off to avoid.
 multibyte_3byte_codepoint() ->
     oneof([16#20AC, 16#4E2D, 16#0939, 16#0E01, 16#16A0]).

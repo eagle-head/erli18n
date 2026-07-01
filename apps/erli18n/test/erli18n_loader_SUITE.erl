@@ -1,12 +1,9 @@
 -module(erli18n_loader_SUITE).
 
-%% Common Test suite for the load orchestration (Part 5) in
+%% Common Test suite for the load orchestration in
 %% `erli18n_server`. Exercises `ensure_loaded/3,4`, `reload/3,4`,
 %% `lookup_header/2`, `lookup_plural_form/5`, `which_keys/2`, and
 %% `default_po_path/3`.
-%%
-%% Each test case carries the design citation (BR/PSD/RISK/AMB) in its
-%% docstring so failures point straight at the spec.
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -16,8 +13,8 @@
 %% (i.e. `string()`) even though the loader normalises and accepts a binary at
 %% runtime. eqwalizer sees only the documented spec, so re-announce the boundary
 %% with a static annotation — the same zero-runtime-dep pattern used in the
-%% runtime modules `erli18n_server`/`erli18n_pt_store`, replacing the former
-%% runtime `eqwalizer` cast-helper call (and the `eqwalizer_support` dep).
+%% runtime modules `erli18n_server`/`erli18n_pt_store`, which avoids a runtime
+%% `eqwalizer` cast-helper call (and the `eqwalizer_support` dep).
 -eqwalizer({nowarn_function, ensure_loaded_accepts_binary_path/1}).
 
 -export([
@@ -144,7 +141,7 @@ fixture(Config, Name) ->
 %% Run Body/0 with a custom logger handler installed; returns the list of
 %% warning messages captured. Used by ensure_loaded_emits_cldr_divergence
 %% to check that the load path emits a ?LOG_WARNING with the divergence
-%% payload (per BR-MIGRAR-030).
+%% payload.
 with_log_capture(Body) ->
     HandlerId = list_to_atom(
         "erli18n_log_capture_" ++
@@ -335,7 +332,7 @@ ensure_loaded_plural_with_form_lookup(Config) ->
         )
     ).
 
-%% RISK-012 mitigation 2: second ensure_loaded is a no-op fast-path.
+%% The second ensure_loaded is a no-op fast-path.
 %% Verifies via `loaded_at` timestamp: it does NOT change between calls.
 ensure_loaded_idempotent(Config) ->
     Path = fixture(Config, "minimal_en.po"),
@@ -371,20 +368,20 @@ ensure_loaded_file_not_found(_Config) ->
         erli18n_server:lookup_header(default, ~"pt_BR")
     ).
 
-%% Findings #12 / #18: the load-orchestration error boundary must be TOTAL
-%% over `file:posix()`. `file:posix()` is an OPEN union — OTP may add new
-%% posix atoms in future releases (file.html documents it as such). The old
-%% narrowing tree enumerated the 47 atoms known at the time of writing and
-%% fell through to `narrow_posix(Other) -> error({unknown_posix_atom, Other})`,
-%% which converts a *benign, structured* file error into a CALLER CRASH for
-%% any atom outside that hand-maintained list — directly contradicting
-%% SECURITY.md ("parsing/IO errors must become structured errors, never
-%% crashes"). The gap is empty on today's OTP, so the branch is latent/dead;
-%% we make a future-posix atom deterministically reachable by shadowing
+%% The load-orchestration error boundary must be TOTAL over `file:posix()`.
+%% `file:posix()` is an OPEN union — OTP may add new posix atoms in future
+%% releases (file.html documents it as such). A narrowing tree that
+%% enumerated only the posix atoms known today and fell through to
+%% `narrow_posix(Other) -> error({unknown_posix_atom, Other})` would convert
+%% a *benign, structured* file error into a CALLER CRASH for any atom outside
+%% that hand-maintained list — directly contradicting SECURITY.md
+%% ("parsing/IO errors must become structured errors, never crashes"). Such a
+%% gap is empty on today's OTP, so the branch would be latent; this case makes
+%% a future-posix atom deterministically reachable by shadowing
 %% `file:read_file/1` with a shim that returns `ecanceled` (a real Linux
-%% errno that is a valid `file:posix()` value but is NOT in the enumerated
-%% list). The public boundary must surface `{error, {file_error, ecanceled}}`
-%% and MUST NOT crash the caller.
+%% errno that is a valid `file:posix()` value but would fall outside a
+%% hand-maintained list). The public boundary must surface
+%% `{error, {file_error, ecanceled}}` and MUST NOT crash the caller.
 ensure_loaded_unknown_posix_is_structured_not_crash(_Config) ->
     install_read_file_shim(ecanceled),
     try
@@ -412,7 +409,7 @@ ensure_loaded_invalid_po(Config) ->
     ?assertMatch({error, {syntax_error, _, _}}, Result),
     ?assertEqual(undefined, erli18n_server:lookup_header(default, ~"x")).
 
-%% PSD-002: SHIFT_JIS is not in {utf8, latin1, us_ascii} so the load
+%% SHIFT_JIS is not in {utf8, latin1, us_ascii} so the load
 %% must fail with `{unsupported_charset, _}` and leave the catalog store untouched.
 ensure_loaded_unsupported_charset(Config) ->
     Path = fixture(Config, "shift_jis.po"),
@@ -422,7 +419,7 @@ ensure_loaded_unsupported_charset(Config) ->
     ),
     ?assertEqual(undefined, erli18n_server:lookup_header(default, ~"ja")).
 
-%% PSD-009: plural_count_mismatch propagated from the parser. The catalog store stays
+%% plural_count_mismatch propagated from the parser. The catalog store stays
 %% clean — no partial state.
 ensure_loaded_plural_mismatch(Config) ->
     Path = fixture(Config, "mismatch.po"),
@@ -461,7 +458,7 @@ ensure_loaded_no_plural_header_uses_fallback(Config) ->
         )
     ).
 
-%% PSD-001: fuzzy entries dropped by default.
+%% Fuzzy entries dropped by default.
 ensure_loaded_fuzzy_dropped_by_default(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
     {ok, NumLoaded} = erli18n_server:ensure_loaded(default, ~"pt_BR", Path),
@@ -485,7 +482,7 @@ ensure_loaded_fuzzy_dropped_by_default(Config) ->
         )
     ).
 
-%% PSD-001: include_fuzzy => true preserves fuzzy entries; the header
+%% include_fuzzy => true preserves fuzzy entries; the header
 %% records the choice.
 ensure_loaded_fuzzy_included_with_opt(Config) ->
     Path = fixture(Config, "fuzzy_entry.po"),
@@ -507,7 +504,7 @@ ensure_loaded_fuzzy_included_with_opt(Config) ->
     {ok, HeaderState} = erli18n_server:lookup_header(default, ~"pt_BR"),
     ?assertEqual(true, maps:get(fuzzy_included, HeaderState)).
 
-%% PSD-004: header rule is source-of-truth, but CLDR divergence is logged
+%% Header rule is source-of-truth, but CLDR divergence is logged
 %% (and persisted in header_state.divergence). Uses divergent_pt_br.po with
 %% pt_BR header `n != 1` while CLDR canonical for `pt_BR` is `n > 1`.
 ensure_loaded_emits_cldr_divergence_warning(Config) ->
@@ -523,7 +520,7 @@ ensure_loaded_emits_cldr_divergence_warning(Config) ->
     ),
     ?assertMatch({ok, 1}, Result),
     %% header_state captures the divergence payload for downstream
-    %% telemetry consumption (Part 7).
+    %% telemetry consumption.
     {ok, HeaderState} = erli18n_server:lookup_header(default, ~"pt_BR"),
     ?assertMatch(
         {plural_divergence, _, _},
@@ -544,7 +541,7 @@ ensure_loaded_emits_cldr_divergence_warning(Config) ->
         "expected at least one plural_divergence ?LOG_WARNING"
     ).
 
-%% AMB-001: reload overwrites the existing catalog with the new .po
+%% reload overwrites the existing catalog with the new .po
 %% contents. The old catalog is gone.
 reload_replaces_catalog(Config) ->
     % "Hello" -> "Olá"
@@ -573,9 +570,9 @@ reload_replaces_catalog(Config) ->
             ~"Hello"
         )
     ),
-    %% New plural present. Finding #16: read through the form-aware public
-    %% entry point. `plural_pt_br.po` pins `plural=n > 1`, so N=2 selects form 1
-    %% ("árvores") — the same row the raw index 1 used to address, but now via
+    %% New plural present. Read through the form-aware public entry point.
+    %% `plural_pt_br.po` pins `plural=n > 1`, so N=2 selects form 1
+    %% ("árvores") — the row a raw index of 1 addresses, here reached via
     %% the evaluated Plural-Forms rule.
     ?assertEqual(
         {ok, ~"árvores"},
@@ -608,13 +605,12 @@ reload_idempotency_bypassed(Config) ->
     %% when wall-clock differs.
     ?assertNotEqual(maps:get(loaded_at, H1), maps:get(loaded_at, H2)).
 
-%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window),
-%% failure-mode class. A reload whose new .po is invalid must return a
-%% structured `{error, _}` AND leave the previously-good catalog fully
-%% intact — mirrors `atomicidade_load_fails/1` but for `reload/3,4`. The
-%% pre-fix code unloaded the working catalog BEFORE attempting the new
-%% load, so a failed reload permanently destroyed the translation in use.
-%% We exercise every failable step of the load pipeline (file read, parse,
+%% Reload atomicity, failure-mode: a reload whose new .po is invalid must
+%% return a structured `{error, _}` AND leave the previously-good catalog
+%% fully intact — mirrors `atomicidade_load_fails/1` but for `reload/3,4`.
+%% If a reload unloaded the working catalog BEFORE attempting the new load,
+%% a failed reload would permanently destroy the translation in use. This
+%% case exercises every failable step of the load pipeline (file read, parse,
 %% charset classification, plural compile) so any reordering regression is
 %% caught regardless of which step fails.
 reload_failure_preserves_catalog(Config) ->
@@ -683,13 +679,12 @@ reload_failure_preserves_catalog(Config) ->
         AllBad
     ).
 
-%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window),
-%% empty-window class. A successful reload must NEVER expose a window in
-%% which a key present in BOTH the old and the new catalog is missing.
-%% The pre-fix code unloaded the catalog and only then re-inserted, so a
-%% concurrent reader hammering a retained key saw misses across the whole
-%% disk read + parse + compile. With STAGE -> ATOMIC-SWAP (insert-before-
-%% prune), the key is overwritten old->new with no observable gap.
+%% Reload atomicity, empty-window: a successful reload must NEVER expose a
+%% window in which a key present in BOTH the old and the new catalog is
+%% missing. If a reload unloaded the catalog and only then re-inserted, a
+%% concurrent reader hammering a retained key would see misses across the
+%% whole disk read + parse + compile. The stage-then-atomic-swap order
+%% (insert-before-prune) overwrites the key old->new with no observable gap.
 reload_no_empty_window(Config) ->
     Path = fixture(Config, "minimal_en.po"),
     %% Load the catalog whose <<"Hello">> key is present in both the
@@ -712,8 +707,8 @@ reload_no_empty_window(Config) ->
         end)
      || _ <- lists:seq(1, Readers)
     ],
-    %% Reload many times while the readers are hammering, to widen the
-    %% window the pre-fix code would have exposed.
+    %% Reload many times while the readers are hammering, to widen any
+    %% window in which a non-atomic swap could expose a torn read.
     lists:foreach(
         fun(_) ->
             {ok, 1} = erli18n_server:reload(default, ~"pt_BR", Path)
@@ -927,7 +922,7 @@ ensure_loaded_plural_empty_forms_list(Config) ->
     ),
     {ok, HeaderState} = erli18n_server:lookup_header(default, ~"empty_pl"),
     ?assertEqual(1, maps:get(num_entries, HeaderState)),
-    %% No plural form rows were inserted (empty list). Finding #16: read via
+    %% No plural form rows were inserted (empty list). Read via
     %% the public form-aware entry point — with no rows present it returns
     %% `undefined` for any count N (here N=1, the fallback form 0).
     ?assertEqual(
@@ -1104,12 +1099,10 @@ which_keys_filters_other_catalogs(_Config) ->
         KeysEs
     ).
 
-%% Finding #6 (load-pipeline-serialized-in-gen-server-no-bounds-or-timeout),
-%% bounds class. A `.po` larger than `max_bytes` must be rejected with
+%% Load bounds: a `.po` larger than `max_bytes` must be rejected with
 %% `{error, {input_too_large, Size, Limit}}` BEFORE the whole file is read
-%% into memory (the cap is applied via `filelib:file_size/1`). The catalog store stays
-%% untouched. Pre-fix `opts()` exposes only `include_fuzzy`, so the option
-%% is silently ignored and the load succeeds -> RED.
+%% into memory (the cap is applied via `filelib:file_size/1`). The catalog
+%% store stays untouched.
 ensure_loaded_rejects_oversized_file(Config) ->
     Path = fixture(Config, "minimal_en.po"),
     Size = filelib:file_size(Path),
@@ -1132,7 +1125,7 @@ ensure_loaded_rejects_oversized_file(Config) ->
     ),
     ok = erli18n_server:unload(default, ~"okbig").
 
-%% Finding #6, bounds class (post-parse cap). A catalog with more than
+%% Load bounds, post-parse cap: a catalog with more than
 %% `max_entries` parsed entries must be rejected with
 %% `{error, {too_many_entries, Count, Limit}}` and leave the catalog store untouched.
 %% minimal_en.po has exactly 1 entry, so `max_entries => 0` must reject it
@@ -1156,11 +1149,10 @@ ensure_loaded_rejects_too_many_entries(Config) ->
     ),
     ok = erli18n_server:unload(default, ~"okmany").
 
-%% Finding #6, timeout/legacy class. With no bounds in `opts()` the load
-%% must behave exactly as before (the defaults are generous), AND an
-%% explicit `timeout => infinity` must be accepted by the commit call
-%% rather than crashing the caller. This pins that the new options are
-%% optional and the default path is byte-for-byte the legacy behaviour.
+%% Load bounds, defaults: with no bounds in `opts()` the load uses generous
+%% defaults, AND an explicit `timeout => infinity` must be accepted by the
+%% commit call rather than crashing the caller. This pins that the bounds
+%% options are optional and the default path applies no extra limits.
 ensure_loaded_bounds_default_to_legacy(Config) ->
     Path = fixture(Config, "minimal_en.po"),
     ?assertEqual(
@@ -1177,17 +1169,17 @@ ensure_loaded_bounds_default_to_legacy(Config) ->
     ),
     ok = erli18n_server:unload(default, ~"legacy").
 
-%% Finding #6, head-of-line blocking class. A trivial 1-entry load must NOT
-%% queue behind a large/slow load in the single gen_server mailbox: the
-%% heavy read+parse+compile now runs in the CALLING process, so only the
-%% millisecond commit serializes. We build a large synthetic .po (tenant A)
-%% whose parse takes a noticeable wall-clock slice, fire it from a separate
-%% process, then time a trivial 1-entry load (tenant B) launched just after.
+%% Load concurrency, head-of-line blocking: a trivial 1-entry load must NOT
+%% queue behind a large/slow load in the single gen_server mailbox. The heavy
+%% read+parse+compile runs in the CALLING process, so only the millisecond
+%% commit serializes. The case builds a large synthetic .po (tenant A) whose
+%% parse takes a noticeable wall-clock slice, fires it from a separate
+%% process, then times a trivial 1-entry load (tenant B) launched just after.
 %%
-%% Pre-fix the whole pipeline (read+parse+compile) runs inside handle_call,
-%% so B's trivial load blocks behind A's full parse -> B's wall time tracks
-%% A's parse time (seconds) -> RED. Post-fix B's parse is in B's own
-%% process and only A's ~ms commit is serialized, so B finishes promptly.
+%% If the whole pipeline (read+parse+compile) ran inside handle_call, B's
+%% trivial load would block behind A's full parse and B's wall time would
+%% track A's parse time (seconds). With B's parse in B's own process and only
+%% A's ~ms commit serialized, B finishes promptly.
 ensure_loaded_does_not_block_concurrent_load(Config) ->
     BigPath = big_po(Config, 30000),
     TrivialPath = fixture(Config, "minimal_en.po"),
@@ -1209,9 +1201,9 @@ ensure_loaded_does_not_block_concurrent_load(Config) ->
     ?assertEqual({ok, 1}, RB),
     %% The trivial load must finish in a small fraction of the big parse —
     %% it must NOT wait for the big parse to clear the mailbox. Half the big
-    %% parse time is a generous, machine-relative ceiling: pre-fix the
-    %% trivial load waits ~the entire big parse (head-of-line), so it would
-    %% exceed this; post-fix it is bounded by the ~ms commit only.
+    %% parse time is a generous, machine-relative ceiling: with head-of-line
+    %% blocking the trivial load would wait ~the entire big parse and exceed
+    %% this ceiling; here it is bounded by the ~ms commit only.
     Ceiling = max(200, BigParseMs div 2),
     ?assert(
         TrivialWall < Ceiling,
@@ -1269,10 +1261,8 @@ big_po(Config, N) ->
             Path
     end.
 
-%% Finding #6, bulk class. `ensure_loaded_many/1` must install exactly the
-%% same catalogs as calling `ensure_loaded/4` one-by-one, returning a
-%% per-spec result list. The bulk API does not exist pre-fix -> RED
-%% (undefined function).
+%% Bulk load: `ensure_loaded_many/1` must install exactly the same catalogs
+%% as calling `ensure_loaded/4` one-by-one, returning a per-spec result list.
 ensure_loaded_many_equals_n_singles(Config) ->
     Min = fixture(Config, "minimal_en.po"),
     Plu = fixture(Config, "plural_pt_br.po"),
@@ -1295,7 +1285,7 @@ ensure_loaded_many_equals_n_singles(Config) ->
             default, ~"bulk_a", undefined, ~"Hello"
         )
     ),
-    %% Finding #16: form-aware read. `plural_pt_br.po` pins `plural=n > 1`, so
+    %% Form-aware read. `plural_pt_br.po` pins `plural=n > 1`, so
     %% N=2 selects form 1 ("árvores").
     ?assertEqual(
         {ok, ~"árvores"},
@@ -1315,7 +1305,7 @@ ensure_loaded_many_equals_n_singles(Config) ->
     ok = erli18n_server:unload(default, ~"bulk_a"),
     ok = erli18n_server:unload(default, ~"bulk_b").
 
-%% Finding #6, bulk class. A single failing spec must NOT block the
+%% Bulk load: a single failing spec must NOT block the
 %% others — each catalog's result is reported individually.
 ensure_loaded_many_reports_errors_per_spec(Config) ->
     Good = fixture(Config, "minimal_en.po"),
