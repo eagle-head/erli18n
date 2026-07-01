@@ -120,7 +120,7 @@ apps/erli18n/            the runtime library (a published Hex package)
   rebar.config           the lib's own deps (telemetry) + compile options + per-app hex/ex_doc plugins + this package's doc/hex config
   README / CHANGELOG / LICENSE   the lib's own publish-ready package docs
 apps/rebar3_erli18n/     the catalog-tooling rebar3 plugin (a separate published Hex package)
-  src/                   the four providers (extract / merge / check / report) + PO serializer + host seam
+  src/                   the five providers (extract / merge / check / report / compile) + PO serializer + host seam
   test/                  the plugin's Common Test suites
   rebar.config           the plugin's {deps,[erli18n]} + per-app hex/ex_doc plugins + this package's doc/hex config
   README / CHANGELOG / LICENSE   the plugin's own publish-ready package docs
@@ -158,10 +158,10 @@ plugins, the `test` profile, and the dialyzer/xref/hank/erlfmt policy).
 ### Consuming the plugin downstream (and locally)
 
 A downstream app opts into the catalog tooling with `{plugins, [rebar3_erli18n]}`
-in its own `rebar.config` (alongside its normal `{deps, [{erli18n, "~> 0.6"}]}`),
-which surfaces `rebar3 erli18n {extract,merge,check,report}`.
+in its own `rebar.config` (alongside its normal `{deps, [{erli18n, "~> 0.7"}]}`),
+which surfaces `rebar3 erli18n {extract,merge,check,report,compile}`.
 
-The plugin declares `{deps, [{erli18n, "~> 0.6"}]}` (the **plugin → lib**
+The plugin declares `{deps, [{erli18n, "~> 0.7"}]}` (the **plugin → lib**
 direction — the gpb / `rebar3_gpb_plugin` idiom). That declaration is
 load-bearing: it is what pulls the runtime library onto the plugin's code path
 at provider-run time so the providers can call `erli18n_po:parse/1`,
