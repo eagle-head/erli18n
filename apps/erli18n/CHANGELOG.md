@@ -18,12 +18,100 @@ Per [SemVer 2.0.0 §4](https://semver.org/#spec-item-4), this project is in the 
 The `1.0.0` release commits to API stability. Tag bumps to `1.0.0` only when **all** of the following hold:
 
 1. At least one external project uses `erli18n` in production for ≥ 6 months without reporting breaking issues.
-2. The Post-0.1.0 Roadmap items that affect public API surface (charset support, hot upgrade behavior, async load) are either implemented or formally rejected with rationale.
-3. Parity SUITE (`erli18n_parity_SUITE`) passes end-to-end against the real GNU `gettext` / `ngettext` CLI (`gettext-tools` ≥ 0.21) as oracle (currently 6 scenarios; target ≥ 20 covering the full PSD-001…009 semantics matrix).
+2. The post-0.1.0 changes that affect public API surface (charset support, hot upgrade behavior, async load) are either implemented or formally rejected with rationale.
+3. Parity SUITE (`erli18n_parity_SUITE`) passes end-to-end against the real GNU `gettext` / `ngettext` CLI (`gettext-tools` ≥ 0.21) as oracle (currently 6 scenarios; target ≥ 20 covering the full PO-semantics decision matrix).
 4. No unfixed `@unstable` telemetry events remain — all events either promoted to `@stable` or removed.
 5. CHANGELOG documents zero behavioral changes for at least 2 consecutive minor releases.
 
 ## [Unreleased]
+
+## [0.7.0] — 2026-06-29
+
+**Opt-in compile-time `.po`->BEAM catalog registration**. A consuming
+app can now register catalogs that the `rebar3_erli18n` build-time codegen baked
+into generated BEAM modules — ALREADY parsed, with the `Plural-Forms` rule
+ALREADY compiled — so boot does **no `.po` parse and no plural compile**. This
+release is additive under the `0.x` SemVer policy: one new facade function, one
+new `erli18n_server` API, two new public types, and one new internal module. The
+runtime `ensure_loaded/3,4` path remains the **default**; a project that uses
+none of the compiled-catalog features sees zero change — no new application-env key, and the read hot
+path (`erli18n_pt_store:get_singular/4` / `get_plural_form/5`) is byte-for-byte
+unchanged.
+
+### Added
+
+- **`erli18n:register_compiled_catalogs/1`** — the opt-in boot-time counterpart
+  of `ensure_loaded/3` for catalogs frozen into the release at build time. Given
+  the consuming application's atom, it discovers that app's generated carrier
+  modules (the `erli18n_cc_*` modules the `rebar3_erli18n compile` provider
+  emits), reads each ALREADY-parsed entry list plus its ALREADY-compiled plural
+  rule, and installs them all in a **single serialized write** through the same
+  `erli18n_server` mailbox every other catalog write uses. Returns
+  `[{Domain, Locale, ensure_result()}]` — a fresh catalog reports
+  `{ok, NumEntries}`, one already present reports `{ok, already}`. The honest
+  framing is **no `.po` parse / no plural compile at startup — NOT zero-load**:
+  registration still installs each catalog (the cost is the install, not the
+  parsing), so it composes with, rather than replaces, runtime loading.
+  - **Coexistence + idempotency.** Registration is additive and idempotent: it
+    composes with `ensure_loaded/3` (a project may compile some catalogs and load
+    others at runtime), and a catalog already present — by a prior call or by
+    `ensure_loaded/3` — reports `{ok, already}` and is **not** overwritten.
+  - **Placement contract (boot ordering).** Call it **once**, in the consuming
+    app's `start/2`, **before** its supervision tree starts, so every catalog is
+    live before any worker can look one up:
+
+    ```erlang
+    %% my_app_app.erl
+    start(_Type, _Args) ->
+        _ = erli18n:register_compiled_catalogs(my_app),
+        my_app_sup:start_link().
+    ```
+
+  - It crashes with `error({erli18n_compiled_app_not_loaded, App})` when `App` is
+    not loaded (a wrong atom or a wrong boot order — a programming error, surfaced
+    loudly), and emits a single `?LOG_WARNING` and returns `[]` when `App` is
+    loaded but ships no compiled catalogs.
+- **`erli18n_server:register_compiled_many/1`** — the server-side install of a
+  list of `compiled_spec()` values. It stages each pre-built catalog (the
+  already-parsed entries + the baked header) and commits them through the
+  existing serialized `commit_many` path, reusing the same staging/idempotency
+  machinery as `ensure_loaded`. The embedded `'$header'` keeps the catalog's
+  **real** baked divergence (so `lookup_header/2` still reports it), but the
+  staged value the install path receives carries `divergence => none` and
+  `fuzzy_skipped => 0`, so boot-time registration installs **silently** — the
+  vs-CLDR plural-divergence warning a diverging catalog would raise is emitted
+  **once at build time** by the codegen provider, not on every boot.
+- **`erli18n_server:baked_header/0` and `compiled_spec/0` public types.**
+  `baked_header()` is the build-time-computed header of a compiled catalog (its
+  pre-compiled `plural`, the raw `plural_raw` fallback, the source `po_path`, the
+  pre-computed vs-CLDR `divergence`, `fuzzy_included`, and `num_entries`);
+  `compiled_spec()` is the `{Domain, Locale, Entries, baked_header()}` tuple a
+  generated carrier's `catalog/0` returns. They are exported so the separate
+  `rebar3_erli18n` codegen can construct the exact term `register_compiled_many/1`
+  installs across the published `{deps, [erli18n]}` boundary.
+- **`erli18n_compiled`** — the internal discovery + registration helper
+  `register_compiled_catalogs/1` delegates to. It finds an application's generated
+  carrier modules by their `-erli18n_compiled_catalog([...])` attribute, applies
+  each module's `catalog/0`, and hands the resulting `compiled_spec()` list to
+  `erli18n_server:register_compiled_many/1`. `kernel` + `stdlib` only.
+- **`erli18n_server:default_max_bytes/0` and `default_max_entries/0` are now
+  exported.** They return the resource-bound defaults (`max_po_bytes`, 16 MiB;
+  `max_po_entries`, 500,000), each read from `application:env` and narrowed to a
+  `non_neg_integer() | infinity`. Exporting them makes the runtime the single
+  source of truth for the caps: the `rebar3_erli18n` build-time codegen consults
+  them to reject an oversized `.po` (by file size, before reading it whole) or an
+  over-cap entry count (after parse) at BUILD time — the same bounds
+  `ensure_loaded/3,4` enforces on a runtime load — so a compiled catalog can
+  never carry more than a runtime load would accept. Set either env key to
+  `infinity` to disable that cap.
+
+### Notes
+
+- **No behavior change for runtime-loaded catalogs.** Lookup, fallback,
+  idempotency, telemetry, and the `ensure_loaded/3,4` / `reload/3,4` contracts are
+  all unchanged. `ngettext` (and family) still returns the plural **form**; no
+  existing arity changes meaning or return shape. The only way to reach the new
+  path is to call `register_compiled_catalogs/1` explicitly.
 
 ## [0.6.1] — 2026-06-28
 
@@ -49,17 +137,17 @@ the shipped CLDR plural rules are byte-identical to 0.6.0.
 
 ## [0.6.0] — 2026-06-25
 
-Phase 5: **per-request localization middleware for Cowboy and Elli**, plus the
+**Per-request localization middleware for Cowboy and Elli**, plus the
 pure negotiation core, structural performance/correctness fixes on the new
-per-request path, and two general latent-bug fixes surfaced by a test-adequacy
-audit (UTF-8 truncation in the interpolator, non-UTF-8 byte escaping in the PO
-serializer). Additive under the `0.x` SemVer policy — new optional adapter
+per-request path, and two general latent-bug fixes (UTF-8 truncation in the
+interpolator, non-UTF-8 byte escaping in the PO serializer). Additive under the
+`0.x` SemVer policy — new optional adapter
 modules, a new public core module, and one new facade function; the default
 `kernel` + `stdlib` build is unchanged.
 
 ### Added
 
-- **Per-request localization middleware for Cowboy and Elli** (roadmap Phase 5).
+- **Per-request localization middleware for Cowboy and Elli**.
   Two new **optional** adapter modules make per-request locale negotiation
   turnkey:
   - `erli18n_cowboy` — a `cowboy_middleware` that negotiates the request locale
@@ -190,7 +278,7 @@ detailed under **Added**) and the repository's move to a rebar3 umbrella in whic
 ### Security
 
 - **`erli18n_po:parse/1,2` plural-index validation no longer allocates a list
-  sized by the untrusted `nplurals=` header (anti-DoS).** The PSD-009 cross-check
+  sized by the untrusted `nplurals=` header (anti-DoS).** The plural-count cross-check
   in `validate_plural_indices/3` previously built `lists:seq(0, Nplurals - 1)`,
   where `Nplurals` comes straight from the `.po` `Plural-Forms` header. The
   loader only caps that value's DIGIT COUNT (7 digits, up to 9,999,999), so a
@@ -388,15 +476,15 @@ detailed under **Added**) and the repository's move to a rebar3 umbrella in whic
   extracted comments, `#:` references, `#,` flags incl. `fuzzy`, `#|`
   previous-msgid, and `#~` obsolete entries) on the runtime READ/parse side.
   That mode is deliberately NOT shipped: `erli18n_po:parse/1` stays lossy by
-  design, collapsing all metadata and dropping fuzzy (PSD-001) and obsolete
-  (PSD-007) entries, so the runtime API surface stays minimal. PO metadata is
+  design, collapsing all metadata and dropping fuzzy and obsolete
+  entries, so the runtime API surface stays minimal. PO metadata is
   structurally owned by the plugin's WRITE/serialize side
   (`rebar3_erli18n_po_meta`), not the runtime parser. This matches the Gettext
   merge contract the plugin implements: `#:` references and comments are
   authoritative from the freshly extracted POT, and only `msgstr` is preserved
   from the old PO, so the runtime read side has no need to round-trip the
   metadata channel. The discarded suite's edge-case assertions worth keeping
-  (the PSD-001/PSD-007 fuzzy/obsolete and no-context cases) were ported to the
+  (the fuzzy/obsolete and no-context cases) were ported to the
   plugin-side `po_meta_SUITE` instead (see above). No runtime/published module
   was edited for this decision.
 
@@ -450,7 +538,7 @@ policy above.
 
 - **`erli18n_table_owner`** and the entire ETS heir / `'ETS-TRANSFER'` /
   `give_away/3` handoff subsystem. That machinery existed only so ETS catalogs
-  survived a worker crash (Finding #10). `persistent_term` is node-global and
+  survived a worker crash. `persistent_term` is node-global and
   runtime-owned, so a worker crash destroys nothing: the supervisor collapses to
   a single `erli18n_server` child under `one_for_one` (was `rest_for_one` with
   an owner-first ordering), and the secondary ETS catalog index and the
@@ -458,7 +546,7 @@ policy above.
 
 ## [0.3.0] — 2026-06-19
 
-Phase 2: **canonicalization-aware BCP-47 fallback chain + `Accept-Language`
+**Canonicalization-aware BCP-47 fallback chain + `Accept-Language`
 negotiation (opt-in)**. This release is additive — a new module, four new
 facade functions, one new application-env key defaulting to `off`, and one new
 telemetry event under the existing opt-in flag. With the default configuration
@@ -535,7 +623,7 @@ the `0.x` SemVer policy above.
 
 ## [0.2.0] — 2026-06-16
 
-Phase 1: **named `%{var}` interpolation**. This release is additive — every
+**Named `%{var}` interpolation**. This release is additive — every
 change is a new function, type, or module; the existing `gettext` / `ngettext` /
 `pgettext` / `npgettext` families (and their `d` / `dc` variants) are
 behaviorally unchanged. The minor bump follows the `0.x` SemVer policy above.
@@ -594,20 +682,20 @@ them at compile time with `attribute doc after function definitions`.
 
 ### Added
 
-- **Core OTP application**: `erli18n_app`, `erli18n_sup` (intensity `{5, 10}` hardcoded per AMB-002).
+- **Core OTP application**: `erli18n_app`, `erli18n_sup` (intensity `{5, 10}` hardcoded).
 - **`erli18n_server`** — gen_server + ETS catalog store with anti-bottleneck pattern (hot path `lookup_*` is lock-free direct ETS from caller process; writes serialized through `protected` table owner).
-- **`erli18n_po`** — hand-written recursive-descent parser for GNU gettext `.po` format. Honors PSDs 001-009:
-  - PSD-001: fuzzy entries dropped by default; opt-in via `#{include_fuzzy => true}`.
-  - PSD-002: charset support restricted to UTF-8, Latin-1, US-ASCII (native to `unicode:characters_to_binary/3`).
-  - PSD-003: empty `msgstr` preserved; fallback-to-msgid handled at lookup.
-  - PSD-004: header `Plural-Forms` is runtime source of truth; CLDR consulted at load only for divergence warning.
-  - PSD-005: BOM UTF-8 stripped silently.
-  - PSD-006: msgctxt stored as a separate ETS key field, matching how GNU gettext keys contextual entries (`msgctxt` + `EOT` + `msgid`).
-  - PSD-007: obsolete `#~` entries skipped.
-  - PSD-008: degenerate plural (`nplurals=1`) accepted.
-  - PSD-009: `nplurals` mismatch rejected with structured error.
+- **`erli18n_po`** — hand-written recursive-descent parser for GNU gettext `.po` format. Honors the nine PO-semantics decisions:
+  - Fuzzy entries dropped by default; opt-in via `#{include_fuzzy => true}`.
+  - Charset support restricted to UTF-8, Latin-1, US-ASCII (native to `unicode:characters_to_binary/3`).
+  - Empty `msgstr` preserved; fallback-to-msgid handled at lookup.
+  - Header `Plural-Forms` is runtime source of truth; CLDR consulted at load only for divergence warning.
+  - BOM UTF-8 stripped silently.
+  - msgctxt stored as a separate ETS key field, matching how GNU gettext keys contextual entries (`msgctxt` + `EOT` + `msgid`).
+  - Obsolete `#~` entries skipped.
+  - Degenerate plural (`nplurals=1`) accepted.
+  - `nplurals` mismatch rejected with structured error.
 - **`erli18n_plural`** — recursive-descent C-expression evaluator for `Plural-Forms` header. CLDR data inlined for 49 locales. Bignum-clean.
-- **`erli18n_server:ensure_loaded/3,4` and `reload/3,4`** — atomic catalog load (parse → compile plural → validate vs CLDR → insert), with idempotency fast-path (RISK-012 mitigation).
+- **`erli18n_server:ensure_loaded/3,4` and `reload/3,4`** — atomic catalog load (parse → compile plural → validate vs CLDR → insert), with idempotency fast-path.
 - **`erli18n`** (façade) — full GNU gettext C-macro API surface: `gettext` family (singular), `ngettext` family (plural), `pgettext` family (contextual), `npgettext` family (contextual + plural), with `d`/`dc` aliases. Per-process locale via process dictionary; application-wide defaults via `application:get_env/2`.
 - **`erli18n_telemetry`** — 7 `:telemetry` events as first-class observability concern (catalog load/reload/unload spans; lookup miss/fuzzy_skip opt-in; plural divergence warning; memory warning rate-limited). `telemetry` declared as optional dep via `optional_applications` (OTP 24+).
 - **Test suite**: 289 Common Test cases, green on OTP 27 and 28 — façade API, gen_server / catalog, `.po` parser, plural evaluator, loader, and telemetry suites, plus PropEr properties (200 runs each) and fuzz scenarios (100–500 runs each). 6 of these are parity scenarios run against the real GNU `gettext` / `ngettext` CLI oracle; that suite skips cleanly when `gettext-tools` or the `pt_BR.UTF-8` / `ru_RU.UTF-8` locales are absent.
@@ -619,11 +707,9 @@ them at compile time with `attribute doc after function definitions`.
 
 ### Architecture decisions
 
-The design rationale is captured inline in the source: PO-semantics decisions
-(`PSD-001`…`PSD-009`), risk mitigations (`RISK-*`), and ambiguity resolutions
-(`AMB-*`) are referenced from the relevant module `-moduledoc` / `-doc` attributes
-and code comments. The internal planning corpus that originally tracked them is not
-part of the published package.
+The design rationale is captured inline in the source: the PO-semantics decisions,
+risk mitigations, and ambiguity resolutions are documented in the relevant module
+`-moduledoc` / `-doc` attributes and code comments.
 
 <!--
 Per-package release links. The umbrella publishes each package from its own
@@ -631,7 +717,9 @@ prefixed tag (`erli18n-vX.Y.Z`), so these point at the `erli18n`-scoped tags
 rather than the legacy single `vX.Y.Z` tags. See `.github/workflows/release.yml`.
 -->
 
-[Unreleased]: https://github.com/eagle-head/erli18n/compare/erli18n-v0.6.0...HEAD
+[Unreleased]: https://github.com/eagle-head/erli18n/compare/erli18n-v0.7.0...HEAD
+[0.7.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.7.0
+[0.6.1]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.6.1
 [0.6.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.6.0
 [0.5.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.5.0
 [0.4.0]: https://github.com/eagle-head/erli18n/releases/tag/erli18n-v0.4.0
