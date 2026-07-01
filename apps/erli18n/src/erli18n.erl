@@ -114,17 +114,17 @@ ok
 - Locale state: `setlocale/1`, `which_locale/0`.
 - App defaults: `default_locale/0`, `textdomain/0`.
 - Catalog lifecycle: `ensure_loaded/3`, `reload/3`, `unload/2`,
-  `default_po_path/3`.
+  `default_po_path/3`, `register_compiled_catalogs/1` (opt-in).
 - Observability: `loaded_catalogs/0`, `loaded_locales/0`, `memory_info/0`,
   `which_keys/2`.
-- Locale negotiation & fallback (Phase 2, opt-in): `negotiate/2`,
+- Locale negotiation & fallback (opt-in): `negotiate/2`,
   `parse_accept_language/1`, `canonicalize_locale/1`, `set_locale_fallback/1`
   (and the `locale_fallback` app env). See `erli18n_negotiate`.
 
 ## Lookup rules (R1-R6)
 
-This module's internal comments label the lookup behavior with `R1`-`R6`
-(coming from `BR-MIGRAR-001/002` and `PSD-003`). What each one means, for anyone
+This module's internal comments label the lookup behavior with `R1`-`R6`.
+What each one means, for anyone
 who has never seen the project:
 
 - `R1` — singular: `gettext`/`dgettext`/`dcgettext` family.
@@ -138,6 +138,43 @@ who has never seen the project:
   `resolved_locale/0`).
 - `R6` — default domain resolution: the no-domain variants (`gettext/1`,
   `ngettext/3`, ...) use `textdomain/0` as the domain.
+
+## Compiled catalogs (opt-in)
+
+By default catalogs are loaded at runtime from `.po` files with
+`ensure_loaded/3,4` (read + parse + plural compile at boot). An OPT-IN
+alternative exists: the `rebar3_erli18n` build-time codegen bakes each catalog —
+ALREADY parsed, with its `Plural-Forms` rule ALREADY compiled — into a generated
+BEAM module, and `register_compiled_catalogs/1` registers them at boot with NO
+parse and NO plural compile.
+
+Runtime vs compiled — which to use:
+
+- **Runtime `ensure_loaded/3,4`** (the default): catalogs are plain `.po` files
+  shipped in `priv/`, editable/reloadable without a recompile (`reload/3`). Best
+  when translations change independently of code, or are supplied per tenant.
+- **Compiled `register_compiled_catalogs/1`**: catalogs are frozen into the
+  release at build time. Best when translations ship WITH the code and you want
+  boot to skip the `.po` read/parse/compile entirely. Note this is **no
+  parse/no compile at startup — NOT zero-load**: registration still installs
+  each catalog through the same serialized writer, so its cost is the install,
+  not the parsing.
+
+Placement contract — call it ONCE, in the consuming app's `start/2`, BEFORE its
+supervision tree starts, so every catalog is live before any worker can look one
+up:
+
+```erlang
+%% my_app_app.erl
+start(_Type, _Args) ->
+    _ = erli18n:register_compiled_catalogs(my_app),
+    my_app_sup:start_link().
+```
+
+Registration is idempotent and additive: it composes with runtime loading, and a
+catalog already present (by a prior call or by `ensure_loaded/3`) reports
+`{ok, already}` and is not overwritten. See `register_compiled_catalogs/1` and
+`erli18n_compiled`.
 """.
 
 %% ============================================================================
@@ -239,6 +276,13 @@ who has never seen the project:
     reload/4,
     unload/2,
     default_po_path/3
+]).
+
+%% Compiled-catalog registration (opt-in). Front door for the
+%% compile-time `.po` -> BEAM codegen: registers the catalogs a consuming app
+%% baked at build time. Thin delegation to `erli18n_compiled`.
+-export([
+    register_compiled_catalogs/1
 ]).
 
 %% Observability passthrough.
@@ -1840,6 +1884,45 @@ Delegates to `erli18n_server:default_po_path/3`.
 -spec default_po_path(atom(), domain(), locale()) -> file:filename().
 default_po_path(App, Domain, Locale) ->
     erli18n_server:default_po_path(App, Domain, Locale).
+
+%% =========================
+%% Compiled-catalog registration (opt-in)
+%% =========================
+%%
+%% Thin delegation to `erli18n_compiled`, the consumer-side boot engine for
+%% the compile-time `.po` -> BEAM codegen. This is the documented door; the
+%% discovery + dynamic `catalog/0` apply live in `erli18n_compiled`.
+
+-doc """
+Registers the compiled catalogs that application `App` baked at build time
+(opt-in).
+
+The boot-time counterpart of `ensure_loaded/3` for catalogs frozen into the
+release by the `rebar3_erli18n` codegen: it discovers `App`'s generated carrier
+modules, reads each ALREADY-parsed + ALREADY-compiled catalog, and installs them
+in a SINGLE serialized write — boot does NO `.po` parse and NO plural compile.
+Returns `[{Domain, Locale, ensure_result()}]` (a fresh catalog reports
+`{ok, NumEntries}`, one already present reports `{ok, already}`).
+
+Call this ONCE, in the consuming app's `start/2`, BEFORE its supervision tree
+starts (see the "Compiled catalogs" section of this module's docs for the
+placement contract):
+
+```erlang
+start(_Type, _Args) ->
+    _ = erli18n:register_compiled_catalogs(my_app),
+    my_app_sup:start_link().
+```
+
+Crashes with `error({erli18n_compiled_app_not_loaded, App})` if `App` is not
+loaded (wrong atom or wrong boot order), and emits ONE `?LOG_WARNING` and returns
+`[]` if `App` is loaded but carries no compiled catalogs. Delegates to
+`erli18n_compiled:register/1`.
+""".
+-spec register_compiled_catalogs(atom()) ->
+    [{domain(), locale(), erli18n_server:ensure_result()}].
+register_compiled_catalogs(App) ->
+    erli18n_compiled:register(App).
 
 %% =========================
 %% Observability passthrough

@@ -69,6 +69,9 @@ shutdown (otherwise a stop/start cycle would leak stale catalogs).
 
 - To **load/reload** a `.po`: `ensure_loaded/3,4` (idempotent),
   `reload/3,4` (always reinstalls, atomic) or `ensure_loaded_many/1` (batch).
+- To **register compiled catalogs** (opt-in, boot-time): `register_compiled_many/1`
+  installs ALREADY-parsed + ALREADY-compiled catalogs through the same serialized
+  writer, with no parse or plural compile.
 - To **unload**: `unload/2`.
 - To **read** a low-level translation (the `erli18n` façade is the usual
   front-door): `lookup_singular/4`, `lookup_plural_form/5`, `lookup_header/2`.
@@ -101,7 +104,7 @@ counts only the 130 data entries — see both functions.)
 ## Main entry points
 
 - Load: `ensure_loaded/3`, `ensure_loaded/4`, `ensure_loaded_many/1`,
-  `reload/3`, `reload/4`.
+  `reload/3`, `reload/4`, `register_compiled_many/1` (opt-in, compiled catalogs).
 - Read (lock-free): `lookup_singular/4`, `lookup_plural_form/5`,
   `lookup_header/2`.
 - Write: `insert_singular/5`, `insert_plural/5`, `insert_catalog/3`,
@@ -166,6 +169,23 @@ counts only the 130 data entries — see both functions.)
     reload/3,
     reload/4,
     default_po_path/3
+]).
+
+%% Compile-time catalogs: register ALREADY-parsed + ALREADY-compiled catalogs
+%% (generated at build time) through the SAME serialized writer the `.po` loader
+%% uses, so boot does no parse/compile. A project that uses no compiled catalogs
+%% never calls this.
+-export([
+    register_compiled_many/1
+]).
+
+%% Resource-bound defaults (the single source of truth for the byte and entry
+%% caps). Exported so a separate build-time tool can enforce the SAME caps it
+%% will hit at runtime, keeping a compiled catalog from carrying more than the
+%% runtime would accept.
+-export([
+    default_max_bytes/0,
+    default_max_entries/0
 ]).
 
 %% gen_server callbacks.
@@ -291,7 +311,8 @@ signal used by `ensure_loaded/3` ("catalog already loaded").
   `lookup_plural_form/5`).
 - `plural_raw`: the raw text of the rule (or the fallback rule) for
   observability/round-trip.
-- `po_path`: the path of the source `.po`.
+- `po_path`: the path of the source `.po` — a `string()` when the catalog is
+  loaded from a `.po` file, a `binary()` when it comes from a compiled carrier.
 - `loaded_at`: `erlang:system_time(millisecond)` at the moment of the load.
 - `divergence`: `divergence_info()` — `none` or the vs-CLDR divergence warning.
 - `fuzzy_included`: whether the load included `#, fuzzy` entries.
@@ -301,15 +322,14 @@ signal used by `ensure_loaded/3` ("catalog already loaded").
 -type header_state() :: #{
     plural := erli18n_plural:plural_compiled() | fallback,
     plural_raw := binary(),
-    po_path := file:filename(),
+    po_path := file:filename_all(),
     loaded_at := integer(),
     divergence := divergence_info(),
     fuzzy_included := boolean(),
     num_entries := non_neg_integer()
 }.
 
-%% Finding #4 (reload-not-atomic-destroys-catalog-and-empty-window) +
-%% Finding #6: the product of the pure, failable half of the load pipeline (read
+%% The product of the pure, failable half of the load pipeline (read
 %% + parse + compile + divergence + map build). A `staged/0' is built WITHOUT
 %% touching `persistent_term', entirely in the CALLING process, so any error
 %% leaves the prior catalog intact. The commit then performs the only observable
@@ -325,6 +345,40 @@ signal used by `ensure_loaded/3` ("catalog already loaded").
     num_entries := non_neg_integer(),
     fuzzy_skipped := non_neg_integer()
 }.
+
+%% Compile-time catalogs: the header of a catalog that was parsed and
+%% compiled AHEAD of time (at build time, into a generated BEAM module), ready to
+%% be registered at boot WITHOUT any runtime parse/compile. It is exactly a
+%% `header_state()` MINUS the `loaded_at` field — that single field is stamped at
+%% registration time (`stage_compiled_catalog/4`), so a generated module carries
+%% no wall-clock value baked into its literals.
+-doc """
+Pre-built header of a compiled catalog, the input to `register_compiled_many/1`.
+
+It is a `header_state()` MINUS `loaded_at`: every other field carries the value
+computed at BUILD time (the already-compiled `Plural-Forms` rule or `fallback`,
+the raw rule, the source `.po` path, the vs-CLDR `divergence`, whether fuzzy
+entries were included, and the entry count). `loaded_at` is the only header field
+NOT baked — it is stamped when the catalog is registered, so a generated module
+holds no wall-clock literal.
+""".
+-type baked_header() :: #{
+    plural := erli18n_plural:plural_compiled() | fallback,
+    plural_raw := binary(),
+    po_path := file:filename_all(),
+    divergence := divergence_info(),
+    fuzzy_included := boolean(),
+    num_entries := non_neg_integer()
+}.
+-doc """
+A single compiled catalog to register: `{Domain, Locale, Entries, BakedHeader}`.
+
+`Entries` are the ALREADY-parsed `erli18n_po:entry()` tuples and `BakedHeader` is
+the `baked_header()` computed at build time. `register_compiled_many/1` installs
+each spec through the same serialized writer the `.po` loader uses, with no
+boot-time parse or plural compile.
+""".
+-type compiled_spec() :: {domain(), locale(), [erli18n_po:entry()], baked_header()}.
 
 -export_type([
     domain/0,
@@ -343,7 +397,9 @@ signal used by `ensure_loaded/3` ("catalog already loaded").
     bound_error/0,
     load_spec/0,
     divergence_info/0,
-    header_state/0
+    header_state/0,
+    baked_header/0,
+    compiled_spec/0
 ]).
 
 %% =========================
@@ -1212,7 +1268,142 @@ partition_one({D, L, {prepared, {ok, Payload}}}, {Commit, Done}) ->
 partition_one({D, L, {prepared, {error, _} = Err}}, {Commit, Done}) ->
     {Commit, [{D, L, Err} | Done]}.
 
-%% Findings #12 / #18 — single typed boundary cast.
+%% =========================
+%% Compiled-catalog registration (compile-time catalogs)
+%% =========================
+%%
+%% `register_compiled_many/1' is the boot-time counterpart of
+%% `ensure_loaded_many/1' for catalogs that were parsed and plural-compiled
+%% AHEAD of time (at build time, embedded in a generated BEAM module). It reuses
+%% the EXACT same serialized write path: each spec is prepared in the CALLING
+%% process (idempotent fast-path or a pure stage) and all ready payloads are
+%% installed in ONE `{commit_many, _}' critical section. There is NO new server
+%% message, NO new commit mode and NO new handle_call clause — the heavy
+%% read/parse/compile that the `.po' loader does is simply ABSENT here (it
+%% happened at build time), so the staged map is assembled from the pre-built
+%% entries and baked header with a single `pt_store:build_map/2'.
+%%
+%% Hard constraint: registration must install SILENTLY. A compiled catalog can
+%% carry a real vs-CLDR `divergence' in its baked header, but emitting a
+%% divergence/fuzzy telemetry BURST for every catalog at boot would be noise. So
+%% `stage_compiled_catalog/4' embeds the REAL baked divergence in the catalog
+%% map's `'$header'' (full `lookup_header/2' parity) while returning the
+%% `staged/0' with `divergence => none' and `fuzzy_skipped => 0', which makes the
+%% reused install path take its boot-quiet no-op clauses (`emit_divergence_*(_,
+%% _, none)', `emit_fuzzy_skip(_, _, 0)').
+-doc """
+Registers a batch of ALREADY-parsed + ALREADY-compiled catalogs.
+
+The boot-time counterpart of `ensure_loaded_many/1` for catalogs whose `.po` was
+parsed and whose `Plural-Forms` rule was compiled at BUILD time (embedded in a
+generated module). Each `compiled_spec()` is prepared in the calling process and
+all ready payloads are installed in a SINGLE commit through the same serialized
+writer the `.po` loader uses — boot does NO parse and NO plural compile.
+
+`Specs` is `[{Domain, Locale, Entries, BakedHeader}]`. Returns
+`[{Domain, Locale, ensure_result()}]`: an already-loaded catalog reports
+`{ok, already}` (registration is idempotent, like `ensure_loaded`), a freshly
+installed one reports `{ok, NumEntries}`.
+
+## Edge cases
+- Empty list -> `[]` (no roundtrip to the server).
+- **Idempotency**: a catalog already loaded (by a prior register, `ensure_loaded`
+  or `reload`) is NOT overwritten — the spec reports `{ok, already}`.
+- **Boot-quiet**: a baked header carrying a vs-CLDR `divergence` installs
+  SILENTLY (no `[erli18n, plural, divergence_warning]` / `[erli18n, lookup,
+  fuzzy_skip]` burst), yet the divergence is still recoverable via
+  `lookup_header/2`.
+- **Trusted input**: registration assumes codegen produced well-formed entries.
+  A malformed entry (e.g. a negative plural form index) crashes LOUDLY in
+  `erli18n_pt_store:build_map/2`, in the caller's preparation phase, before any
+  mutation — it is NOT reported as a structured `{error, _}`.
+
+```erlang
+1> Baked = #{plural => fallback, plural_raw => <<"...">>, po_path => "fr.po",
+..    divergence => none, fuzzy_included => false, num_entries => 1}.
+2> erli18n_server:register_compiled_many([
+..    {my_domain, <<"fr">>, [{singular, undefined, <<"Hello">>, <<"Bonjour">>}], Baked}
+.. ]).
+[{my_domain, <<"fr">>, {ok, 1}}]
+```
+
+See `ensure_loaded_many/1`, `compiled_spec()`, `baked_header()`.
+""".
+-spec register_compiled_many([compiled_spec()]) ->
+    [{domain(), locale(), ensure_result()}].
+register_compiled_many(Specs) when is_list(Specs) ->
+    Prepared = [prepare_compiled(Spec) || Spec <- Specs],
+    {ToCommit, Resolved} = partition_prepared(Prepared),
+    Committed =
+        case ToCommit of
+            [] ->
+                [];
+            [_ | _] ->
+                cast_commit_many(
+                    gen_server:call(?MODULE, {commit_many, ToCommit})
+                )
+        end,
+    Resolved ++ Committed.
+
+%% Prepare one compiled spec in the caller. Mirrors `prepare_one/1': the
+%% idempotent fast-path is a pure `lookup_header/2' read; on a miss the catalog
+%% is staged purely (no I/O, no compile — the entries are already parsed and the
+%% plural rule already compiled). Unlike the `.po' prepare, staging cannot return
+%% a structured error: a malformed (untrusted-shaped) entry would crash LOUDLY in
+%% `build_map'. Trusted codegen never produces one, so the `{prepared, {ok, _}}'
+%% arm is the only reachable result.
+-spec prepare_compiled(compiled_spec()) ->
+    {domain(), locale(), already}
+    | {domain(), locale(), {prepared, {ok, staged()}}}.
+prepare_compiled({D, L, Entries, Baked}) ->
+    case lookup_header(D, L) of
+        {ok, _} ->
+            {D, L, already};
+        undefined ->
+            {D, L, {prepared, {ok, stage_compiled_catalog(D, L, Entries, Baked)}}}
+    end.
+
+%% PURE staging of a compiled catalog (no `persistent_term' mutation). Stamp
+%% `loaded_at' onto the baked fields to form the FULL `header_state()' (all 7 keys
+%% literal), then build the catalog map so its embedded `'$header'' carries the
+%% REAL baked divergence (full `lookup_header/2' parity). The returned `staged/0'
+%% deliberately reports `divergence => none' and `fuzzy_skipped => 0' so the
+%% reused install path emits NO boot-time divergence/fuzzy telemetry — the baked
+%% divergence lives in the header, not in a per-catalog boot warning.
+-spec stage_compiled_catalog(domain(), locale(), [erli18n_po:entry()], baked_header()) ->
+    staged().
+stage_compiled_catalog(Domain, Locale, Entries, Baked) ->
+    #{
+        plural := Plural,
+        plural_raw := PluralRaw,
+        po_path := PoPath,
+        divergence := Divergence,
+        fuzzy_included := FuzzyIncluded,
+        num_entries := NumEntries
+    } = Baked,
+    HeaderState = #{
+        plural => Plural,
+        plural_raw => PluralRaw,
+        po_path => PoPath,
+        loaded_at => erlang:system_time(millisecond),
+        divergence => Divergence,
+        fuzzy_included => FuzzyIncluded,
+        num_entries => NumEntries
+    },
+    Map = erli18n_pt_store:build_map(Entries, HeaderState),
+    #{
+        map => Map,
+        %% Boot-quiet: the install path's no-op clauses fire on `none'/`0', so no
+        %% divergence/fuzzy telemetry burst. The baked divergence is preserved in
+        %% `Map's `'$header'' above (recoverable via `lookup_header/2').
+        divergence => none,
+        domain => Domain,
+        locale => Locale,
+        num_entries => NumEntries,
+        fuzzy_skipped => 0
+    }.
+
+%% Single typed boundary cast.
 %%
 %% A `gen_server:call/2,3' reply (and an `erli18n_telemetry:span/3' result) is
 %% specced `term()' in OTP because the callback module is resolved at RUNTIME.
@@ -1724,7 +1915,7 @@ stage_compiled(Domain, Locale, PoPath, IncludeFuzzy, Bin, Header, Entries, NumEn
         {error, CompileErr} ->
             {error, {plural_compile_error, CompileErr}};
         {ok, PluralCompiled} ->
-            %% Finding #17: pass the ALREADY compiled bundle, not the raw header
+            %% Pass the ALREADY compiled bundle, not the raw header
             %% map, so the divergence check does not recompile the expression.
             Divergence = compute_divergence(Locale, PluralCompiled),
             HeaderState = #{
@@ -1751,7 +1942,7 @@ stage_compiled(Domain, Locale, PoPath, IncludeFuzzy, Bin, Header, Entries, NumEn
     end.
 
 %% Count the fuzzy entries the default parse dropped, computed in the CALLER
-%% (finding #6: the heavy second parse no longer runs on the server). Only
+%% (the heavy second parse does not run on the server). Only
 %% re-parses when the consumer opted in to lookup telemetry AND the default
 %% (non-fuzzy) load discarded fuzzy entries. The emit happens at commit time from
 %% the precomputed count.
@@ -1773,12 +1964,23 @@ compute_fuzzy_skipped(false, Bin, DefaultCount) ->
             erlang:max(0, length(AllEntries) - DefaultCount)
     end.
 
-%% Bounds defaults (finding #6), configurable via application env so a deployment
-%% can tune or disable (`infinity') them.
+-doc """
+Default maximum size, in bytes, of a `.po` the loader will read before parsing
+(16 MiB). Read from the `max_po_bytes` application-env key; `infinity` disables
+the bound. This is the single source of truth reused by the compile-time catalog
+codegen provider, so the build-time cap and the `ensure_loaded/3,4` load cap
+never drift.
+""".
 -spec default_max_bytes() -> non_neg_integer() | infinity.
 default_max_bytes() ->
     narrow_bound(application:get_env(erli18n, max_po_bytes, 16 * 1024 * 1024)).
 
+-doc """
+Default maximum number of parsed entries per catalog (500000). Read from the
+`max_po_entries` application-env key; `infinity` disables the bound. This is the
+single source of truth reused by the compile-time catalog codegen provider, so
+the build-time cap and the `ensure_loaded/3,4` load cap never drift.
+""".
 -spec default_max_entries() -> non_neg_integer() | infinity.
 default_max_entries() ->
     narrow_bound(application:get_env(erli18n, max_po_entries, 500000)).
