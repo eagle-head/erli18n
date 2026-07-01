@@ -34,6 +34,7 @@
     cowboy_unsupported_default/1,
     cowboy_path_binding/1,
     cowboy_path_binding_non_atom/1,
+    cowboy_path_binding_non_binary_value/1,
     cowboy_path_unconfigured/1,
     cowboy_query_valueless/1,
     cowboy_query_malformed_escape/1,
@@ -100,6 +101,7 @@ groups() ->
             cowboy_unsupported_default,
             cowboy_path_binding,
             cowboy_path_binding_non_atom,
+            cowboy_path_binding_non_binary_value,
             cowboy_path_unconfigured,
             cowboy_query_valueless,
             cowboy_query_malformed_escape,
@@ -278,6 +280,21 @@ cowboy_path_binding_non_atom(_Config) ->
     %% negotiation falls through to the header.
     Req = cowboy_req(#{~"accept-language" => ~"fr"}, ~"", #{locale => ~"de"}),
     Opts = #{sources => [path, header], path_binding => <<"locale">>},
+    {ok, _Req, Env} = erli18n_cowboy:execute(Req, #{erli18n => Opts}),
+    ?assertEqual(~"fr", erli18n:which_locale()),
+    ?assertEqual(~"fr", maps:get(erli18n_locale, Env)),
+    ok.
+
+cowboy_path_binding_non_binary_value(_Config) ->
+    %% The router can bind a NON-BINARY value (e.g. an integer from an
+    %% `:id/integer` constraint). `cowboy_req:binding/3` returns it as-is; the
+    %% core `is_binary` guard rejects it, so the `path` source is skipped
+    %% fail-soft and negotiation falls through to the header — never a crash and
+    %% never a non-binary reaching the negotiator. Exercises the adapter->core
+    %% wiring end-to-end (the core-only non-binary case lives in the adequacy
+    %% suite; here the value travels the real cowboy seam).
+    Req = cowboy_req(#{~"accept-language" => ~"fr"}, ~"", #{locale => 42}),
+    Opts = #{sources => [path, header], path_binding => locale},
     {ok, _Req, Env} = erli18n_cowboy:execute(Req, #{erli18n => Opts}),
     ?assertEqual(~"fr", erli18n:which_locale()),
     ?assertEqual(~"fr", maps:get(erli18n_locale, Env)),
