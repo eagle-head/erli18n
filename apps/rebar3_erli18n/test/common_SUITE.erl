@@ -17,7 +17,9 @@ extracted call sites into catalog entries (merging and ordering references),
     dedup_dedups_identical_references/1,
     entries_to_pot_singular/1,
     entries_to_pot_plural/1,
+    entry_key_singular_and_plural/1,
     format_error_variants/1,
+    format_error_codegen_variants/1,
     runtime_lib_path_resolves/1,
     format_lib_path_clauses/1,
     maybe_log_runtime_lib_path_unset/1,
@@ -31,7 +33,9 @@ all() ->
         dedup_dedups_identical_references,
         entries_to_pot_singular,
         entries_to_pot_plural,
+        entry_key_singular_and_plural,
         format_error_variants,
+        format_error_codegen_variants,
         runtime_lib_path_resolves,
         format_lib_path_clauses,
         maybe_log_runtime_lib_path_unset,
@@ -100,6 +104,30 @@ entries_to_pot_plural(_Config) ->
     ?assert(binary:match(Bytes, <<"msgstr[0] \"\"">>) =/= nomatch),
     ?assert(binary:match(Bytes, <<"msgstr[1] \"\"">>) =/= nomatch).
 
+%% `entry_key/1` reduces a parsed PO entry to its `{Context, Msgid}` identity,
+%% identically for singular and plural shapes (translation/plural/refs dropped).
+entry_key_singular_and_plural(_Config) ->
+    ?assertEqual(
+        {undefined, <<"Hi">>},
+        rebar3_erli18n_common:entry_key({singular, undefined, <<"Hi">>, <<"Ola">>})
+    ),
+    ?assertEqual(
+        {<<"menu">>, <<"File">>},
+        rebar3_erli18n_common:entry_key({singular, <<"menu">>, <<"File">>, <<"Arquivo">>})
+    ),
+    ?assertEqual(
+        {undefined, <<"one">>},
+        rebar3_erli18n_common:entry_key(
+            {plural, undefined, <<"one">>, <<"many">>, [{0, <<"um">>}, {1, <<"muitos">>}]}
+        )
+    ),
+    ?assertEqual(
+        {<<"ctx">>, <<"item">>},
+        rebar3_erli18n_common:entry_key(
+            {plural, <<"ctx">>, <<"item">>, <<"items">>, [{0, <<"item">>}, {1, <<"itens">>}]}
+        )
+    ).
+
 format_error_variants(_Config) ->
     P1 = rebar3_erli18n_common:format_error({parse_failed, "f.erl", oops}),
     ?assert(string:find(P1, "f.erl") =/= nomatch),
@@ -109,6 +137,30 @@ format_error_variants(_Config) ->
     ?assert(string:find(P3, "g.po") =/= nomatch),
     P4 = rebar3_erli18n_common:format_error(other_reason),
     ?assert(string:find(P4, "other_reason") =/= nomatch).
+
+%% The four codegen-specific error clauses each render a deterministic string
+%% mentioning their distinguishing payload, and the generic catch-all still
+%% applies to any term these additive clauses do not match.
+format_error_codegen_variants(_Config) ->
+    M = rebar3_erli18n_common:format_error({missing_keys, [{<<>>, <<"A">>}, {<<>>, <<"B">>}]}),
+    ?assert(string:find(M, "2") =/= nomatch),
+    ?assert(string:find(M, "missing") =/= nomatch),
+    C = rebar3_erli18n_common:format_error(
+        {module_name_collision, 'erli18n_cat_default_pt', [{default, <<"pt">>}, {errors, <<"pt">>}]}
+    ),
+    ?assert(string:find(C, "erli18n_cat_default_pt") =/= nomatch),
+    ?assert(string:find(C, "collide") =/= nomatch),
+    PC = rebar3_erli18n_common:format_error(
+        {plural_compile_error_at_codegen, default, <<"pt">>, {bad_expr, 3}}
+    ),
+    ?assert(string:find(PC, "pt") =/= nomatch),
+    ?assert(string:find(PC, "plural") =/= nomatch),
+    W = rebar3_erli18n_common:format_error({codegen_write_failed, "out/mod.erl", eacces}),
+    ?assert(string:find(W, "out/mod.erl") =/= nomatch),
+    ?assert(string:find(W, "eacces") =/= nomatch),
+    %% The generic catch-all still applies to an unrelated term.
+    G = rebar3_erli18n_common:format_error(some_other_thing),
+    ?assert(string:find(G, "some_other_thing") =/= nomatch).
 
 %% The cross-package load-path diagnostic. `runtime_lib_path/0` is the
 %% structural proof that the `erli18n_po` runtime module is reachable across

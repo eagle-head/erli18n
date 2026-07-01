@@ -1,7 +1,7 @@
 -module(providers_SUITE).
 
 -moduledoc """
-In-node tests for the four providers, `rebar3_erli18n_common`, and
+In-node tests for the five providers, `rebar3_erli18n_common`, and
 `rebar3_erli18n_host`.
 
 rebar3 runs Common Test in a node where its own modules (`rebar_state`,
@@ -229,14 +229,24 @@ console_io_loop(Buf) ->
 %% =========================
 
 init_registers_providers(_Config) ->
-    %% The plugin entry chains all four provider inits.
+    %% The plugin entry chains all five provider inits, ALL under the erli18n
+    %% namespace. Collect ONLY the erli18n-namespace providers' impl names, so
+    %% the count assertion below cannot be fooled by same-named providers in
+    %% other namespaces.
     St0 = rebar_state:new(),
     {ok, St1} = rebar3_erli18n:init(St0),
-    Names = [providers:impl(P) || P <- rebar_state:providers(St1)],
+    Names = [
+        providers:impl(P)
+     || P <- rebar_state:providers(St1), providers:namespace(P) =:= erli18n
+    ],
     lists:foreach(
         fun(N) -> ?assert(lists:member(N, Names)) end,
-        [extract, merge, check, report]
-    ).
+        [extract, merge, check, report, compile]
+    ),
+    %% A plain lists:member check cannot catch a MISSING compile registration
+    %% (the other four would still pass); pin the exact erli18n-namespace count
+    %% so dropping any provider — compile included — fails the test.
+    ?assertEqual(5, length(Names)).
 
 extract_writes_pot(Config) ->
     write_consumer(Config, greet_module([<<"Hello">>, <<"Goodbye">>])),
@@ -756,7 +766,7 @@ report_counts_translated_plural(Config) ->
     ok = file:write_file(Po, T),
     %% A fully-translated plural entry must count as ONE translated entry, so
     %% the report reads `1/1 translated (0 missing)` — asserted exactly to lock
-    %% the plural-counting (PSD-001 fuzzy-drop / both-forms-non-empty) behavior.
+    %% the plural-counting (fuzzy-drop / both-forms-non-empty) behavior.
     Text = capture_console(fun() ->
         {ok, _} = rebar3_erli18n_prv_report:do(state(Config, []))
     end),
@@ -952,9 +962,9 @@ check_drift_cycle_in_load_context(Config) ->
     %% SAME provider entry points (`prv_extract:do/1`, `prv_check:do/1`) the
     %% `rebar3 erli18n check` command drives.
     %%
-    %% Per the plan's reviewer item 3, this MUST run in the consumer/plugin load
-    %% context so a load-path regression FAILS THE TEST EXPLICITLY rather than
-    %% masquerading as drift. We assert that up front: `runtime_lib_path/0` —
+    %% This MUST run in the consumer/plugin load context so a load-path
+    %% regression FAILS THE TEST EXPLICITLY rather than masquerading as drift.
+    %% We assert that up front: `runtime_lib_path/0` —
     %% the very `code:which(erli18n_po)` `extract_project/1` consults before it
     %% calls `erli18n_po:dump/1` — is NOT `non_existing`. If the cross-package
     %% `{deps, [erli18n]}` edge ever regressed, `check`'s `do/1` would

@@ -19,11 +19,11 @@ The three analysis tools are satisfied as follows, all scoped to this seam:
 - elp eqwalizer: a `% elp:ignore W0017` on each host call site below;
 - dialyzer: a single function-scoped `-dialyzer({no_unknown, [...]})`;
 - xref: a scoped `-ignore_xref([...])` (below) listing both this seam's own
-  exported wrappers and the eight external rebar3 host `{M,F,A}` edges, so
+  exported wrappers and the ten external rebar3 host `{M,F,A}` edges, so
   `undefined_function_calls`/`undefined_functions` stay active everywhere
   else. The companion `{xref_ignores,...}` in this app's `rebar.config`
-  carries the same eight edges with the rejected-alternatives rationale. This
-  REPLACES the deleted `tools/rebar3_api/ebin` host-beam extraction.
+  carries the same ten edges with the rejected-alternatives rationale. This
+  is used instead of a `tools/rebar3_api/ebin` host-beam extraction.
 
 The seam is also a genuine architectural win: it gives the providers a thin,
 mockable boundary instead of reaching into rebar3 internals directly.
@@ -37,7 +37,9 @@ mockable boundary instead of reaching into rebar3 internals directly.
     state_dir/1,
     app_dir/1,
     info/2,
-    console/2
+    console/2,
+    warn/2,
+    get_config/3
 ]).
 
 %% Xref host-API resolution, scoped to this seam.
@@ -45,12 +47,13 @@ mockable boundary instead of reaching into rebar3 internals directly.
 %% `apps/*` is rebar3's default discovery root, so the umbrella's `rebar3 xref`
 %% scans this plugin. Two kinds of edge must be ignored, both confined here:
 %%
-%%   * the eight external rebar3 host `{M,F,A}` edges — `providers:create/1`,
+%%   * the ten external rebar3 host `{M,F,A}` edges — `providers:create/1`,
 %%     `rebar_state:add_provider/2`, `rebar_state:command_parsed_args/1`,
 %%     `rebar_state:project_apps/1`, `rebar_state:dir/1`,
-%%     `rebar_app_info:dir/1`, `rebar_api:info/2`, `rebar_api:console/2` —
-%%     which live inside the rebar3 escript (not a fetchable Hex dep), so xref
-%%     reports each as an undefined function;
+%%     `rebar_state:get/3`, `rebar_app_info:dir/1`, `rebar_api:info/2`,
+%%     `rebar_api:console/2`, `rebar_api:warn/2` — which live inside the
+%%     rebar3 escript (not a fetchable Hex dep), so xref reports each as an
+%%     undefined function;
 %%   * this seam's own exported wrappers — they have no in-tree caller other
 %%     than the providers, and xref's `locals_not_used`/export tracking would
 %%     otherwise flag them while the plugin app is analyzed standalone.
@@ -58,9 +61,9 @@ mockable boundary instead of reaching into rebar3 internals directly.
 %% We ignore EXACTLY these edges and nothing else, so
 %% `undefined_function_calls`/`undefined_functions` stay active for genuine
 %% bugs in every other module (including this seam's own logic). The companion
-%% `{xref_ignores,...}` in this app's `rebar.config` carries the same eight
+%% `{xref_ignores,...}` in this app's `rebar.config` carries the same ten
 %% external edges with the rejected-alternatives rationale. Together they
-%% REPLACE the deleted `tools/rebar3_api/ebin` host-beam extraction path; the
+%% stand in for a `tools/rebar3_api/ebin` host-beam extraction path; the
 %% ignore is load-bearing (removing it makes exactly these eight host calls
 %% reappear as undefined) and not over-broad.
 -ignore_xref([
@@ -72,14 +75,18 @@ mockable boundary instead of reaching into rebar3 internals directly.
     app_dir/1,
     info/2,
     console/2,
+    warn/2,
+    get_config/3,
     {providers, create, 1},
     {rebar_state, add_provider, 2},
     {rebar_state, command_parsed_args, 1},
     {rebar_state, project_apps, 1},
     {rebar_state, dir, 1},
+    {rebar_state, get, 3},
     {rebar_app_info, dir, 1},
     {rebar_api, info, 2},
-    {rebar_api, console, 2}
+    {rebar_api, console, 2},
+    {rebar_api, warn, 2}
 ]).
 
 %% This module is the SOLE seam over the rebar3 host API. Those modules
@@ -105,7 +112,9 @@ mockable boundary instead of reaching into rebar3 internals directly.
         state_dir/1,
         app_dir/1,
         info/2,
-        console/2
+        console/2,
+        warn/2,
+        get_config/3
     ]}
 ).
 
@@ -166,3 +175,19 @@ info(Format, Args) ->
 console(Format, Args) ->
     % elp:ignore W0017 (provided by the rebar3 host at plugin-load time)
     rebar_api:console(Format, Args).
+
+-doc "Emit a WARN-level message through the rebar3 logger.".
+-spec warn(io:format(), [term()]) -> ok.
+warn(Format, Args) ->
+    % elp:ignore W0017 (provided by the rebar3 host at plugin-load time)
+    rebar_api:warn(Format, Args).
+
+-doc """
+Read a `rebar.config` key from the rebar3 state, falling back to `Default`
+when the key is absent. This is the `rebar.config` reader the providers use
+for plugin configuration.
+""".
+-spec get_config(state(), atom(), term()) -> term().
+get_config(State, Key, Default) ->
+    % elp:ignore W0017 (provided by the rebar3 host at plugin-load time)
+    rebar_state:get(State, Key, Default).
